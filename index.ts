@@ -755,6 +755,24 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
+		if (lower === "/compact") {
+			if (!ctx.isIdle()) {
+				await sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Cannot compact while pi is busy. Send \"stop\" first.");
+				return;
+			}
+			ctx.compact({
+				onComplete: () => {
+					void sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Compaction completed.");
+				},
+				onError: (error) => {
+					const message = error instanceof Error ? error.message : String(error);
+					void sendTextReply(firstMessage.chat.id, firstMessage.message_id, `Compaction failed: ${message}`);
+				},
+			});
+			await sendTextReply(firstMessage.chat.id, firstMessage.message_id, "Compaction started.");
+			return;
+		}
+
 		if (lower === "/status") {
 			let totalInput = 0;
 			let totalOutput = 0;
@@ -806,7 +824,7 @@ export default function (pi: ExtensionAPI) {
 			await sendTextReply(
 				firstMessage.chat.id,
 				firstMessage.message_id,
-				`Send me a message and I will forward it to pi. Send \"stop\" to abort the current turn.`,
+				`Send me a message and I will forward it to pi. Commands: /status, /compact, stop.`,
 			);
 			if (config.allowedUserId === undefined && firstMessage.from) {
 				config.allowedUserId = firstMessage.from.id;
