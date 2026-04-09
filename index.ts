@@ -703,6 +703,10 @@ function renderMarkdownPreviewText(markdown: string): string {
       inFence = !inFence;
       continue;
     }
+    if (line.trim().length === 0) {
+      if (output.at(-1) !== "") output.push("");
+      continue;
+    }
     if (inFence) {
       output.push(line);
       continue;
@@ -1029,12 +1033,17 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
       textLines.push(current);
       index += 1;
     }
-    renderedBlocks.push(...renderMarkdownTextLines(textLines.join("\n")));
+    const renderedTextBlock = renderMarkdownTextLines(
+      textLines.join("\n"),
+    ).join("\n");
+    if (renderedTextBlock.length > 0) {
+      renderedBlocks.push(renderedTextBlock);
+    }
   }
   const chunks: string[] = [];
   let current = "";
   for (const block of renderedBlocks) {
-    const candidate = current.length === 0 ? block : `${current}\n${block}`;
+    const candidate = current.length === 0 ? block : `${current}\n\n${block}`;
     if (candidate.length <= MAX_MESSAGE_LENGTH) {
       current = candidate;
       continue;
