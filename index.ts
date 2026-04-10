@@ -233,6 +233,20 @@ interface TelegramUsageStats {
   totalCost: number;
 }
 
+interface TelegramDispatchGuardState {
+  compactionInProgress: boolean;
+  hasActiveTelegramTurn: boolean;
+  hasPendingTelegramDispatch: boolean;
+  isIdle: boolean;
+  hasPendingMessages: boolean;
+}
+
+interface TelegramInFlightModelSwitchState {
+  isIdle: boolean;
+  hasActiveTelegramTurn: boolean;
+  hasAbortHandler: boolean;
+}
+
 type TelegramReplyMarkup = {
   inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
 };
@@ -322,7 +336,9 @@ function modelsMatch(
   return !!a && !!b && a.provider === b.provider && a.id === b.id;
 }
 
-function getCanonicalModelId(model: Model<any>): string {
+function getCanonicalModelId(
+  model: Pick<Model<any>, "provider" | "id">,
+): string {
   return `${model.provider}/${model.id}`;
 }
 
@@ -1291,6 +1307,34 @@ function renderTelegramMessage(
   }));
 }
 
+function canDispatchTelegramTurnState(
+  state: TelegramDispatchGuardState,
+): boolean {
+  return (
+    !state.compactionInProgress &&
+    !state.hasActiveTelegramTurn &&
+    !state.hasPendingTelegramDispatch &&
+    state.isIdle &&
+    !state.hasPendingMessages
+  );
+}
+
+function canRestartTelegramTurnForModelSwitch(
+  state: TelegramInFlightModelSwitchState,
+): boolean {
+  return !state.isIdle && state.hasActiveTelegramTurn && state.hasAbortHandler;
+}
+
+function buildTelegramModelSwitchContinuationText<
+  TModel extends Pick<Model<any>, "provider" | "id">,
+>(model: TModel, thinkingLevel?: ThinkingLevel): string {
+  const modelLabel = getCanonicalModelId(model);
+  const thinkingSuffix = thinkingLevel
+    ? ` Keep the selected thinking level (${thinkingLevel}) if it still applies.`
+    : "";
+  return `${TELEGRAM_PREFIX} Continue the interrupted previous Telegram request using the newly selected model (${modelLabel}). Resume from the last unfinished step instead of restarting from scratch unless necessary.${thinkingSuffix}`;
+}
+
 // --- Persistence ---
 
 async function readConfig(): Promise<TelegramConfig> {
@@ -1314,14 +1358,25 @@ async function writeConfig(config: TelegramConfig): Promise<void> {
 
 // --- Extension Runtime ---
 
+export const __telegramTestUtils = {
+  MAX_MESSAGE_LENGTH,
+  renderTelegramMessage,
+  canDispatchTelegramTurnState,
+  canRestartTelegramTurnForModelSwitch,
+  buildTelegramModelSwitchContinuationText,
+};
+
 export default function (pi: ExtensionAPI) {
   let config: TelegramConfig = {};
   let pollingController: AbortController | undefined;
   let pollingPromise: Promise<void> | undefined;
   let queuedTelegramTurns: PendingTelegramTurn[] = [];
   let nextQueuedTelegramTurnOrder = 0;
+  let nextSyntheticTelegramTurnOrder = -1;
   let nextPriorityReactionOrder = 0;
   let activeTelegramTurn: ActiveTelegramTurn | undefined;
+  let activeTelegramToolExecutions = 0;
+  let pendingTelegramModelSwitch: ScopedTelegramModel | undefined;
   let telegramTurnDispatchPending = false;
   let typingInterval: ReturnType<typeof setInterval> | undefined;
   let currentAbort: (() => void) | undefined;
@@ -1343,13 +1398,13 @@ export default function (pi: ExtensionAPI) {
   }
 
   function canDispatchQueuedTelegramTurn(ctx: ExtensionContext): boolean {
-    return (
-      !compactionInProgress &&
-      !activeTelegramTurn &&
-      !telegramTurnDispatchPending &&
-      ctx.isIdle() &&
-      !ctx.hasPendingMessages()
-    );
+    return canDispatchTelegramTurnState({
+      compactionInProgress,
+      hasActiveTelegramTurn: !!activeTelegramTurn,
+      hasPendingTelegramDispatch: telegramTurnDispatchPending,
+      isIdle: ctx.isIdle(),
+      hasPendingMessages: ctx.hasPendingMessages(),
+    });
   }
 
   function dispatchNextQueuedTelegramTurn(ctx: ExtensionContext): void {
@@ -1419,7 +1474,11 @@ export default function (pi: ExtensionAPI) {
       );
       return;
     }
-    if (activeTelegramTurn || telegramTurnDispatchPending || queuedTelegramTurns.length > 0) {
+    if (
+      activeTelegramTurn ||
+      telegramTurnDispatchPending ||
+      queuedTelegramTurns.length > 0
+    ) {
       const queued = theme.fg(
         "muted",
         formatQueuedTelegramTurnsStatus(queuedTelegramTurns),
@@ -2133,18 +2192,86 @@ export default function (pi: ExtensionAPI) {
     modelMenus.set(messageId, state);
   }
 
+  function canOfferInFlightTelegramModelSwitch(ctx: ExtensionContext): boolean {
+    return canRestartTelegramTurnForModelSwitch({
+      isIdle: ctx.isIdle(),
+      hasActiveTelegramTurn: !!activeTelegramTurn,
+      hasAbortHandler: !!currentAbort,
+    });
+  }
+
+  function createTelegramModelSwitchContinuationTurn(
+    turn: ActiveTelegramTurn,
+    selection: ScopedTelegramModel,
+  ): PendingTelegramTurn {
+    const statusLabel = truncateTelegramQueueSummary(
+      `continue on ${selection.model.id}`,
+      4,
+      32,
+    );
+    return {
+      chatId: turn.chatId,
+      replyToMessageId: turn.replyToMessageId,
+      sourceMessageIds: [],
+      queueOrder: nextSyntheticTelegramTurnOrder--,
+      priorityReactionOrder: -1,
+      queuedAttachments: [],
+      content: [
+        {
+          type: "text",
+          text: buildTelegramModelSwitchContinuationText(
+            selection.model,
+            selection.thinkingLevel,
+          ),
+        },
+      ],
+      historyText: `Continue interrupted Telegram request on ${getCanonicalModelId(selection.model)}`,
+      statusSummary: `↻ ${statusLabel || "continue"}`,
+    };
+  }
+
+  function queueTelegramModelSwitchContinuation(
+    turn: ActiveTelegramTurn,
+    selection: ScopedTelegramModel,
+    ctx: ExtensionContext,
+  ): void {
+    queuedTelegramTurns.push(
+      createTelegramModelSwitchContinuationTurn(turn, selection),
+    );
+    reorderQueuedTelegramTurns(ctx);
+  }
+
+  function triggerPendingTelegramModelSwitchAbort(
+    ctx: ExtensionContext,
+  ): boolean {
+    if (
+      !pendingTelegramModelSwitch ||
+      !activeTelegramTurn ||
+      !currentAbort ||
+      activeTelegramToolExecutions > 0
+    ) {
+      return false;
+    }
+    const selection = pendingTelegramModelSwitch;
+    pendingTelegramModelSwitch = undefined;
+    queueTelegramModelSwitchContinuation(activeTelegramTurn, selection, ctx);
+    currentAbort();
+    return true;
+  }
+
   async function openModelMenu(
     chatId: number,
     replyToMessageId: number,
     ctx: ExtensionContext,
   ): Promise<void> {
-    const isIdle = await ensureIdleOrNotify(
-      ctx,
-      chatId,
-      replyToMessageId,
-      "Cannot switch model while pi is busy. Send /stop first.",
-    );
-    if (!isIdle) return;
+    if (!ctx.isIdle() && !canOfferInFlightTelegramModelSwitch(ctx)) {
+      await sendTextReply(
+        chatId,
+        replyToMessageId,
+        "Cannot switch model while pi is busy. Send /stop first.",
+      );
+      return;
+    }
     const state = await getModelMenuState(chatId, ctx);
     if (state.allModels.length === 0) {
       await sendTextReply(
@@ -2277,10 +2404,6 @@ export default function (pi: ExtensionAPI) {
       );
       return true;
     }
-    if (!ctx.isIdle()) {
-      await answerCallbackQuery(query.id, "Pi is busy. Send /stop first.");
-      return true;
-    }
     const activeModel = getCurrentTelegramModel(ctx);
     if (modelsMatch(selection.model, activeModel)) {
       if (
@@ -2291,6 +2414,42 @@ export default function (pi: ExtensionAPI) {
       }
       await showStatusMessage(state, ctx);
       await answerCallbackQuery(query.id, `Model: ${selection.model.id}`);
+      return true;
+    }
+    if (!ctx.isIdle()) {
+      if (!activeTelegramTurn || !currentAbort) {
+        await answerCallbackQuery(query.id, "Pi is busy. Send /stop first.");
+        return true;
+      }
+      try {
+        const changed = await pi.setModel(selection.model);
+        if (changed === false) {
+          await answerCallbackQuery(query.id, "Model is not available.");
+          return true;
+        }
+        currentTelegramModel = selection.model;
+        if (selection.thinkingLevel) {
+          pi.setThinkingLevel(selection.thinkingLevel);
+        }
+        await showStatusMessage(state, ctx);
+        if (activeTelegramToolExecutions > 0) {
+          pendingTelegramModelSwitch = selection;
+          await answerCallbackQuery(
+            query.id,
+            `Switched to ${selection.model.id}. Restarting after the current tool finishes…`,
+          );
+          return true;
+        }
+        queueTelegramModelSwitchContinuation(activeTelegramTurn, selection, ctx);
+        currentAbort();
+        await answerCallbackQuery(
+          query.id,
+          `Switching to ${selection.model.id} and continuing…`,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await answerCallbackQuery(query.id, message);
+      }
       return true;
     }
     try {
@@ -2811,6 +2970,7 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
   ): Promise<void> {
     if (currentAbort) {
+      pendingTelegramModelSwitch = undefined;
       if (queuedTelegramTurns.length > 0) {
         preserveQueuedTurnsAsHistory = true;
       }
@@ -2875,7 +3035,8 @@ export default function (pi: ExtensionAPI) {
     } catch (error) {
       compactionInProgress = false;
       updateStatus(ctx);
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       await sendTextReply(
         message.chat.id,
         message.message_id,
@@ -3265,6 +3426,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     config = await readConfig();
     currentTelegramModel = ctx.model;
+    activeTelegramToolExecutions = 0;
+    pendingTelegramModelSwitch = undefined;
+    nextSyntheticTelegramTurnOrder = -1;
     telegramTurnDispatchPending = false;
     compactionInProgress = false;
     await mkdir(TEMP_DIR, { recursive: true });
@@ -3274,8 +3438,11 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async (_event, _ctx) => {
     queuedTelegramTurns = [];
     nextQueuedTelegramTurnOrder = 0;
+    nextSyntheticTelegramTurnOrder = -1;
     nextPriorityReactionOrder = 0;
     currentTelegramModel = undefined;
+    activeTelegramToolExecutions = 0;
+    pendingTelegramModelSwitch = undefined;
     telegramTurnDispatchPending = false;
     compactionInProgress = false;
     for (const state of mediaGroups.values()) {
@@ -3307,6 +3474,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_start", async (_event, ctx) => {
     currentAbort = () => ctx.abort();
+    activeTelegramToolExecutions = 0;
+    pendingTelegramModelSwitch = undefined;
     if (!activeTelegramTurn && telegramTurnDispatchPending) {
       const nextTurn = queuedTelegramTurns.shift();
       telegramTurnDispatchPending = false;
@@ -3317,6 +3486,17 @@ export default function (pi: ExtensionAPI) {
       }
     }
     updateStatus(ctx);
+  });
+
+  pi.on("tool_execution_start", async (_event, _ctx) => {
+    if (!activeTelegramTurn) return;
+    activeTelegramToolExecutions += 1;
+  });
+
+  pi.on("tool_execution_end", async (_event, ctx) => {
+    if (!activeTelegramTurn) return;
+    activeTelegramToolExecutions = Math.max(0, activeTelegramToolExecutions - 1);
+    triggerPendingTelegramModelSwitchAbort(ctx);
   });
 
   pi.on("message_start", async (event, _ctx) => {
@@ -3350,16 +3530,20 @@ export default function (pi: ExtensionAPI) {
     currentAbort = undefined;
     stopTypingLoop();
     activeTelegramTurn = undefined;
+    activeTelegramToolExecutions = 0;
+    pendingTelegramModelSwitch = undefined;
     telegramTurnDispatchPending = false;
     updateStatus(ctx);
     if (!turn) {
       dispatchNextQueuedTelegramTurn(ctx);
       return;
     }
-
     const assistant = extractAssistantText(event.messages);
     if (assistant.stopReason === "aborted") {
       await clearPreview(turn.chatId);
+      if (!preserveQueuedTurnsAsHistory) {
+        dispatchNextQueuedTelegramTurn(ctx);
+      }
       return;
     }
     if (assistant.stopReason === "error") {
@@ -3372,7 +3556,6 @@ export default function (pi: ExtensionAPI) {
       );
       return;
     }
-
     const finalText = assistant.text;
     if (previewState) {
       previewState.pendingText = finalText ?? previewState.pendingText;
@@ -3393,9 +3576,7 @@ export default function (pi: ExtensionAPI) {
         );
       }
     }
-
     await sendQueuedAttachments(turn);
-
     if (!preserveQueuedTurnsAsHistory) {
       dispatchNextQueuedTelegramTurn(ctx);
     }

@@ -9,12 +9,19 @@ Telegram DM bridge for pi.
 This repository is a fork of the original [`badlogic/pi-telegram`](https://github.com/badlogic/pi-telegram).
 It started from upstream commit [`cb34008460b6c1ca036d92322f69d87f626be0fc`](https://github.com/badlogic/pi-telegram/commit/cb34008460b6c1ca036d92322f69d87f626be0fc) and has since diverged substantially.
 
+## Start Here
+
+- [Project Context](./AGENTS.md)
+- [Open Backlog](./BACKLOG.md)
+- [Changelog](./CHANGELOG.md)
+- [Documentation](./docs/README.md)
+
 ## What Changed In This Fork
 
 Compared to upstream commit `cb34008`, this fork significantly extends and hardens the extension.
 
 - Better Telegram control UI, including an improved `/status` view with inline buttons for model and thinking selection
-- Interactive model selection improvements, including scoped model lists and thinking-level control for reasoning-capable models
+- Interactive model selection improvements, including scoped model lists, thinking-level control for reasoning-capable models, and in-flight restart on a newly selected model for active Telegram-owned runs
 - Queueing and interaction upgrades, including queue previews, reaction-based prioritization/removal, media-group handling, and safer dispatch behavior
 - Markdown and reply rendering improvements, with richer formatting support and multiple fixes for incorrect Telegram rendering and chunking edge cases
 - Streaming, attachment, and delivery workflow hardening, including more robust preview updates and file handling
@@ -97,7 +104,7 @@ Chat with your bot in Telegram DMs.
 Additional fork-specific controls:
 
 - `/status` now has a richer view with inline buttons for model and thinking controls
-- `/model` opens the interactive model selector
+- `/model` opens the interactive model selector and can restart the active Telegram-owned run on the newly selected model, waiting for the current tool call to finish when needed
 - `/compact` starts session compaction when pi and the Telegram queue are idle
 - Queue reactions: `👍` prioritizes a waiting turn, `👎` removes it
 

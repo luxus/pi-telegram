@@ -14,11 +14,14 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/badlogic/pi-telegram.git"
+    "url": "https://github.com/llblab/pi-telegram.git"
   },
-  "homepage": "https://github.com/badlogic/pi-telegram",
+  "homepage": "https://github.com/llblab/pi-telegram",
   "bugs": {
-    "url": "https://github.com/badlogic/pi-telegram/issues"
+    "url": "https://github.com/llblab/pi-telegram/issues"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
   },
   "pi": {
     "extensions": [
