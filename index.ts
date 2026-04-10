@@ -247,6 +247,11 @@ interface TelegramInFlightModelSwitchState {
   hasAbortHandler: boolean;
 }
 
+interface TelegramBotTokenPromptSpec {
+  method: "input" | "editor";
+  value: string;
+}
+
 type TelegramReplyMarkup = {
   inline_keyboard: Array<Array<{ text: string; callback_data: string }>>;
 };
@@ -269,6 +274,15 @@ const THINKING_LEVELS: readonly ThinkingLevel[] = [
   "high",
   "xhigh",
 ];
+const TELEGRAM_BOT_TOKEN_INPUT_PLACEHOLDER = "123456:ABCDEF...";
+const TELEGRAM_BOT_TOKEN_ENV_VARS = [
+  "TELEGRAM_BOT_TOKEN",
+  "TELEGRAM_BOT_KEY",
+  "TELEGRAM_TOKEN",
+  "TELEGRAM_KEY",
+  "BOT_TOKEN",
+  "BOT_KEY",
+] as const;
 const SYSTEM_PROMPT_SUFFIX = `
 
 Telegram bridge extension is active.
@@ -1319,6 +1333,31 @@ function canDispatchTelegramTurnState(
   );
 }
 
+function getTelegramBotTokenInputDefault(
+  env: NodeJS.ProcessEnv = process.env,
+  configToken?: string,
+): string {
+  const trimmedConfigToken = configToken?.trim();
+  if (trimmedConfigToken) return trimmedConfigToken;
+  for (const key of TELEGRAM_BOT_TOKEN_ENV_VARS) {
+    const value = env[key]?.trim();
+    if (value) return value;
+  }
+  return TELEGRAM_BOT_TOKEN_INPUT_PLACEHOLDER;
+}
+
+function getTelegramBotTokenPromptSpec(
+  env: NodeJS.ProcessEnv = process.env,
+  configToken?: string,
+): TelegramBotTokenPromptSpec {
+  const value = getTelegramBotTokenInputDefault(env, configToken);
+  return {
+    method:
+      value === TELEGRAM_BOT_TOKEN_INPUT_PLACEHOLDER ? "input" : "editor",
+    value,
+  };
+}
+
 function canRestartTelegramTurnForModelSwitch(
   state: TelegramInFlightModelSwitchState,
 ): boolean {
@@ -1362,6 +1401,8 @@ export const __telegramTestUtils = {
   MAX_MESSAGE_LENGTH,
   renderTelegramMessage,
   canDispatchTelegramTurnState,
+  getTelegramBotTokenInputDefault,
+  getTelegramBotTokenPromptSpec,
   canRestartTelegramTurnForModelSwitch,
   buildTelegramModelSwitchContinuationText,
 };
@@ -1915,10 +1956,16 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.hasUI || setupInProgress) return;
     setupInProgress = true;
     try {
-      const token = await ctx.ui.input(
-        "Telegram bot token",
-        "123456:ABCDEF...",
+      const tokenPrompt = getTelegramBotTokenPromptSpec(
+        process.env,
+        config.botToken,
       );
+      // Use the editor when a real default exists because ctx.ui.input only
+      // exposes placeholder text, not an editable prefilled value.
+      const token =
+        tokenPrompt.method === "editor"
+          ? await ctx.ui.editor("Telegram bot token", tokenPrompt.value)
+          : await ctx.ui.input("Telegram bot token", tokenPrompt.value);
       if (!token) return;
 
       const nextConfig: TelegramConfig = { ...config, botToken: token.trim() };
@@ -2440,7 +2487,11 @@ export default function (pi: ExtensionAPI) {
           );
           return true;
         }
-        queueTelegramModelSwitchContinuation(activeTelegramTurn, selection, ctx);
+        queueTelegramModelSwitchContinuation(
+          activeTelegramTurn,
+          selection,
+          ctx,
+        );
         currentAbort();
         await answerCallbackQuery(
           query.id,
@@ -3495,7 +3546,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("tool_execution_end", async (_event, ctx) => {
     if (!activeTelegramTurn) return;
-    activeTelegramToolExecutions = Math.max(0, activeTelegramToolExecutions - 1);
+    activeTelegramToolExecutions = Math.max(
+      0,
+      activeTelegramToolExecutions - 1,
+    );
     triggerPendingTelegramModelSwitchAbort(ctx);
   });
 

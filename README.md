@@ -61,6 +61,7 @@ Start pi, then run:
 ```
 
 Paste the bot token when prompted.
+If a bot token is already saved in `~/.pi/agent/telegram.json`, `/telegram-setup` shows that stored value by default. Otherwise it pre-fills from the first configured environment variable in `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_KEY`, `TELEGRAM_TOKEN`, or `TELEGRAM_KEY`.
 
 The extension stores config in:
 
