@@ -683,12 +683,69 @@ function isMarkdownTableSeparator(line: string): boolean {
   return /^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$/.test(line);
 }
 
+function parseMarkdownFence(
+  line: string,
+): { marker: "`" | "~"; length: number; info?: string } | undefined {
+  const match = line.match(/^\s*([`~]{3,})(.*)$/);
+  if (!match) return undefined;
+  const fence = match[1] ?? "";
+  const marker = fence[0];
+  if ((marker !== "`" && marker !== "~") || /[^`~]/.test(fence)) {
+    return undefined;
+  }
+  if (!fence.split("").every((char) => char === marker)) return undefined;
+  return {
+    marker,
+    length: fence.length,
+    info: (match[2] ?? "").trim() || undefined,
+  };
+}
+
 function isFencedCodeStart(line: string): boolean {
-  return /^\s*```/.test(line);
+  return parseMarkdownFence(line) !== undefined;
+}
+
+function isMatchingMarkdownFence(
+  line: string,
+  fence: { marker: "`" | "~"; length: number },
+): boolean {
+  const match = line.match(/^\s*([`~]{3,})\s*$/);
+  if (!match) return false;
+  const candidate = match[1] ?? "";
+  return (
+    candidate.length >= fence.length &&
+    candidate[0] === fence.marker &&
+    candidate.split("").every((char) => char === fence.marker)
+  );
 }
 
 function isIndentedCodeLine(line: string): boolean {
   return /^(?:\t| {4,})/.test(line);
+}
+
+function isIndentedMarkdownStructureLine(line: string): boolean {
+  const trimmed = line.trimStart();
+  return (
+    /^(?:[-*+]|\d+\.)\s+\[([ xX])\]\s+/.test(trimmed) ||
+    /^(?:[-*+]|\d+\.)\s+/.test(trimmed) ||
+    /^>\s?/.test(trimmed) ||
+    /^#{1,6}\s+/.test(trimmed) ||
+    parseMarkdownFence(trimmed) !== undefined
+  );
+}
+
+function canStartIndentedCodeBlock(lines: string[], index: number): boolean {
+  const line = lines[index] ?? "";
+  if (!isIndentedCodeLine(line)) return false;
+  if (isIndentedMarkdownStructureLine(line)) return false;
+  if (index === 0) return true;
+  return (lines[index - 1] ?? "").trim().length === 0;
+}
+
+function stripIndentedCodePrefix(line: string): string {
+  if (line.startsWith("\t")) return line.slice(1);
+  if (line.startsWith("    ")) return line.slice(4);
+  return line;
 }
 
 function renderMarkdownPreviewText(markdown: string): string {
@@ -696,19 +753,28 @@ function renderMarkdownPreviewText(markdown: string): string {
   if (normalized.length === 0) return "";
   const output: string[] = [];
   const lines = normalized.split("\n");
-  let inFence = false;
+  let activeFence: { marker: "`" | "~"; length: number } | undefined;
   for (const rawLine of lines) {
     const line = rawLine ?? "";
-    if (isFencedCodeStart(line)) {
-      inFence = !inFence;
+    const fence = parseMarkdownFence(line);
+    if (activeFence) {
+      if (fence && isMatchingMarkdownFence(line, activeFence)) {
+        activeFence = undefined;
+        continue;
+      }
+      if (line.trim().length === 0) {
+        if (output.at(-1) !== "") output.push("");
+        continue;
+      }
+      output.push(line);
+      continue;
+    }
+    if (fence) {
+      activeFence = { marker: fence.marker, length: fence.length };
       continue;
     }
     if (line.trim().length === 0) {
       if (output.at(-1) !== "") output.push("");
-      continue;
-    }
-    if (inFence) {
-      output.push(line);
       continue;
     }
     if (isMarkdownTableSeparator(line)) {
@@ -758,6 +824,24 @@ function renderMarkdownPreviewText(markdown: string): string {
 
 // --- Rich Markdown Rendering ---
 
+function renderDelimitedInlineStyle(
+  text: string,
+  delimiter: string,
+  render: (content: string) => string,
+): string {
+  const escapedDelimiter = delimiter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    `(^|[^\\p{L}\\p{N}\\\\])(${escapedDelimiter})(?=\\S)(.+?)(?<=\\S)\\2(?=[^\\p{L}\\p{N}]|$)`,
+    "gu",
+  );
+  return text.replace(
+    pattern,
+    (_match, prefix: string, _wrapped: string, content: string) => {
+      return `${prefix}${render(content)}`;
+    },
+  );
+}
+
 function renderInlineMarkdown(text: string): string {
   const tokens: string[] = [];
   const makeToken = (html: string): string => {
@@ -789,10 +873,27 @@ function renderInlineMarkdown(text: string): string {
     return makeToken(`<code>${escapeHtml(code)}</code>`);
   });
   result = escapeHtml(result);
-  result = result.replace(/(\*\*\*|___)(.+?)\1/g, "<b><i>$2</i></b>");
-  result = result.replace(/~~(.+?)~~/g, "<s>$1</s>");
-  result = result.replace(/(\*\*|__)(.+?)\1/g, "<b>$2</b>");
-  result = result.replace(/(\*|_)(.+?)\1/g, "<i>$2</i>");
+  result = renderDelimitedInlineStyle(result, "***", (content) => {
+    return `<b><i>${content}</i></b>`;
+  });
+  result = renderDelimitedInlineStyle(result, "___", (content) => {
+    return `<b><i>${content}</i></b>`;
+  });
+  result = renderDelimitedInlineStyle(result, "~~", (content) => {
+    return `<s>${content}</s>`;
+  });
+  result = renderDelimitedInlineStyle(result, "**", (content) => {
+    return `<b>${content}</b>`;
+  });
+  result = renderDelimitedInlineStyle(result, "__", (content) => {
+    return `<b>${content}</b>`;
+  });
+  result = renderDelimitedInlineStyle(result, "*", (content) => {
+    return `<i>${content}</i>`;
+  });
+  result = renderDelimitedInlineStyle(result, "_", (content) => {
+    return `<i>${content}</i>`;
+  });
   result = result.replace(
     /(^|[\s>(])(\[(?: |x|X)\])(?=($|[\s<).,:;!?]))/g,
     (_match, prefix: string, checkbox: string) => {
@@ -808,7 +909,7 @@ function renderInlineMarkdown(text: string): string {
 }
 
 function buildListIndent(level: number): string {
-  return "\u00A0".repeat(Math.max(0, Math.min(12, level * 2)));
+  return "\u00A0".repeat(Math.max(0, level) * 2);
 }
 
 function parseMarkdownTableRow(line: string): string[] {
@@ -945,10 +1046,50 @@ function renderMarkdownTableBlock(lines: string[]): string[] {
   return renderMarkdownCodeBlock(tableLines.join("\n"), "markdown");
 }
 
+function chunkRenderedHtmlLines(
+  lines: string[],
+  wrapper?: { open: string; close: string },
+): string[] {
+  if (lines.length === 0) return [];
+  const open = wrapper?.open ?? "";
+  const close = wrapper?.close ?? "";
+  const maxContentLength = MAX_MESSAGE_LENGTH - open.length - close.length;
+  const chunks: string[] = [];
+  let current = "";
+  const pushCurrent = (): void => {
+    if (current.length === 0) return;
+    chunks.push(`${open}${current}${close}`);
+    current = "";
+  };
+  for (const line of lines) {
+    const candidate = current.length === 0 ? line : `${current}\n${line}`;
+    if (candidate.length <= maxContentLength) {
+      current = candidate;
+      continue;
+    }
+    pushCurrent();
+    if (line.length <= maxContentLength) {
+      current = line;
+      continue;
+    }
+    for (let i = 0; i < line.length; i += maxContentLength) {
+      chunks.push(`${open}${line.slice(i, i + maxContentLength)}${close}`);
+    }
+  }
+  pushCurrent();
+  return chunks;
+}
+
+function renderMarkdownTextBlock(block: string): string[] {
+  return chunkRenderedHtmlLines(renderMarkdownTextLines(block));
+}
+
 function renderMarkdownQuoteBlock(lines: string[]): string[] {
   const inner = lines.map((line) => line.replace(/^\s*>\s?/, "")).join("\n");
-  const rendered = renderMarkdownTextLines(inner).join("\n");
-  return rendered.length > 0 ? [`<blockquote>${rendered}</blockquote>`] : [];
+  return chunkRenderedHtmlLines(renderMarkdownTextLines(inner), {
+    open: "<blockquote>",
+    close: "</blockquote>",
+  });
 }
 
 function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
@@ -960,11 +1101,14 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
   while (index < lines.length) {
     const line = lines[index] ?? "";
     const nextLine = lines[index + 1] ?? "";
-    if (isFencedCodeStart(line)) {
-      const language = line.trim().slice(3).trim() || undefined;
+    const fence = parseMarkdownFence(line);
+    if (fence) {
       index += 1;
       const codeLines: string[] = [];
-      while (index < lines.length && !isFencedCodeStart(lines[index] ?? "")) {
+      while (
+        index < lines.length &&
+        !isMatchingMarkdownFence(lines[index] ?? "", fence)
+      ) {
         codeLines.push(lines[index] ?? "");
         index += 1;
       }
@@ -972,7 +1116,7 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
         index += 1;
       }
       renderedBlocks.push(
-        ...renderMarkdownCodeBlock(codeLines.join("\n"), language),
+        ...renderMarkdownCodeBlock(codeLines.join("\n"), fence.info),
       );
       while (index < lines.length && (lines[index] ?? "").trim().length === 0) {
         index += 1;
@@ -997,13 +1141,17 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
       renderedBlocks.push(...renderMarkdownTableBlock(tableLines));
       continue;
     }
-    if (isIndentedCodeLine(line)) {
+    if (canStartIndentedCodeBlock(lines, index)) {
       const codeLines: string[] = [];
-      while (index < lines.length && isIndentedCodeLine(lines[index] ?? "")) {
+      while (index < lines.length) {
         const rawLine = lines[index] ?? "";
-        codeLines.push(
-          rawLine.startsWith("\t") ? rawLine.slice(1) : rawLine.slice(4),
-        );
+        if (rawLine.trim().length === 0) {
+          codeLines.push("");
+          index += 1;
+          continue;
+        }
+        if (!isIndentedCodeLine(rawLine)) break;
+        codeLines.push(stripIndentedCodePrefix(rawLine));
         index += 1;
       }
       renderedBlocks.push(...renderMarkdownCodeBlock(codeLines.join("\n")));
@@ -1025,7 +1173,7 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
       if (current.trim().length === 0) break;
       if (
         isFencedCodeStart(current) ||
-        isIndentedCodeLine(current) ||
+        canStartIndentedCodeBlock(lines, index) ||
         /^\s*>/.test(current)
       )
         break;
@@ -1033,12 +1181,7 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
       textLines.push(current);
       index += 1;
     }
-    const renderedTextBlock = renderMarkdownTextLines(
-      textLines.join("\n"),
-    ).join("\n");
-    if (renderedTextBlock.length > 0) {
-      renderedBlocks.push(renderedTextBlock);
-    }
+    renderedBlocks.push(...renderMarkdownTextBlock(textLines.join("\n")));
   }
   const chunks: string[] = [];
   let current = "";
@@ -1179,9 +1322,11 @@ export default function (pi: ExtensionAPI) {
   let nextQueuedTelegramTurnOrder = 0;
   let nextPriorityReactionOrder = 0;
   let activeTelegramTurn: ActiveTelegramTurn | undefined;
+  let telegramTurnDispatchPending = false;
   let typingInterval: ReturnType<typeof setInterval> | undefined;
   let currentAbort: (() => void) | undefined;
   let preserveQueuedTurnsAsHistory = false;
+  let compactionInProgress = false;
   let setupInProgress = false;
   let previewState: TelegramPreviewState | undefined;
   let draftSupport: "unknown" | "supported" | "unsupported" = "unknown";
@@ -1195,6 +1340,39 @@ export default function (pi: ExtensionAPI) {
   function allocateDraftId(): number {
     nextDraftId = nextDraftId >= TELEGRAM_DRAFT_ID_MAX ? 1 : nextDraftId + 1;
     return nextDraftId;
+  }
+
+  function canDispatchQueuedTelegramTurn(ctx: ExtensionContext): boolean {
+    return (
+      !compactionInProgress &&
+      !activeTelegramTurn &&
+      !telegramTurnDispatchPending &&
+      ctx.isIdle() &&
+      !ctx.hasPendingMessages()
+    );
+  }
+
+  function dispatchNextQueuedTelegramTurn(ctx: ExtensionContext): void {
+    if (!canDispatchQueuedTelegramTurn(ctx)) {
+      updateStatus(ctx);
+      return;
+    }
+    const nextTurn = queuedTelegramTurns[0];
+    if (!nextTurn) {
+      updateStatus(ctx);
+      return;
+    }
+    telegramTurnDispatchPending = true;
+    startTypingLoop(ctx, nextTurn.chatId);
+    updateStatus(ctx);
+    try {
+      pi.sendUserMessage(nextTurn.content);
+    } catch (error) {
+      telegramTurnDispatchPending = false;
+      stopTypingLoop();
+      const message = error instanceof Error ? error.message : String(error);
+      updateStatus(ctx, `dispatch failed: ${message}`);
+    }
   }
 
   // --- Status ---
@@ -1230,7 +1408,18 @@ export default function (pi: ExtensionAPI) {
       );
       return;
     }
-    if (activeTelegramTurn || queuedTelegramTurns.length > 0) {
+    if (compactionInProgress) {
+      const queued = theme.fg(
+        "muted",
+        formatQueuedTelegramTurnsStatus(queuedTelegramTurns),
+      );
+      ctx.ui.setStatus(
+        "telegram",
+        `${label} ${theme.fg("accent", "compacting")}${queued}`,
+      );
+      return;
+    }
+    if (activeTelegramTurn || telegramTurnDispatchPending || queuedTelegramTurns.length > 0) {
       const queued = theme.fg(
         "muted",
         formatQueuedTelegramTurnsStatus(queuedTelegramTurns),
@@ -2641,32 +2830,59 @@ export default function (pi: ExtensionAPI) {
     message: TelegramMessage,
     ctx: ExtensionContext,
   ): Promise<void> {
-    if (!ctx.isIdle()) {
+    if (
+      !ctx.isIdle() ||
+      ctx.hasPendingMessages() ||
+      activeTelegramTurn ||
+      telegramTurnDispatchPending ||
+      queuedTelegramTurns.length > 0 ||
+      compactionInProgress
+    ) {
       await sendTextReply(
         message.chat.id,
         message.message_id,
-        "Cannot compact while pi is busy. Send /stop first.",
+        "Cannot compact while pi or the Telegram queue is busy. Wait for queued turns to finish or send /stop first.",
       );
       return;
     }
-    ctx.compact({
-      onComplete: () => {
-        void sendTextReply(
-          message.chat.id,
-          message.message_id,
-          "Compaction completed.",
-        );
-      },
-      onError: (error) => {
-        const errorMessage =
-          error instanceof Error ? error.message : String(error);
-        void sendTextReply(
-          message.chat.id,
-          message.message_id,
-          `Compaction failed: ${errorMessage}`,
-        );
-      },
-    });
+    compactionInProgress = true;
+    updateStatus(ctx);
+    try {
+      ctx.compact({
+        onComplete: () => {
+          compactionInProgress = false;
+          updateStatus(ctx);
+          dispatchNextQueuedTelegramTurn(ctx);
+          void sendTextReply(
+            message.chat.id,
+            message.message_id,
+            "Compaction completed.",
+          );
+        },
+        onError: (error) => {
+          compactionInProgress = false;
+          updateStatus(ctx);
+          dispatchNextQueuedTelegramTurn(ctx);
+          const errorMessage =
+            error instanceof Error ? error.message : String(error);
+          void sendTextReply(
+            message.chat.id,
+            message.message_id,
+            `Compaction failed: ${errorMessage}`,
+          );
+        },
+      });
+    } catch (error) {
+      compactionInProgress = false;
+      updateStatus(ctx);
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      await sendTextReply(
+        message.chat.id,
+        message.message_id,
+        `Compaction failed: ${errorMessage}`,
+      );
+      return;
+    }
     await sendTextReply(
       message.chat.id,
       message.message_id,
@@ -2743,9 +2959,7 @@ export default function (pi: ExtensionAPI) {
     const turn = await createTelegramTurn(messages, historyTurns);
     queuedTelegramTurns.push(turn);
     updateStatus(ctx);
-    if (!ctx.isIdle()) return;
-    startTypingLoop(ctx, turn.chatId);
-    pi.sendUserMessage(turn.content);
+    dispatchNextQueuedTelegramTurn(ctx);
   }
 
   async function dispatchAuthorizedTelegramMessages(
@@ -3051,6 +3265,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     config = await readConfig();
     currentTelegramModel = ctx.model;
+    telegramTurnDispatchPending = false;
+    compactionInProgress = false;
     await mkdir(TEMP_DIR, { recursive: true });
     updateStatus(ctx);
   });
@@ -3060,6 +3276,8 @@ export default function (pi: ExtensionAPI) {
     nextQueuedTelegramTurnOrder = 0;
     nextPriorityReactionOrder = 0;
     currentTelegramModel = undefined;
+    telegramTurnDispatchPending = false;
+    compactionInProgress = false;
     for (const state of mediaGroups.values()) {
       if (state.flushTimer) clearTimeout(state.flushTimer);
     }
@@ -3089,8 +3307,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_start", async (_event, ctx) => {
     currentAbort = () => ctx.abort();
-    if (!activeTelegramTurn && queuedTelegramTurns.length > 0) {
+    if (!activeTelegramTurn && telegramTurnDispatchPending) {
       const nextTurn = queuedTelegramTurns.shift();
+      telegramTurnDispatchPending = false;
       if (nextTurn) {
         activeTelegramTurn = { ...nextTurn };
         previewState = createPreviewState();
@@ -3131,8 +3350,12 @@ export default function (pi: ExtensionAPI) {
     currentAbort = undefined;
     stopTypingLoop();
     activeTelegramTurn = undefined;
+    telegramTurnDispatchPending = false;
     updateStatus(ctx);
-    if (!turn) return;
+    if (!turn) {
+      dispatchNextQueuedTelegramTurn(ctx);
+      return;
+    }
 
     const assistant = extractAssistantText(event.messages);
     if (assistant.stopReason === "aborted") {
@@ -3173,11 +3396,8 @@ export default function (pi: ExtensionAPI) {
 
     await sendQueuedAttachments(turn);
 
-    if (queuedTelegramTurns.length > 0 && !preserveQueuedTurnsAsHistory) {
-      const nextTurn = queuedTelegramTurns[0];
-      startTypingLoop(ctx, nextTurn.chatId);
-      updateStatus(ctx);
-      pi.sendUserMessage(nextTurn.content);
+    if (!preserveQueuedTurnsAsHistory) {
+      dispatchNextQueuedTelegramTurn(ctx);
     }
   });
 }
