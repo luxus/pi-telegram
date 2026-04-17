@@ -2,6 +2,7 @@
 
 ## Current
 
+- `[Queue UI]` Marked liked high-priority queued Telegram turns with `⬆` in the pi status-bar queue preview. Impact: operators can now distinguish reaction-promoted turns from normal queued prompts at a glance.
 - `[Docs]` Added short responsibility header comments to every project `.ts` file. Impact: file boundaries are easier to understand while navigating the growing `/lib` split.
 - `[Naming]` Renamed extracted domain modules and mirrored regression suites to use repo-scoped bare domain filenames such as `api.ts`, `queue.ts`, and `queue.test.ts` instead of repeating `telegram-*` in every path. Impact: the internal topology is easier to scan and stays aligned with the repository-level Telegram scope.
 - `[Controls]` Expanded Telegram session controls with a richer `/status` view, inline model selection, and thinking-level controls, and fixed the callback-selection path so idle model and thinking picks apply immediately instead of only becoming visible after a later Telegram interaction. Impact: more bridge configuration can be managed directly from Telegram with more predictable immediate feedback.

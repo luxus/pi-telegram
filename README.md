@@ -24,7 +24,7 @@ Compared to upstream commit `cb34008`, this fork significantly extends and harde
 - Markdown and reply rendering improvements, with richer formatting support, narrow-client-friendly table/list rendering, quote compatibility fixes, and multiple fixes for incorrect Telegram rendering and chunking edge cases
 - Streaming, attachment, and delivery workflow hardening, including more robust preview updates and file handling
 - General runtime polish, bug fixes, and refactors across pairing, command handling, and Telegram session behavior
-- Cleaner internal domain layout, with flat `/lib/*.ts` modules and mirrored `/tests/*.test.ts` suites that use repo-scoped domain names instead of redundant `telegram-*` filename prefixes
+- Cleaner internal domain layout, with flat `/lib/*.ts` modules and mirrored `/tests/*.test.ts` suites that use repo-scoped domain names
 
 In short: this fork is no longer just a repackaged copy of upstream; it is a feature-expanded and bug-fixed Telegram frontend for pi.
 
@@ -162,8 +162,10 @@ If you send more Telegram messages while pi is busy, they are queued and process
 The pi status bar shows queued Telegram turns as compact previews, for example:
 
 ```text
-+3: [summarize this image…, write a shell script…, 📎 2 attachments]
++3: [⬆ write a shell script…, summarize this image…, 📎 2 attachments]
 ```
+
+Priority turns promoted with 👍 are marked with `⬆` in that queue preview.
 
 Each preview is limited to at most 4 words or 32 characters.
 

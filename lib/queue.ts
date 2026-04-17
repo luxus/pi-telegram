@@ -189,6 +189,13 @@ export function consumeDispatchedTelegramPrompt(
   return { activeTurn: nextItem, remainingItems: items.slice(1) };
 }
 
+function formatTelegramQueueItemStatusSummary(item: TelegramQueueItem): string {
+  if (item.queueLane === "priority") {
+    return `⬆ ${item.statusSummary}`;
+  }
+  return item.statusSummary;
+}
+
 export function formatQueuedTelegramItemsStatus(
   items: TelegramQueueItem[],
 ): string {
@@ -196,7 +203,7 @@ export function formatQueuedTelegramItemsStatus(
   const previewCount = 4;
   const summaries = items
     .slice(0, previewCount)
-    .map((item) => item.statusSummary)
+    .map(formatTelegramQueueItemStatusSummary)
     .filter(Boolean);
   if (summaries.length === 0) return ` +${items.length}`;
   const suffix = items.length > summaries.length ? ", …" : "";

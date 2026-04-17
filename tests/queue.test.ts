@@ -16,6 +16,7 @@ import {
   buildTelegramSessionStartState,
   executeTelegramControlItemRuntime,
   executeTelegramQueueDispatchPlan,
+  formatQueuedTelegramItemsStatus,
   getNextTelegramToolExecutionCount,
   shouldStartTelegramPolling,
 } from "../lib/queue.ts";
@@ -167,6 +168,57 @@ test("Queue mutation helpers apply and clear prompt priority without touching co
   assert.equal(cleared.changed, true);
   assert.equal(cleared.items[0]?.queueLane, "default");
   assert.equal(cleared.items[1]?.queueLane, "control");
+});
+
+test("Queued status formatting marks priority prompts in the pi status bar", () => {
+  const queueItemType = undefined as
+    | Parameters<typeof formatQueuedTelegramItemsStatus>[0][number]
+    | undefined;
+  const priorityPrompt: typeof queueItemType = {
+    kind: "prompt",
+    chatId: 1,
+    replyToMessageId: 1,
+    sourceMessageIds: [11],
+    queueOrder: 4,
+    queueLane: "priority",
+    laneOrder: 0,
+    queuedAttachments: [],
+    content: [{ type: "text", text: "prompt" }],
+    historyText: "prompt history",
+    statusSummary: "prompt",
+  };
+  const defaultPrompt: typeof queueItemType = {
+    kind: "prompt",
+    chatId: 1,
+    replyToMessageId: 2,
+    sourceMessageIds: [12],
+    queueOrder: 5,
+    queueLane: "default",
+    laneOrder: 5,
+    queuedAttachments: [],
+    content: [{ type: "text", text: "default" }],
+    historyText: "default history",
+    statusSummary: "default",
+  };
+  const controlItem: typeof queueItemType = {
+    kind: "control",
+    controlType: "status",
+    chatId: 1,
+    replyToMessageId: 3,
+    queueOrder: 6,
+    queueLane: "control",
+    laneOrder: 0,
+    statusSummary: "⚡ status",
+    execute: async () => {},
+  };
+  assert.equal(
+    formatQueuedTelegramItemsStatus([
+      controlItem,
+      priorityPrompt,
+      defaultPrompt,
+    ]),
+    " +3: [⚡ status, ⬆ prompt, default]",
+  );
 });
 
 test("History partition keeps control items queued and extracts prompt items", () => {

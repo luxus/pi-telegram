@@ -68,7 +68,7 @@ Queued items now use two explicit dimensions:
 - `kind`: prompt vs control
 - `queueLane`: control vs priority vs default
 
-This lets synthetic control actions and Telegram prompts share one stable ordering model while still rendering distinctly in status output.
+This lets synthetic control actions and Telegram prompts share one stable ordering model while still rendering distinctly in status output. In the pi status bar queue preview, priority prompts are marked with `⬆` while control items keep their own control-specific summary markers such as `⚡`.
 
 A dispatched prompt remains in the queue until `agent_start` consumes it. That keeps the active Telegram turn bound correctly for previews, attachments, abort handling, and final reply delivery.
 
