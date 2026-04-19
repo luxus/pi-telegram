@@ -235,14 +235,12 @@ interface TelegramMessageReactionUpdated {
 }
 
 interface TelegramUpdate {
-  _: string;
   update_id: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
   message_reaction?: TelegramMessageReactionUpdated;
   deleted_business_messages?: { message_ids?: unknown };
-  messages?: unknown;
 }
 
 interface TelegramGetFileResult {

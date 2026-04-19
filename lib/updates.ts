@@ -22,8 +22,6 @@ export type TelegramReactionTypeLike =
 
 export interface TelegramUpdateLike {
   deleted_business_messages?: { message_ids?: unknown };
-  _: string;
-  messages?: unknown;
 }
 
 function isTelegramMessageIdList(value: unknown): value is number[] {
@@ -54,12 +52,6 @@ export function extractDeletedTelegramMessageIds(
     update.deleted_business_messages?.message_ids;
   if (isTelegramMessageIdList(deletedBusinessMessageIds)) {
     return deletedBusinessMessageIds;
-  }
-  if (
-    update._ === "updateDeleteMessages" &&
-    isTelegramMessageIdList(update.messages)
-  ) {
-    return update.messages;
   }
   return [];
 }

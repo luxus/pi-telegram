@@ -129,8 +129,25 @@ function stripIndentedCodePrefix(line: string): string {
   return line;
 }
 
+function normalizeMarkdownDocument(markdown: string): string {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  let start = 0;
+  while (start < lines.length && (lines[start] ?? "").trim().length === 0) {
+    start += 1;
+  }
+  let end = lines.length;
+  while (end > start && (lines[end - 1] ?? "").trim().length === 0) {
+    end -= 1;
+  }
+  return lines.slice(start, end).join("\n");
+}
+
+function isMarkdownNumberedListMarker(marker: string): boolean {
+  return /^\d+\.$/.test(marker);
+}
+
 export function renderMarkdownPreviewText(markdown: string): string {
-  const normalized = markdown.replace(/\r\n/g, "\n").trim();
+  const normalized = normalizeMarkdownDocument(markdown);
   if (normalized.length === 0) return "";
   const output: string[] = [];
   const lines = normalized.split("\n");
@@ -169,9 +186,14 @@ export function renderMarkdownPreviewText(markdown: string): string {
     const task = line.match(/^(\s*)([-*+]|\d+\.)\s+\[([ xX])\]\s+(.+)$/);
     if (task) {
       const indent = " ".repeat((task[1] ?? "").length);
-      const marker = (task[3] ?? " ").toLowerCase() === "x" ? "[x]" : "[ ]";
+      const listMarker = task[2] ?? "-";
+      const checkboxMarker =
+        (task[3] ?? " ").toLowerCase() === "x" ? "[x]" : "[ ]";
+      const taskPrefix = isMarkdownNumberedListMarker(listMarker)
+        ? `${listMarker} ${checkboxMarker}`
+        : checkboxMarker;
       output.push(
-        `${indent}${marker} ${stripInlineMarkdownToPlainText(task[4] ?? "")}`,
+        `${indent}${taskPrefix} ${stripInlineMarkdownToPlainText(task[4] ?? "")}`,
       );
       continue;
     }
@@ -275,13 +297,6 @@ function renderInlineMarkdown(text: string): string {
   result = renderDelimitedInlineStyle(result, "_", (content) => {
     return `<i>${content}</i>`;
   });
-  result = result.replace(
-    /(^|[\s>(])(\[(?: |x|X)\])(?=($|[\s<).,:;!?]))/g,
-    (_match, prefix: string, checkbox: string) => {
-      const normalized = checkbox.toLowerCase() === "[x]" ? "[x]" : "[ ]";
-      return `${prefix}<code>${normalized}</code>`;
-    },
-  );
   result = result.replace(/\\([\\`*_{}\[\]()#+\-.!>~|])/g, "$1");
   return result.replace(
     /\uE000(\d+)\uE001/g,
@@ -330,9 +345,14 @@ function renderMarkdownTextLines(block: string): string[] {
       const task = piece.match(/^(\s*)([-*+]|\d+\.)\s+\[([ xX])\]\s+(.+)$/);
       if (task) {
         const indent = buildListIndent(Math.floor((task[1] ?? "").length / 2));
-        const marker = (task[3] ?? " ").toLowerCase() === "x" ? "[x]" : "[ ]";
+        const listMarker = task[2] ?? "-";
+        const checkboxMarker =
+          (task[3] ?? " ").toLowerCase() === "x" ? "[x]" : "[ ]";
+        const taskPrefix = isMarkdownNumberedListMarker(listMarker)
+          ? `<code>${listMarker}</code> <code>${checkboxMarker}</code>`
+          : `<code>${checkboxMarker}</code>`;
         rendered.push(
-          `${indent}<code>${marker}</code> ${renderInlineMarkdown(task[4] ?? "")}`,
+          `${indent}${taskPrefix} ${renderInlineMarkdown(task[4] ?? "")}`,
         );
         continue;
       }
@@ -498,7 +518,7 @@ function renderMarkdownQuoteBlock(lines: string[]): string[] {
 }
 
 function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
-  const normalized = markdown.replace(/\r\n/g, "\n").trim();
+  const normalized = normalizeMarkdownDocument(markdown);
   if (normalized.length === 0) return [];
   const renderedBlocks: string[] = [];
   const lines = normalized.split("\n");

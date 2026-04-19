@@ -96,6 +96,7 @@ Key rules:
 - Real code blocks must remain literal and escaped
 - Markdown tables should keep their internal separators but drop the outer left and right borders when rendered as monospace blocks so narrow Telegram clients keep more usable width
 - Unordered Markdown lists should render with a monospace `-` marker and ordered Markdown lists should render with monospace numeric markers so list indentation stays more predictable on narrow Telegram clients
+- Real Markdown task-list items should render with checkbox markers, while standalone `[x]` and `[ ]` prose should stay literal instead of being reinterpreted as checklists
 - Nested Markdown quotes should flatten into one Telegram blockquote with added non-breaking-space indentation because Telegram does not render nested blockquotes reliably
 - Long replies must be split below Telegram's 4096-character limit
 - Chunking should avoid breaking HTML structure where possible
@@ -125,7 +126,7 @@ Current operator controls include:
 - Inline status buttons for model and thinking adjustments, applying idle selections immediately while still respecting busy-run restart rules
 - `/model` for interactive model selection, queued as a high-priority control item when needed and supporting in-flight restart of the active Telegram-owned run on a newly selected model
 - `/compact` for Telegram-triggered pi session compaction when the bridge is idle
-- Queue reactions using `👍` and `👎`
+- Queue reactions using `👍` and `👎`, with `👎` acting as the canonical queue-removal path because ordinary Telegram DM message deletions are not exposed through the Bot API polling path this bridge uses
 
 ## In-Flight Model Switching
 

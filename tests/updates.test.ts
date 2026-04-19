@@ -30,28 +30,20 @@ test("Update helpers normalize emoji reactions and collect emoji-only entries", 
   assert.deepEqual([...emojis], ["👍", "👎"]);
 });
 
-test("Update helpers extract deleted message ids from Telegram update variants", () => {
+test("Update helpers extract deleted business-message ids only from Bot API shapes", () => {
   assert.deepEqual(
     extractDeletedTelegramMessageIds({
-      _: "other",
       deleted_business_messages: { message_ids: [1, 2] },
     }),
     [1, 2],
   );
   assert.deepEqual(
     extractDeletedTelegramMessageIds({
-      _: "updateDeleteMessages",
-      messages: [3, 4],
-    }),
-    [3, 4],
-  );
-  assert.deepEqual(
-    extractDeletedTelegramMessageIds({
-      _: "updateDeleteMessages",
-      messages: [3, "bad"],
+      deleted_business_messages: { message_ids: [3, "bad"] },
     }),
     [],
   );
+  assert.deepEqual(extractDeletedTelegramMessageIds({}), []);
 });
 
 test("Update routing classifies authorization state for pair, allow, and deny", () => {
@@ -101,11 +93,10 @@ test("Update routing extracts private human messages from message or edited_mess
   assert.ok(directMessage);
 });
 
-test("Update flow prioritizes deleted-message handling over other update kinds", () => {
+test("Update flow prioritizes deleted business-message handling over other update kinds", () => {
   const action = buildTelegramUpdateFlowAction(
     {
-      _: "updateDeleteMessages",
-      messages: [1, 2],
+      deleted_business_messages: { message_ids: [1, 2] },
       message_reaction: {
         chat: { type: "private" },
         user: { id: 1, is_bot: false },
@@ -119,7 +110,6 @@ test("Update flow prioritizes deleted-message handling over other update kinds",
 test("Update flow returns authorized callback and message actions", () => {
   const callbackAction = buildTelegramUpdateFlowAction(
     {
-      _: "other",
       callback_query: {
         from: { id: 7, is_bot: false },
         message: { chat: { type: "private" } },
@@ -133,7 +123,6 @@ test("Update flow returns authorized callback and message actions", () => {
     { kind: "allow" },
   );
   const messageAction = buildTelegramUpdateFlowAction({
-    _: "other",
     message: {
       chat: { type: "private" },
       from: { id: 9, is_bot: false },
@@ -148,7 +137,6 @@ test("Update flow returns authorized callback and message actions", () => {
 
 test("Update flow ignores unauthorized transport shapes and preserves reaction events", () => {
   const reactionAction = buildTelegramUpdateFlowAction({
-    _: "other",
     message_reaction: {
       chat: { type: "private" },
       user: { id: 1, is_bot: false },
@@ -156,7 +144,6 @@ test("Update flow ignores unauthorized transport shapes and preserves reaction e
   });
   assert.equal(reactionAction.kind, "reaction");
   const ignored = buildTelegramUpdateFlowAction({
-    _: "other",
     callback_query: {
       from: { id: 1, is_bot: true },
       message: { chat: { type: "private" } },
@@ -218,7 +205,6 @@ test("Update execution plan preserves deleted and reaction actions", () => {
 test("Update execution plan can be built directly from updates", () => {
   const plan = buildTelegramUpdateExecutionPlanFromUpdate(
     {
-      _: "other",
       callback_query: {
         from: { id: 4, is_bot: false },
         message: { chat: { type: "private" } },
@@ -260,7 +246,6 @@ test("Update runtime can execute directly from raw updates", async () => {
   const events: string[] = [];
   await executeTelegramUpdate(
     {
-      _: "other",
       message: {
         chat: { id: 10, type: "private" },
         message_id: 20,

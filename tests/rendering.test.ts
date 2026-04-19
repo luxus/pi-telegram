@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { __telegramTestUtils } from "../index.ts";
+import { renderMarkdownPreviewText } from "../lib/rendering.ts";
 
 test("Nested lists stay out of code blocks", () => {
   const chunks = __telegramTestUtils.renderTelegramMessage(
@@ -66,6 +67,50 @@ test("Numbered lists use monospace numeric markers", () => {
   assert.equal(chunks.length, 1);
   assert.match(chunks[0]?.text ?? "", /<code>1\.<\/code> first/);
   assert.match(chunks[0]?.text ?? "", /<code>2\.<\/code> second/);
+});
+
+test("Ordered task lists preserve numeric markers in previews and final rendering", () => {
+  const markdown = "1. [x] first\n2. [ ] second";
+  assert.equal(renderMarkdownPreviewText(markdown), markdown);
+  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+    mode: "markdown",
+  });
+  assert.equal(chunks.length, 1);
+  assert.match(
+    chunks[0]?.text ?? "",
+    /<code>1\.<\/code> <code>\[x\]<\/code> first/,
+  );
+  assert.match(
+    chunks[0]?.text ?? "",
+    /<code>2\.<\/code> <code>\[ \]<\/code> second/,
+  );
+});
+
+test("Leading indentation on the first markdown line stays intact", () => {
+  const markdown = "  - nested bullet\n    - nested child";
+  assert.equal(renderMarkdownPreviewText(markdown), markdown);
+  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+    mode: "markdown",
+  });
+  assert.equal(chunks.length, 1);
+  assert.match(chunks[0]?.text ?? "", /^\u00A0\u00A0<code>-<\/code> nested bullet/m);
+  assert.match(
+    chunks[0]?.text ?? "",
+    /^\u00A0\u00A0\u00A0\u00A0<code>-<\/code> nested child/m,
+  );
+});
+
+test("Standalone checkbox-looking prose stays literal outside task lists", () => {
+  const markdown = "Use [ ] as a placeholder and keep [x] literal";
+  assert.equal(renderMarkdownPreviewText(markdown), markdown);
+  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+    mode: "markdown",
+  });
+  assert.equal(chunks.length, 1);
+  assert.equal((chunks[0]?.text ?? "").includes("<code>[ ]</code>"), false);
+  assert.equal((chunks[0]?.text ?? "").includes("<code>[x]</code>"), false);
+  assert.match(chunks[0]?.text ?? "", /Use \[ \] as a placeholder/);
+  assert.match(chunks[0]?.text ?? "", /keep \[x\] literal/);
 });
 
 test("Nested blockquotes flatten into one Telegram blockquote with indentation", () => {

@@ -11,6 +11,8 @@ export interface TelegramUpdateLike {
   update_id: number;
 }
 
+// Standard Telegram DM polling does not expose ordinary message-deletion events,
+// so queue removal stays reaction-driven while delete-like business updates remain defensive-only.
 export const TELEGRAM_ALLOWED_UPDATES = [
   "message",
   "edited_message",
