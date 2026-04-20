@@ -7,7 +7,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { __telegramTestUtils } from "../index.ts";
-import { renderMarkdownPreviewText } from "../lib/rendering.ts";
+import {
+  buildTelegramPreviewSnapshot,
+  renderMarkdownPreviewText,
+} from "../lib/rendering.ts";
 
 test("Nested lists stay out of code blocks", () => {
   const chunks = __telegramTestUtils.renderTelegramMessage(
@@ -93,10 +96,85 @@ test("Leading indentation on the first markdown line stays intact", () => {
     mode: "markdown",
   });
   assert.equal(chunks.length, 1);
-  assert.match(chunks[0]?.text ?? "", /^\u00A0\u00A0<code>-<\/code> nested bullet/m);
+  assert.match(
+    chunks[0]?.text ?? "",
+    /^\u00A0\u00A0<code>-<\/code> nested bullet/m,
+  );
   assert.match(
     chunks[0]?.text ?? "",
     /^\u00A0\u00A0\u00A0\u00A0<code>-<\/code> nested child/m,
+  );
+});
+
+test("Preview and final rendering preserve multiple blank lines between blocks", () => {
+  const markdown = "# Title\n\n\nParagraph\n\n\n> Quote";
+  assert.equal(
+    renderMarkdownPreviewText(markdown),
+    "Title\n\n\nParagraph\n\n\n> Quote",
+  );
+  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+    mode: "markdown",
+  });
+  assert.equal(chunks.length, 1);
+  assert.match(
+    chunks[0]?.text ?? "",
+    /<b>Title<\/b>\n\n\nParagraph\n\n\n<blockquote>Quote<\/blockquote>/,
+  );
+});
+
+test("Rendering preserves original blank-line spacing across block transitions", () => {
+  const cases = [
+    {
+      markdown: "Para\n\n\n```ts\nconst x = 1\n```",
+      finalText:
+        'Para\n\n\n<pre><code class="language-ts">const x = 1</code></pre>',
+      previewText:
+        'Para\n\n\n<pre><code class="language-ts">const x = 1</code></pre>',
+    },
+    {
+      markdown: "```ts\nconst x = 1\n```\n\n\nPara",
+      finalText:
+        '<pre><code class="language-ts">const x = 1</code></pre>\n\n\nPara',
+      previewText:
+        '<pre><code class="language-ts">const x = 1</code></pre>\n\n\nPara',
+    },
+    {
+      markdown: "Para\n\n\n- item",
+      finalText: "Para\n\n\n<code>-</code> item",
+      previewText: "Para\n\n\n- item",
+    },
+    {
+      markdown: "Para\n\n\n> Quote",
+      finalText: "Para\n\n\n<blockquote>Quote</blockquote>",
+      previewText: "Para\n\n\n&gt; Quote",
+    },
+  ];
+  for (const testCase of cases) {
+    const finalChunks = __telegramTestUtils.renderTelegramMessage(
+      testCase.markdown,
+      { mode: "markdown" },
+    );
+    assert.equal(finalChunks.length, 1);
+    assert.equal(finalChunks[0]?.text ?? "", testCase.finalText);
+    const preview = buildTelegramPreviewSnapshot({
+      state: { pendingText: testCase.markdown, lastSentText: "" },
+      maxMessageLength: __telegramTestUtils.MAX_MESSAGE_LENGTH,
+      renderPreviewText: renderMarkdownPreviewText,
+      renderTelegramMessage: __telegramTestUtils.renderTelegramMessage,
+    });
+    assert.equal(preview?.text ?? "", testCase.previewText);
+  }
+});
+
+test("Headings keep visible spacing before following code blocks even without source blank lines", () => {
+  const markdown = "### Title\n```ts\nconst x = 1\n```";
+  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+    mode: "markdown",
+  });
+  assert.equal(chunks.length, 1);
+  assert.match(
+    chunks[0]?.text ?? "",
+    /<b>Title<\/b>\n\n<pre><code class="language-ts">const x = 1<\/code><\/pre>/,
   );
 });
 
@@ -152,6 +230,50 @@ test("Links, code spans, and underscore-heavy text coexist safely", () => {
   );
   assert.match(chunks[0]?.text ?? "", /<code>foo_bar\(\)<\/code>/);
   assert.equal((chunks[0]?.text ?? "").includes("<i>bar</i>"), false);
+});
+
+test("Links degrade or normalize safely across supported and unsupported markdown forms", () => {
+  const markdown = [
+    "[**Bold** label](https://example.com/path)",
+    "[Docs](https://example.com/a_(b))",
+    '[Title](https://example.com/path "Tooltip")',
+    "[Relative](./docs/README.md)",
+    "[Ref][docs]",
+    "",
+    "[docs]: https://example.com/ref",
+    "",
+    "Footnote[^1]",
+    "",
+    "[^1]: Footnote body",
+  ].join("\n");
+  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+    mode: "markdown",
+  });
+  assert.equal(chunks.length, 1);
+  assert.match(
+    chunks[0]?.text ?? "",
+    /<a href="https:\/\/example.com\/path">Bold label<\/a>/,
+  );
+  assert.match(
+    chunks[0]?.text ?? "",
+    /<a href="https:\/\/example.com\/a_\(b\)">Docs<\/a>/,
+  );
+  assert.match(
+    chunks[0]?.text ?? "",
+    /<a href="https:\/\/example.com\/path">Title<\/a>/,
+  );
+  assert.equal(
+    (chunks[0]?.text ?? "").includes('<a href="./docs/README.md">'),
+    false,
+  );
+  assert.match(chunks[0]?.text ?? "", /Relative/);
+  assert.equal(
+    (chunks[0]?.text ?? "").includes('<a href="https://example.com/ref">'),
+    false,
+  );
+  assert.match(chunks[0]?.text ?? "", /\[Ref\]\[docs\]/);
+  assert.match(chunks[0]?.text ?? "", /Footnote\[\^1\]/);
+  assert.match(chunks[0]?.text ?? "", /\[\^1\]: Footnote body/);
 });
 
 test("Long quoted blocks stay chunked with balanced blockquote tags", () => {

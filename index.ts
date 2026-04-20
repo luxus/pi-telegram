@@ -87,11 +87,14 @@ import {
   type TelegramRenderMode,
 } from "./lib/rendering.ts";
 import {
-  buildTelegramReplyTransport,
   clearTelegramPreview,
   finalizeTelegramMarkdownPreview,
   finalizeTelegramPreview,
   flushTelegramPreview,
+  type TelegramPreviewRuntimeState,
+} from "./lib/preview.ts";
+import {
+  buildTelegramReplyTransport,
   sendTelegramMarkdownReply,
   sendTelegramPlainReply,
 } from "./lib/replies.ts";
@@ -267,14 +270,7 @@ interface DownloadedTelegramFile {
 
 type ActiveTelegramTurn = PendingTelegramTurn;
 
-interface TelegramPreviewState {
-  mode: "draft" | "message";
-  draftId?: number;
-  messageId?: number;
-  pendingText: string;
-  lastSentText: string;
-  flushTimer?: ReturnType<typeof setTimeout>;
-}
+type TelegramPreviewState = TelegramPreviewRuntimeState;
 
 interface TelegramMediaGroupState {
   messages: TelegramMessage[];
@@ -691,21 +687,28 @@ export default function (pi: ExtensionAPI) {
           text,
         });
       },
-      sendMessage: async (chatId: number, text: string) => {
+      sendMessage: async (
+        chatId: number,
+        text: string,
+        options?: { parseMode?: "HTML" },
+      ) => {
         return callTelegramApi<TelegramSentMessage>("sendMessage", {
           chat_id: chatId,
           text,
+          parse_mode: options?.parseMode,
         });
       },
       editMessageText: async (
         chatId: number,
         messageId: number,
         text: string,
+        options?: { parseMode?: "HTML" },
       ) => {
         await editTelegramMessageText({
           chat_id: chatId,
           message_id: messageId,
           text,
+          parse_mode: options?.parseMode,
         });
       },
       renderTelegramMessage,

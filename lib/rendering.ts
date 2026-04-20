@@ -46,11 +46,220 @@ function splitPlainMarkdownLine(line: string, maxLength = 1500): string[] {
   return parts.length > 0 ? parts : [line];
 }
 
+interface ParsedMarkdownInlineLink {
+  startIndex: number;
+  endIndex: number;
+  label: string;
+  destination: string;
+  isImage: boolean;
+}
+
+interface ParsedMarkdownAutolink {
+  startIndex: number;
+  endIndex: number;
+  destination: string;
+}
+
+function isEscapedMarkdownCharacter(text: string, index: number): boolean {
+  let backslashCount = 0;
+  for (let i = index - 1; i >= 0 && text[i] === "\\"; i--) {
+    backslashCount += 1;
+  }
+  return backslashCount % 2 === 1;
+}
+
+function findMarkdownClosingBracket(
+  text: string,
+  startIndex: number,
+): number | undefined {
+  let depth = 0;
+  for (let index = startIndex; index < text.length; index += 1) {
+    if (isEscapedMarkdownCharacter(text, index)) continue;
+    const char = text[index] ?? "";
+    if (char === "[") {
+      depth += 1;
+      continue;
+    }
+    if (char !== "]") continue;
+    depth -= 1;
+    if (depth === 0) return index;
+  }
+  return undefined;
+}
+
+function parseMarkdownLinkTarget(
+  text: string,
+  openParenIndex: number,
+): { destination: string; endIndex: number } | undefined {
+  let index = openParenIndex + 1;
+  while (index < text.length && /\s/.test(text[index] ?? "")) {
+    index += 1;
+  }
+  if (index >= text.length) return undefined;
+  let destination = "";
+  if (text[index] === "<") {
+    const destinationStart = index + 1;
+    index += 1;
+    while (index < text.length) {
+      if (!isEscapedMarkdownCharacter(text, index) && text[index] === ">") {
+        break;
+      }
+      index += 1;
+    }
+    if (index >= text.length) return undefined;
+    destination = text.slice(destinationStart, index).trim();
+    index += 1;
+  } else {
+    const destinationStart = index;
+    let parenDepth = 0;
+    while (index < text.length) {
+      if (isEscapedMarkdownCharacter(text, index)) {
+        index += 1;
+        continue;
+      }
+      const char = text[index] ?? "";
+      if (/\s/.test(char) && parenDepth === 0) break;
+      if (char === "(") {
+        parenDepth += 1;
+        index += 1;
+        continue;
+      }
+      if (char === ")") {
+        if (parenDepth === 0) break;
+        parenDepth -= 1;
+        index += 1;
+        continue;
+      }
+      index += 1;
+    }
+    destination = text.slice(destinationStart, index).trim();
+  }
+  if (!destination) return undefined;
+  while (index < text.length && /\s/.test(text[index] ?? "")) {
+    index += 1;
+  }
+  if (
+    index < text.length &&
+    (text[index] === '"' || text[index] === "'" || text[index] === "(")
+  ) {
+    const titleDelimiter = text[index] ?? '"';
+    const closingTitleDelimiter = titleDelimiter === "(" ? ")" : titleDelimiter;
+    index += 1;
+    while (index < text.length) {
+      if (
+        !isEscapedMarkdownCharacter(text, index) &&
+        text[index] === closingTitleDelimiter
+      ) {
+        break;
+      }
+      index += 1;
+    }
+    if (index >= text.length) return undefined;
+    index += 1;
+    while (index < text.length && /\s/.test(text[index] ?? "")) {
+      index += 1;
+    }
+  }
+  if (text[index] !== ")") return undefined;
+  return { destination, endIndex: index };
+}
+
+function isSupportedMarkdownLinkDestination(destination: string): boolean {
+  return /^(?:https?:\/\/|mailto:)/i.test(destination.trim());
+}
+
+function parseMarkdownInlineLinkAt(
+  text: string,
+  index: number,
+): ParsedMarkdownInlineLink | undefined {
+  const isImage = text[index] === "!" && text[index + 1] === "[";
+  const labelStartIndex = isImage ? index + 1 : index;
+  if (text[labelStartIndex] !== "[") return undefined;
+  if (
+    isEscapedMarkdownCharacter(text, labelStartIndex) ||
+    (isImage && isEscapedMarkdownCharacter(text, index))
+  ) {
+    return undefined;
+  }
+  const labelEndIndex = findMarkdownClosingBracket(text, labelStartIndex);
+  if (labelEndIndex === undefined || text[labelEndIndex + 1] !== "(") {
+    return undefined;
+  }
+  const target = parseMarkdownLinkTarget(text, labelEndIndex + 1);
+  if (!target) return undefined;
+  return {
+    startIndex: index,
+    endIndex: target.endIndex,
+    label: text.slice(labelStartIndex + 1, labelEndIndex),
+    destination: target.destination,
+    isImage,
+  };
+}
+
+function parseMarkdownAutolinkAt(
+  text: string,
+  index: number,
+): ParsedMarkdownAutolink | undefined {
+  if (text[index] !== "<" || isEscapedMarkdownCharacter(text, index)) {
+    return undefined;
+  }
+  let endIndex = index + 1;
+  while (endIndex < text.length) {
+    if (!isEscapedMarkdownCharacter(text, endIndex) && text[endIndex] === ">") {
+      break;
+    }
+    endIndex += 1;
+  }
+  if (endIndex >= text.length) return undefined;
+  const destination = text.slice(index + 1, endIndex).trim();
+  if (!isSupportedMarkdownLinkDestination(destination)) {
+    return undefined;
+  }
+  return { startIndex: index, endIndex, destination };
+}
+
+function replaceMarkdownLinkLike(
+  text: string,
+  options: {
+    renderInlineLink: (
+      link: ParsedMarkdownInlineLink,
+      supported: boolean,
+    ) => string;
+    renderAutolink: (link: ParsedMarkdownAutolink) => string;
+  },
+): string {
+  let result = "";
+  for (let index = 0; index < text.length; ) {
+    const inlineLink = parseMarkdownInlineLinkAt(text, index);
+    if (inlineLink) {
+      result += options.renderInlineLink(
+        inlineLink,
+        isSupportedMarkdownLinkDestination(inlineLink.destination),
+      );
+      index = inlineLink.endIndex + 1;
+      continue;
+    }
+    const autolink = parseMarkdownAutolinkAt(text, index);
+    if (autolink) {
+      result += options.renderAutolink(autolink);
+      index = autolink.endIndex + 1;
+      continue;
+    }
+    result += text[index] ?? "";
+    index += 1;
+  }
+  return result;
+}
+
 function stripInlineMarkdownToPlainText(text: string): string {
-  let result = text;
-  result = result.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, "$1");
-  result = result.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, "$1");
-  result = result.replace(/<((?:https?:\/\/|mailto:)[^>]+)>/g, "$1");
+  let result = replaceMarkdownLinkLike(text, {
+    renderInlineLink: (link, supported) => {
+      const plainLabel = stripInlineMarkdownToPlainText(link.label).trim();
+      if (plainLabel.length > 0) return plainLabel;
+      return supported ? link.destination : "";
+    },
+    renderAutolink: (link) => link.destination,
+  });
   result = result.replace(/`([^`\n]+)`/g, "$1");
   result = result.replace(/(\*\*\*|___)(.+?)\1/g, "$2");
   result = result.replace(/(\*\*|__)(.+?)\1/g, "$2");
@@ -146,6 +355,282 @@ function isMarkdownNumberedListMarker(marker: string): boolean {
   return /^\d+\.$/.test(marker);
 }
 
+function matchMarkdownHeadingLine(line: string): RegExpMatchArray | null {
+  return line.match(/^(\s*)#{1,6}\s+(.+)$/);
+}
+
+function endsWithMarkdownHeadingLine(markdown: string): boolean {
+  const lines = markdown.split("\n");
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index] ?? "";
+    if (line.trim().length === 0) continue;
+    return matchMarkdownHeadingLine(line) !== null;
+  }
+  return false;
+}
+
+function splitLeadingMarkdownBlankLines(markdown: string): {
+  blankLines: number;
+  remainingText: string;
+} {
+  const lines = markdown.split("\n");
+  let start = 0;
+  while (start < lines.length && (lines[start] ?? "").trim().length === 0) {
+    start += 1;
+  }
+  return {
+    blankLines: start,
+    remainingText: lines.slice(start).join("\n"),
+  };
+}
+
+export type TelegramPreviewRenderStrategy = "plain" | "rich-stable-blocks";
+
+export interface TelegramPreviewSnapshotStateLike {
+  pendingText: string;
+  lastSentText: string;
+  lastSentParseMode?: "HTML";
+  lastSentStrategy?: TelegramPreviewRenderStrategy;
+}
+
+export interface TelegramPreviewSnapshot extends TelegramRenderedChunk {
+  sourceText: string;
+  strategy: TelegramPreviewRenderStrategy;
+}
+
+export function buildTelegramPreviewFlushText(options: {
+  state: TelegramPreviewSnapshotStateLike;
+  maxMessageLength: number;
+  renderPreviewText: (markdown: string) => string;
+}): string | undefined {
+  const rawText = options.state.pendingText.trim();
+  const previewText = options.renderPreviewText(rawText).trim();
+  if (!previewText || previewText === options.state.lastSentText) {
+    return undefined;
+  }
+  return previewText.length > options.maxMessageLength
+    ? previewText.slice(0, options.maxMessageLength)
+    : previewText;
+}
+
+function buildTelegramPlainPreviewSnapshot(options: {
+  sourceText: string;
+  state: TelegramPreviewSnapshotStateLike;
+  maxMessageLength: number;
+  renderPreviewText: (markdown: string) => string;
+}): TelegramPreviewSnapshot | undefined {
+  const previewText = options.renderPreviewText(options.sourceText).trim();
+  if (!previewText) return undefined;
+  const truncatedPreviewText =
+    previewText.length > options.maxMessageLength
+      ? previewText.slice(0, options.maxMessageLength)
+      : previewText;
+  if (
+    truncatedPreviewText === options.state.lastSentText &&
+    options.state.lastSentStrategy === "plain"
+  ) {
+    return undefined;
+  }
+  return {
+    text: truncatedPreviewText,
+    sourceText: options.sourceText,
+    strategy: "plain",
+  };
+}
+
+interface TelegramStablePreviewSplit {
+  stableMarkdown: string;
+  unstableTail: string;
+}
+
+function splitTelegramStablePreviewMarkdown(
+  markdown: string,
+): TelegramStablePreviewSplit {
+  const normalized = normalizeMarkdownDocument(markdown);
+  if (normalized.length === 0) {
+    return { stableMarkdown: "", unstableTail: "" };
+  }
+  const lines = normalized.split("\n");
+  let index = 0;
+  let stableEndIndex = 0;
+  while (index < lines.length) {
+    while (index < lines.length && (lines[index] ?? "").trim().length === 0) {
+      index += 1;
+    }
+    if (index >= lines.length) break;
+    const blockStart = index;
+    const line = lines[index] ?? "";
+    const nextLine = lines[index + 1] ?? "";
+    const fence = parseMarkdownFence(line);
+    if (fence) {
+      index += 1;
+      while (
+        index < lines.length &&
+        !isMatchingMarkdownFence(lines[index] ?? "", fence)
+      ) {
+        index += 1;
+      }
+      if (index >= lines.length) {
+        return {
+          stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
+          unstableTail: lines.slice(stableEndIndex).join("\n"),
+        };
+      }
+      index += 1;
+      stableEndIndex = index;
+      continue;
+    }
+    if (line.includes("|") && isMarkdownTableSeparator(nextLine)) {
+      index += 2;
+      while (index < lines.length) {
+        const tableLine = lines[index] ?? "";
+        if (tableLine.trim().length === 0 || !tableLine.includes("|")) {
+          break;
+        }
+        index += 1;
+      }
+      if (index >= lines.length) {
+        return {
+          stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
+          unstableTail: lines.slice(stableEndIndex).join("\n"),
+        };
+      }
+      stableEndIndex = index;
+      continue;
+    }
+    if (canStartIndentedCodeBlock(lines, index)) {
+      while (index < lines.length) {
+        const rawLine = lines[index] ?? "";
+        if (rawLine.trim().length === 0) {
+          index += 1;
+          continue;
+        }
+        if (!isIndentedCodeLine(rawLine)) break;
+        index += 1;
+      }
+      if (index >= lines.length) {
+        return {
+          stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
+          unstableTail: lines.slice(stableEndIndex).join("\n"),
+        };
+      }
+      stableEndIndex = index;
+      continue;
+    }
+    if (/^\s*>/.test(line)) {
+      while (index < lines.length && /^\s*>/.test(lines[index] ?? "")) {
+        index += 1;
+      }
+      if (index >= lines.length) {
+        return {
+          stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
+          unstableTail: lines.slice(stableEndIndex).join("\n"),
+        };
+      }
+      stableEndIndex = index;
+      continue;
+    }
+    while (index < lines.length) {
+      const current = lines[index] ?? "";
+      const following = lines[index + 1] ?? "";
+      if (current.trim().length === 0) break;
+      if (
+        index !== blockStart &&
+        (isFencedCodeStart(current) ||
+          canStartIndentedCodeBlock(lines, index) ||
+          /^\s*>/.test(current) ||
+          (current.includes("|") && isMarkdownTableSeparator(following)))
+      ) {
+        break;
+      }
+      index += 1;
+    }
+    if (index >= lines.length) {
+      return {
+        stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
+        unstableTail: lines.slice(stableEndIndex).join("\n"),
+      };
+    }
+    stableEndIndex = index;
+  }
+  return {
+    stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
+    unstableTail: lines.slice(stableEndIndex).join("\n"),
+  };
+}
+
+export function buildTelegramPreviewSnapshot(options: {
+  state: TelegramPreviewSnapshotStateLike;
+  maxMessageLength: number;
+  renderPreviewText: (markdown: string) => string;
+  renderTelegramMessage: (
+    text: string,
+    options?: { mode?: TelegramRenderMode },
+  ) => TelegramRenderedChunk[];
+}): TelegramPreviewSnapshot | undefined {
+  const sourceText = options.state.pendingText.trim();
+  if (!sourceText) return undefined;
+  const split = splitTelegramStablePreviewMarkdown(sourceText);
+  if (split.stableMarkdown.length === 0) {
+    return buildTelegramPlainPreviewSnapshot({
+      sourceText,
+      state: options.state,
+      maxMessageLength: options.maxMessageLength,
+      renderPreviewText: options.renderPreviewText,
+    });
+  }
+  const stableChunk = options.renderTelegramMessage(split.stableMarkdown, {
+    mode: "markdown",
+  })[0];
+  if (
+    !stableChunk ||
+    stableChunk.text.length === 0 ||
+    stableChunk.text.length > options.maxMessageLength
+  ) {
+    return buildTelegramPlainPreviewSnapshot({
+      sourceText,
+      state: options.state,
+      maxMessageLength: options.maxMessageLength,
+      renderPreviewText: options.renderPreviewText,
+    });
+  }
+  let previewText = stableChunk.text;
+  if (split.unstableTail.length > 0) {
+    const tail = splitLeadingMarkdownBlankLines(split.unstableTail);
+    const minimumBlankLinesBeforeTail = endsWithMarkdownHeadingLine(
+      split.stableMarkdown,
+    )
+      ? 1
+      : 0;
+    const blankLinesBeforeTail = Math.max(
+      tail.blankLines,
+      minimumBlankLinesBeforeTail,
+    );
+    const separator =
+      tail.remainingText.length > 0
+        ? "\n".repeat(blankLinesBeforeTail + 1)
+        : "";
+    const tailText = escapeHtml(tail.remainingText);
+    const candidate = `${previewText}${separator}${tailText}`;
+    if (candidate.length <= options.maxMessageLength) {
+      previewText = candidate;
+    }
+  }
+  if (
+    previewText === options.state.lastSentText &&
+    stableChunk.parseMode === options.state.lastSentParseMode &&
+    options.state.lastSentStrategy === "rich-stable-blocks"
+  ) {
+    return undefined;
+  }
+  return {
+    text: previewText,
+    parseMode: stableChunk.parseMode,
+    sourceText,
+    strategy: "rich-stable-blocks",
+  };
+}
+
 export function renderMarkdownPreviewText(markdown: string): string {
   const normalized = normalizeMarkdownDocument(markdown);
   if (normalized.length === 0) return "";
@@ -161,7 +646,7 @@ export function renderMarkdownPreviewText(markdown: string): string {
         continue;
       }
       if (line.trim().length === 0) {
-        if (output.at(-1) !== "") output.push("");
+        output.push("");
         continue;
       }
       output.push(line);
@@ -172,15 +657,15 @@ export function renderMarkdownPreviewText(markdown: string): string {
       continue;
     }
     if (line.trim().length === 0) {
-      if (output.at(-1) !== "") output.push("");
+      output.push("");
       continue;
     }
     if (isMarkdownTableSeparator(line)) {
       continue;
     }
-    const heading = line.match(/^\s*#{1,6}\s+(.+)$/);
+    const heading = matchMarkdownHeadingLine(line);
     if (heading) {
-      output.push(stripInlineMarkdownToPlainText(heading[1] ?? ""));
+      output.push(stripInlineMarkdownToPlainText(heading[2] ?? ""));
       continue;
     }
     const task = line.match(/^(\s*)([-*+]|\d+\.)\s+\[([ xX])\]\s+(.+)$/);
@@ -252,26 +737,24 @@ function renderInlineMarkdown(text: string): string {
     tokens.push(html);
     return token;
   };
-  let result = text;
-  result = result.replace(
-    /!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_match, alt: string, url: string) => {
-      const label = alt.trim().length > 0 ? alt : url;
-      return makeToken(`<a href="${escapeHtml(url)}">${escapeHtml(label)}</a>`);
+  let result = replaceMarkdownLinkLike(text, {
+    renderInlineLink: (link, supported) => {
+      const plainLabel = stripInlineMarkdownToPlainText(link.label).trim();
+      if (!supported) {
+        return plainLabel.length > 0 ? plainLabel : link.destination;
+      }
+      const renderedLabel =
+        plainLabel.length > 0 ? plainLabel : link.destination;
+      return makeToken(
+        `<a href="${escapeHtml(link.destination)}">${escapeHtml(renderedLabel)}</a>`,
+      );
     },
-  );
-  result = result.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    (_match, label: string, url: string) => {
-      return makeToken(`<a href="${escapeHtml(url)}">${escapeHtml(label)}</a>`);
+    renderAutolink: (link) => {
+      return makeToken(
+        `<a href="${escapeHtml(link.destination)}">${escapeHtml(link.destination)}</a>`,
+      );
     },
-  );
-  result = result.replace(
-    /<((?:https?:\/\/|mailto:)[^>]+)>/g,
-    (_match, url: string) => {
-      return makeToken(`<a href="${escapeHtml(url)}">${escapeHtml(url)}</a>`);
-    },
-  );
+  });
   result = result.replace(/`([^`\n]+)`/g, (_match, code: string) => {
     return makeToken(`<code>${escapeHtml(code)}</code>`);
   });
@@ -335,7 +818,7 @@ function renderMarkdownTextLines(block: string): string[] {
     if (line.trim().length === 0) continue;
     const pieces = splitPlainMarkdownLine(line);
     for (const piece of pieces) {
-      const heading = piece.match(/^(\s*)#{1,6}\s+(.+)$/);
+      const heading = matchMarkdownHeadingLine(piece);
       if (heading) {
         rendered.push(
           `${buildListIndent(Math.floor((heading[1] ?? "").length / 2))}<b>${renderInlineMarkdown(heading[2] ?? "")}</b>`,
@@ -517,15 +1000,56 @@ function renderMarkdownQuoteBlock(lines: string[]): string[] {
   });
 }
 
+interface TelegramRenderedBlockWithSpacing {
+  text: string;
+  blankLinesBefore: number;
+}
+
 function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
   const normalized = normalizeMarkdownDocument(markdown);
   if (normalized.length === 0) return [];
-  const renderedBlocks: string[] = [];
+  const renderedBlocks: TelegramRenderedBlockWithSpacing[] = [];
+  let minimumBlankLinesBeforeNextBlock = 0;
+  const pushRenderedBlocks = (
+    blocks: string[],
+    blankLinesBefore: number,
+  ): void => {
+    const effectiveBlankLinesBefore =
+      renderedBlocks.length === 0
+        ? blankLinesBefore
+        : Math.max(blankLinesBefore, minimumBlankLinesBeforeNextBlock);
+    for (const [blockIndex, block] of blocks.entries()) {
+      renderedBlocks.push({
+        text: block,
+        blankLinesBefore: blockIndex === 0 ? effectiveBlankLinesBefore : 0,
+      });
+    }
+    minimumBlankLinesBeforeNextBlock = 0;
+  };
   const lines = normalized.split("\n");
   let index = 0;
+  let pendingBlankLines = 0;
   while (index < lines.length) {
     const line = lines[index] ?? "";
     const nextLine = lines[index + 1] ?? "";
+    if (line.trim().length === 0) {
+      pendingBlankLines += 1;
+      index += 1;
+      continue;
+    }
+    const heading = matchMarkdownHeadingLine(line);
+    if (heading) {
+      pushRenderedBlocks(
+        renderMarkdownTextBlock(line),
+        renderedBlocks.length === 0
+          ? pendingBlankLines
+          : Math.max(pendingBlankLines, 1),
+      );
+      pendingBlankLines = 0;
+      minimumBlankLinesBeforeNextBlock = 1;
+      index += 1;
+      continue;
+    }
     const fence = parseMarkdownFence(line);
     if (fence) {
       index += 1;
@@ -540,16 +1064,11 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
       if (index < lines.length) {
         index += 1;
       }
-      renderedBlocks.push(
-        ...renderMarkdownCodeBlock(codeLines.join("\n"), fence.info),
+      pushRenderedBlocks(
+        renderMarkdownCodeBlock(codeLines.join("\n"), fence.info),
+        pendingBlankLines,
       );
-      while (index < lines.length && (lines[index] ?? "").trim().length === 0) {
-        index += 1;
-      }
-      continue;
-    }
-    if (line.trim().length === 0) {
-      index += 1;
+      pendingBlankLines = 0;
       continue;
     }
     if (line.includes("|") && isMarkdownTableSeparator(nextLine)) {
@@ -563,7 +1082,11 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
         tableLines.push(tableLine);
         index += 1;
       }
-      renderedBlocks.push(...renderMarkdownTableBlock(tableLines));
+      pushRenderedBlocks(
+        renderMarkdownTableBlock(tableLines),
+        pendingBlankLines,
+      );
+      pendingBlankLines = 0;
       continue;
     }
     if (canStartIndentedCodeBlock(lines, index)) {
@@ -579,7 +1102,11 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
         codeLines.push(stripIndentedCodePrefix(rawLine));
         index += 1;
       }
-      renderedBlocks.push(...renderMarkdownCodeBlock(codeLines.join("\n")));
+      pushRenderedBlocks(
+        renderMarkdownCodeBlock(codeLines.join("\n")),
+        pendingBlankLines,
+      );
+      pendingBlankLines = 0;
       continue;
     }
     if (/^\s*>/.test(line)) {
@@ -588,7 +1115,11 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
         quoteLines.push(lines[index] ?? "");
         index += 1;
       }
-      renderedBlocks.push(...renderMarkdownQuoteBlock(quoteLines));
+      pushRenderedBlocks(
+        renderMarkdownQuoteBlock(quoteLines),
+        pendingBlankLines,
+      );
+      pendingBlankLines = 0;
       continue;
     }
     const textLines: string[] = [];
@@ -606,12 +1137,18 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
       textLines.push(current);
       index += 1;
     }
-    renderedBlocks.push(...renderMarkdownTextBlock(textLines.join("\n")));
+    pushRenderedBlocks(
+      renderMarkdownTextBlock(textLines.join("\n")),
+      pendingBlankLines,
+    );
+    pendingBlankLines = 0;
   }
   const chunks: string[] = [];
   let current = "";
   for (const block of renderedBlocks) {
-    const candidate = current.length === 0 ? block : `${current}\n\n${block}`;
+    const separator = "\n".repeat(block.blankLinesBefore + 1);
+    const candidate =
+      current.length === 0 ? block.text : `${current}${separator}${block.text}`;
     if (candidate.length <= MAX_MESSAGE_LENGTH) {
       current = candidate;
       continue;
@@ -620,12 +1157,12 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
       chunks.push(current);
       current = "";
     }
-    if (block.length <= MAX_MESSAGE_LENGTH) {
-      current = block;
+    if (block.text.length <= MAX_MESSAGE_LENGTH) {
+      current = block.text;
       continue;
     }
-    for (let i = 0; i < block.length; i += MAX_MESSAGE_LENGTH) {
-      chunks.push(block.slice(i, i + MAX_MESSAGE_LENGTH));
+    for (let i = 0; i < block.text.length; i += MAX_MESSAGE_LENGTH) {
+      chunks.push(block.text.slice(i, i + MAX_MESSAGE_LENGTH));
     }
   }
   if (current.length > 0) {

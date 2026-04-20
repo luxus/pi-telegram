@@ -144,7 +144,9 @@ test("Menu helpers apply menu mutations and resolve model selections", () => {
   assert.equal(state.page, 2);
   assert.equal(applyTelegramModelPageSelection(state, "2"), "unchanged");
   assert.equal(applyTelegramModelPageSelection(state, "bad"), "invalid");
-  assert.deepEqual(getTelegramModelSelection(state, "bad"), { kind: "invalid" });
+  assert.deepEqual(getTelegramModelSelection(state, "bad"), {
+    kind: "invalid",
+  });
   assert.deepEqual(getTelegramModelSelection(state, "9"), { kind: "missing" });
   assert.equal(getTelegramModelSelection(state, "0").kind, "selected");
 });
@@ -174,7 +176,11 @@ test("Menu helpers derive normalized menu pages without mutating state", () => {
 
 test("Menu helpers build model callback plans for paging, selection, and restart modes", () => {
   const modelA = { provider: "openai", id: "gpt-5", reasoning: true } as const;
-  const modelB = { provider: "anthropic", id: "claude-3", reasoning: false } as const;
+  const modelB = {
+    provider: "anthropic",
+    id: "claude-3",
+    reasoning: false,
+  } as const;
   const state = {
     chatId: 1,
     messageId: 2,
@@ -227,7 +233,8 @@ test("Menu helpers build model callback plans for paging, selection, and restart
       kind: "switch-model",
       selection: state.allModels[1],
       mode: "restart-after-tool",
-      callbackText: "Switched to claude-3. Restarting after the current tool finishes…",
+      callbackText:
+        "Switched to claude-3. Restarting after the current tool finishes…",
     },
   );
   assert.deepEqual(
@@ -254,14 +261,19 @@ test("Menu helpers route callback entry states before action handlers", async ()
       events.push(`answer:${text ?? ""}`);
     },
   });
-  await handleTelegramMenuCallbackEntry("callback-2", "status:model", undefined, {
-    handleStatusAction: async () => false,
-    handleThinkingAction: async () => false,
-    handleModelAction: async () => false,
-    answerCallbackQuery: async (_id, text) => {
-      events.push(`answer:${text ?? ""}`);
+  await handleTelegramMenuCallbackEntry(
+    "callback-2",
+    "status:model",
+    undefined,
+    {
+      handleStatusAction: async () => false,
+      handleThinkingAction: async () => false,
+      handleModelAction: async () => false,
+      answerCallbackQuery: async (_id, text) => {
+        events.push(`answer:${text ?? ""}`);
+      },
     },
-  });
+  );
   await handleTelegramMenuCallbackEntry(
     "callback-3",
     "status:model",
@@ -296,7 +308,11 @@ test("Menu helpers route callback entry states before action handlers", async ()
 test("Menu helpers execute model callback actions across update, switch, and restart paths", async () => {
   const events: string[] = [];
   const modelA = { provider: "openai", id: "gpt-5", reasoning: true } as const;
-  const modelB = { provider: "anthropic", id: "claude-3", reasoning: false } as const;
+  const modelB = {
+    provider: "anthropic",
+    id: "claude-3",
+    reasoning: false,
+  } as const;
   const state = {
     chatId: 1,
     messageId: 2,
@@ -530,8 +546,14 @@ test("Menu helpers build pure render payloads before transport", () => {
     allModels: [{ model: modelA }],
     mode: "status" as const,
   } as unknown as TelegramModelMenuState;
-  const modelPayload = buildTelegramModelMenuRenderPayload(state, modelA as never);
-  const thinkingPayload = buildTelegramThinkingMenuRenderPayload(modelA as never, "medium");
+  const modelPayload = buildTelegramModelMenuRenderPayload(
+    state,
+    modelA as never,
+  );
+  const thinkingPayload = buildTelegramThinkingMenuRenderPayload(
+    modelA as never,
+    "medium",
+  );
   const statusPayload = buildTelegramStatusMenuRenderPayload(
     "<b>Status</b>",
     modelA as never,
@@ -580,7 +602,12 @@ test("Menu helpers update and send interactive menu messages", async () => {
     },
   };
   await updateTelegramModelMenuMessage(state, modelA as never, deps);
-  await updateTelegramThinkingMenuMessage(state, modelA as never, "medium", deps);
+  await updateTelegramThinkingMenuMessage(
+    state,
+    modelA as never,
+    "medium",
+    deps,
+  );
   await updateTelegramStatusMessage(
     state,
     "<b>Status</b>",
@@ -595,7 +622,11 @@ test("Menu helpers update and send interactive menu messages", async () => {
     "medium",
     deps,
   );
-  const sentModelId = await sendTelegramModelMenuMessage(state, modelA as never, deps);
+  const sentModelId = await sendTelegramModelMenuMessage(
+    state,
+    modelA as never,
+    deps,
+  );
   assert.equal(sentStatusId, 99);
   assert.equal(sentModelId, 99);
   assert.equal(events[0], "edit:1:2:html:<b>Choose a model:</b>");

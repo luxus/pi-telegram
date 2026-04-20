@@ -1154,6 +1154,7 @@ test("Extension runtime finalizes a drafted preview into the final Telegram repl
   });
   const draftTexts: string[] = [];
   const sentTexts: string[] = [];
+  const editedTexts: string[] = [];
   const pi = {
     on: (
       event: string,
@@ -1225,6 +1226,7 @@ test("Extension runtime finalizes a drafted preview into the final Telegram repl
       return { json: async () => ({ ok: true, result: true }) } as Response;
     }
     if (method === "editMessageText") {
+      editedTexts.push(String(body?.text ?? ""));
       return { json: async () => ({ ok: true, result: true }) } as Response;
     }
     throw new Error(`Unexpected Telegram API method: ${method}`);
@@ -1284,6 +1286,7 @@ test("Extension runtime finalizes a drafted preview into the final Telegram repl
     assert.deepEqual(draftTexts, ["Draft preview", "Final answer", ""]);
     assert.equal(sentTexts.length, 1);
     assert.match(sentTexts[0] ?? "", /Final <b>answer<\/b>/);
+    assert.deepEqual(editedTexts, []);
     await handlers.get("session_shutdown")?.({}, ctx);
   } finally {
     globalThis.fetch = originalFetch;

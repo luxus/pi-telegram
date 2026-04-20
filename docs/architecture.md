@@ -21,7 +21,9 @@ Current runtime areas include:
 
 - Telegram API types and local bridge state in `index.ts`
 - Queueing and queue-runtime helpers in `/lib/queue.ts`
-- Reply, preview, preview-finalization, reply-transport, and rendered-message delivery helpers in `/lib/replies.ts`
+- Preview transport-selection, preview-finalization, and preview-runtime helpers in `/lib/preview.ts`
+- Reply-transport and rendered-message delivery helpers in `/lib/replies.ts`
+- Preview appearance and snapshot derivation stay in `/lib/rendering.ts`, while `/lib/preview.ts` owns transport and lifecycle decisions, so richer preview strategies can evolve without entangling Markdown formatting with Telegram delivery state
 - Polling request, stop-condition, and long-poll loop helpers in `/lib/polling.ts`
 - Telegram API/config helpers and lazy bot-token client wrappers in `/lib/api.ts`
 - Telegram turn-building helpers in `/lib/turns.ts`
@@ -30,7 +32,7 @@ Current runtime areas include:
 - Telegram attachment queueing and delivery helpers in `/lib/attachments.ts`
 - Telegram tool, command, and lifecycle-hook registration helpers in `/lib/registration.ts`
 - Setup/token prompt helpers in `/lib/setup.ts`
-- Markdown and Telegram message rendering helpers in `/lib/rendering.ts`
+- Markdown, preview-snapshot, and Telegram message rendering helpers in `/lib/rendering.ts`
 - Status rendering helpers in `/lib/status.ts`
 - Menu/model-resolution, menu-state construction, pure menu-page derivation, pure menu render-payload builders, menu-message runtime, callback parsing, callback entry handling, callback mutation helpers, full model-callback planning and execution, interface-polished callback effect ports, status-thinking callback handling, and UI helpers in `/lib/menu.ts`
 - Model-switch guard, continuation, and restart helpers in `/lib/model-switch.ts`
@@ -94,13 +96,15 @@ Key rules:
 
 - Rich text should render cleanly in Telegram chats
 - Real code blocks must remain literal and escaped
+- Supported absolute HTTP(S) and mailto links should stay clickable, while unsupported link forms such as unresolved references, footnotes, or relative links without a known base should degrade safely instead of producing broken Telegram anchors
 - Markdown tables should keep their internal separators but drop the outer left and right borders when rendered as monospace blocks so narrow Telegram clients keep more usable width
 - Unordered Markdown lists should render with a monospace `-` marker and ordered Markdown lists should render with monospace numeric markers so list indentation stays more predictable on narrow Telegram clients
 - Real Markdown task-list items should render with checkbox markers, while standalone `[x]` and `[ ]` prose should stay literal instead of being reinterpreted as checklists
 - Nested Markdown quotes should flatten into one Telegram blockquote with added non-breaking-space indentation because Telegram does not render nested blockquotes reliably
+- Original blank-line spacing between Markdown blocks should stay intact in both preview and final rendering instead of being collapsed to one generic block separator, while headings should still keep readable separation from following blocks such as code fences even when source Markdown omits a blank line
 - Long replies must be split below Telegram's 4096-character limit
 - Chunking should avoid breaking HTML structure where possible
-- Preview rendering is intentionally simpler than final rich rendering
+- Preview rendering uses stable top-level Markdown blocks for rich Telegram HTML and appends the still-growing tail conservatively as readable plain text so the preview stays valid even when the answer is incomplete
 
 The renderer is a Telegram-specific formatter, not a general Markdown engine, so rendering changes should be treated as regression-prone.
 
@@ -110,9 +114,11 @@ During generation, the bridge streams previews back to Telegram.
 
 Preferred order:
 
-1. Try `sendMessageDraft`
-2. Fall back to `sendMessage` plus `editMessageText`
+1. Re-render the current Markdown buffer into a preview snapshot that renders closed top-level blocks as rich Telegram HTML and keeps the unstable tail conservative and readable
+2. Send or update that preview through `sendMessage` plus `editMessageText`, because `sendMessageDraft` is text-only for rich previews
 3. Replace the preview with the final rendered reply when generation ends
+
+Draft streaming can remain as a plain-text fallback path, but rich Telegram previews are driven through editable messages and stable-block snapshot selection.
 
 Outbound files are sent only after the active Telegram turn completes and must be staged through the `telegram_attach` tool.
 

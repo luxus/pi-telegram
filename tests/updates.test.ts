@@ -119,7 +119,9 @@ test("Update flow returns authorized callback and message actions", () => {
   );
   assert.equal(callbackAction.kind, "callback");
   assert.deepEqual(
-    callbackAction.kind === "callback" ? callbackAction.authorization : undefined,
+    callbackAction.kind === "callback"
+      ? callbackAction.authorization
+      : undefined,
     { kind: "allow" },
   );
   const messageAction = buildTelegramUpdateFlowAction({
@@ -223,10 +225,10 @@ test("Update runtime executes delete and reaction plans through the right side e
     {
       ctx: {} as never,
       removePendingMediaGroupMessages: (ids) => {
-        events.push(`media:${ids.join(',')}`);
+        events.push(`media:${ids.join(",")}`);
       },
       removeQueuedTelegramTurnsByMessageIds: (ids) => {
-        events.push(`queue:${ids.join(',')}`);
+        events.push(`queue:${ids.join(",")}`);
         return ids.length;
       },
       handleAuthorizedTelegramReactionUpdate: async () => {
@@ -273,7 +275,11 @@ test("Update runtime can execute directly from raw updates", async () => {
       },
     },
   );
-  assert.deepEqual(events, ["pair", "reply:Telegram bridge paired with this account.", "message"]);
+  assert.deepEqual(events, [
+    "pair",
+    "reply:Telegram bridge paired with this account.",
+    "message",
+  ]);
 });
 
 test("Update runtime handles callback deny and message pair flows", async () => {
