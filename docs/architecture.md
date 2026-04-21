@@ -7,7 +7,7 @@
 - Poll Telegram updates and enforce single-user pairing
 - Translate Telegram messages and media into pi inputs
 - Stream and deliver pi responses back to Telegram
-- Manage Telegram-specific controls such as queue reactions, `/status`, `/model`, and `/compact`
+- Manage Telegram-specific controls such as queue reactions, `/status`, `/model`, `/compact`, and `/telegram-voice`
 
 ## Runtime Structure
 
@@ -31,6 +31,7 @@ Current runtime areas include:
 - Telegram updates extraction, authorization, flow, execution-planning, direct execute-from-update routing, and runtime helpers in `/lib/updates.ts`
 - Telegram attachment queueing and delivery helpers in `/lib/attachments.ts`
 - Telegram tool, command, and lifecycle-hook registration helpers in `/lib/registration.ts`
+- Telegram voice settings, provider adapters, STT/TTS orchestration, speech preparation helpers, and Telegram voice-note delivery helpers in `/lib/voice.ts`
 - Setup/token prompt helpers in `/lib/setup.ts`
 - Markdown, preview-snapshot, and Telegram message rendering helpers in `/lib/rendering.ts`
 - Status rendering helpers in `/lib/status.ts`
@@ -58,8 +59,9 @@ Because `ctx.ui.input()` only exposes placeholder text, the bridge uses `ctx.ui.
 2. The bridge filters to the paired private user
 3. Media groups are coalesced into a single Telegram turn when needed
 4. Files are downloaded into `~/.pi/agent/tmp/telegram`
-5. A `PendingTelegramTurn` is created and queued locally
-6. The queue dispatcher sends the turn into pi only when dispatch is safe
+5. Voice and audio turns can be transcribed through the configured voice-provider adapter before prompt construction when Telegram voice mode is enabled
+6. A `PendingTelegramTurn` is created and queued locally with modality metadata such as text vs voice and preferred reply modality
+7. The queue dispatcher sends the turn into pi only when dispatch is safe
 
 ### Queue Safety Model
 
@@ -122,6 +124,8 @@ Draft streaming can remain as a plain-text fallback path, but rich Telegram prev
 
 Outbound files are sent only after the active Telegram turn completes and must be staged through the `telegram_attach` tool.
 
+When a Telegram turn is marked as voice-preferred or voice-required, or when the agent explicitly calls `telegram_send_voice`, the bridge can synthesize TTS audio and deliver it through Telegram `sendVoice` on the direct MP3 path. Bridge voice settings are provider-neutral: the bridge tracks provider id, provider options, speech style, and optional speech-preparation prompt template, while provider-specific transport and tag behavior live behind the adapter boundary.
+
 ## Interactive Controls
 
 The bridge exposes Telegram-side session controls in addition to regular chat forwarding.
@@ -129,9 +133,11 @@ The bridge exposes Telegram-side session controls in addition to regular chat fo
 Current operator controls include:
 
 - `/status` for model, usage, cost, and context visibility, queued as a high-priority control item when needed
-- Inline status buttons for model and thinking adjustments, applying idle selections immediately while still respecting busy-run restart rules
+- Inline status buttons for model, thinking, and voice adjustments, applying idle selections immediately while still respecting busy-run restart rules
+- The voice submenu under `/status` can toggle voice mode, auto voice replies, transcription, text-copy behavior, selected voice, forced language, and speech style without leaving Telegram
 - `/model` for interactive model selection, queued as a high-priority control item when needed and supporting in-flight restart of the active Telegram-owned run on a newly selected model
 - `/compact` for Telegram-triggered pi session compaction when the bridge is idle
+- `/telegram-voice` for enabling voice mode, choosing whether voice turns should auto-reply with voice notes, picking provider, voice, forced language, and speech style
 - Queue reactions using `👍` and `👎`, with `👎` acting as the canonical queue-removal path because ordinary Telegram DM message deletions are not exposed through the Bot API polling path this bridge uses
 
 ## In-Flight Model Switching

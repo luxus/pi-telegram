@@ -54,6 +54,7 @@ function createPreviewRuntimeHarness(state?: {
         nextState.flushTimer = undefined;
         events.push("clear-timer");
       },
+      getReplyToMessageId: () => 42,
       maxMessageLength: 50,
       renderPreviewText: (markdown: string) => markdown.replaceAll("*", ""),
       getDraftSupport: () => draftSupport,
@@ -67,9 +68,11 @@ function createPreviewRuntimeHarness(state?: {
       sendMessage: async (
         chatId: number,
         text: string,
-        options?: { parseMode?: "HTML" },
+        options?: { parseMode?: "HTML"; replyToMessageId?: number },
       ) => {
-        events.push(`send:${chatId}:${text}:${options?.parseMode ?? "plain"}`);
+        events.push(
+          `send:${chatId}:${text}:${options?.parseMode ?? "plain"}:${String(options?.replyToMessageId ?? "")}`,
+        );
         return { message_id: 77 };
       },
       editMessageText: async (
@@ -82,6 +85,9 @@ function createPreviewRuntimeHarness(state?: {
           `edit:${chatId}:${messageId}:${text}:${options?.parseMode ?? "plain"}`,
         );
       },
+      deleteMessage: async (chatId: number, messageId: number) => {
+        events.push(`delete:${chatId}:${messageId}`);
+      },
       renderTelegramMessage: (
         text: string,
         options?: { mode?: TelegramRenderMode },
@@ -92,9 +98,10 @@ function createPreviewRuntimeHarness(state?: {
       sendRenderedChunks: async (
         chatId: number,
         chunks: Array<{ text: string }>,
+        options?: { replyToMessageId?: number },
       ) => {
         events.push(
-          `render-send:${chatId}:${chunks.map((chunk) => chunk.text).join("|")}`,
+          `render-send:${chatId}:${chunks.map((chunk) => chunk.text).join("|")}:${String(options?.replyToMessageId ?? "")}`,
         );
         return 88;
       },
@@ -318,7 +325,7 @@ test("Preview runtime prefers editable rich previews when stable blocks are avai
     flushTimer: setTimeout(() => {}, 1000),
   });
   await flushTelegramPreview(7, harness.deps);
-  assert.deepEqual(harness.events, ["send:7:markdown:## Intro\n\nTail:HTML"]);
+  assert.deepEqual(harness.events, ["send:7:markdown:## Intro\n\nTail:HTML:42"]);
   assert.equal(harness.getState()?.mode, "message");
   assert.equal(harness.getState()?.messageId, 77);
   assert.equal(harness.getState()?.lastSentText, "markdown:## Intro\n\nTail");
@@ -331,12 +338,12 @@ test("Preview runtime preserves original blank-line spacing around conservative 
   const cases = [
     {
       markdown: "Para\n\n\n> Quote",
-      expectedEvent: "send:7:markdown:Para\n\n\n&gt; Quote:HTML",
+      expectedEvent: "send:7:markdown:Para\n\n\n&gt; Quote:HTML:42",
       expectedText: "markdown:Para\n\n\n&gt; Quote",
     },
     {
       markdown: "Para\n\n\n- item",
-      expectedEvent: "send:7:markdown:Para\n\n\n- item:HTML",
+      expectedEvent: "send:7:markdown:Para\n\n\n- item:HTML:42",
       expectedText: "markdown:Para\n\n\n- item",
     },
   ];
@@ -364,7 +371,7 @@ test("Preview runtime keeps heading-to-code spacing readable without source blan
   harness.deps.maxMessageLength = 4096;
   await flushTelegramPreview(7, harness.deps);
   assert.deepEqual(harness.events, [
-    'send:7:<b>Title</b>\n\n<pre><code class="language-ts">const x = 1</code></pre>:HTML',
+    'send:7:<b>Title</b>\n\n<pre><code class="language-ts">const x = 1</code></pre>:HTML:42',
   ]);
   assert.equal(
     harness.getState()?.lastSentText,
@@ -403,7 +410,7 @@ test("Preview runtime falls back to editable plain messages when draft delivery 
     throw new Error("draft unsupported");
   };
   await flushTelegramPreview(7, harness.deps);
-  assert.deepEqual(harness.events, ["send:7:abcdef:plain"]);
+  assert.deepEqual(harness.events, ["send:7:abcdef:plain:42"]);
   assert.equal(harness.getState()?.mode, "message");
   assert.equal(harness.getState()?.messageId, 77);
   assert.equal(harness.getState()?.lastSentStrategy, "plain");

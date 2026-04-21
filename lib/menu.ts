@@ -27,7 +27,25 @@ export interface TelegramModelMenuState {
   scopedModels: ScopedTelegramModel[];
   allModels: ScopedTelegramModel[];
   note?: string;
-  mode: "status" | "model" | "thinking";
+  mode:
+    | "status"
+    | "model"
+    | "thinking"
+    | "voice"
+    | "voice-language"
+    | "voice-style"
+    | "voice-voice";
+}
+
+export interface TelegramVoiceMenuSettings {
+  enabled: boolean;
+  provider: string;
+  replyWithVoiceOnIncomingVoice: boolean;
+  autoTranscribeIncoming: boolean;
+  alsoSendTextReply: boolean;
+  voiceId?: string;
+  language?: string;
+  speechStyle: "literal" | "rewrite-light" | "rewrite-tags" | "rewrite-strong";
 }
 
 export type TelegramReplyMarkup = {
@@ -57,6 +75,10 @@ export interface TelegramMenuEffectPort {
   ) => Promise<void>;
   updateModelMenuMessage: () => Promise<void>;
   updateThinkingMenuMessage: () => Promise<void>;
+  updateVoiceMenuMessage: () => Promise<void>;
+  updateVoiceLanguageMenuMessage: () => Promise<void>;
+  updateVoiceStyleMenuMessage: () => Promise<void>;
+  updateVoiceVoiceMenuMessage: () => Promise<void>;
   updateStatusMessage: () => Promise<void>;
   setModel: (model: Model<any>) => Promise<boolean>;
   setCurrentModel: (model: Model<any>) => void;
@@ -70,8 +92,34 @@ export interface TelegramMenuEffectPort {
 
 export type TelegramStatusMenuCallbackDeps = Pick<
   TelegramMenuEffectPort,
-  "updateModelMenuMessage" | "updateThinkingMenuMessage" | "answerCallbackQuery"
+  | "updateModelMenuMessage"
+  | "updateThinkingMenuMessage"
+  | "updateVoiceMenuMessage"
+  | "answerCallbackQuery"
 >;
+
+export interface TelegramVoiceMenuCallbackDeps {
+  getVoiceSettings: () => TelegramVoiceMenuSettings;
+  saveVoiceSetting: (
+    command:
+      | { action: "toggle"; enabled: boolean }
+      | { action: "reply"; enabled: boolean }
+      | { action: "text"; enabled: boolean }
+      | { action: "voice"; voiceId: string }
+      | { action: "language"; language: string }
+      | {
+          action: "style";
+          style: "literal" | "rewrite-light" | "rewrite-tags" | "rewrite-strong";
+        },
+  ) => Promise<void>;
+  updateVoiceMenuMessage: () => Promise<void>;
+  updateVoiceAnswerMenuMessage: () => Promise<void>;
+  updateVoiceLanguageMenuMessage: () => Promise<void>;
+  updateVoiceStyleMenuMessage: () => Promise<void>;
+  updateVoiceVoiceMenuMessage: () => Promise<void>;
+  updateStatusMessage: () => Promise<void>;
+  answerCallbackQuery: (callbackQueryId: string, text?: string) => Promise<void>;
+};
 
 export type TelegramThinkingMenuCallbackDeps = Pick<
   TelegramMenuEffectPort,
@@ -93,6 +141,7 @@ export type TelegramModelMenuCallbackDeps = Pick<
 export interface TelegramMenuCallbackEntryDeps {
   handleStatusAction: () => Promise<boolean>;
   handleThinkingAction: () => Promise<boolean>;
+  handleVoiceAction: () => Promise<boolean>;
   handleModelAction: () => Promise<boolean>;
   answerCallbackQuery: (
     callbackQueryId: string,
@@ -110,6 +159,37 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
 ];
 export const TELEGRAM_MODEL_PAGE_SIZE = 6;
 export const MODEL_MENU_TITLE = "<b>Choose a model:</b>";
+export const TELEGRAM_VOICE_MENU_TITLE = "<b>Voice settings</b>";
+export const TELEGRAM_VOICE_MENU_VOICE_IDS = ["eve", "ara", "rex", "sal", "leo", "una"] as const;
+export const TELEGRAM_VOICE_MENU_LANGUAGES = [
+  "auto",
+  "en",
+  "ar-EG",
+  "ar-SA",
+  "ar-AE",
+  "bn",
+  "zh",
+  "fr",
+  "de",
+  "hi",
+  "id",
+  "it",
+  "ja",
+  "ko",
+  "pt-BR",
+  "pt-PT",
+  "ru",
+  "es-MX",
+  "es-ES",
+  "tr",
+  "vi",
+] as const;
+export const TELEGRAM_VOICE_MENU_STYLES = [
+  "literal",
+  "rewrite-light",
+  "rewrite-tags",
+  "rewrite-strong",
+] as const;
 
 export interface BuildTelegramModelMenuStateParams {
   chatId: number;
@@ -121,8 +201,28 @@ export interface BuildTelegramModelMenuStateParams {
 
 export type TelegramMenuCallbackAction =
   | { kind: "ignore" }
-  | { kind: "status"; action: "model" | "thinking" }
+  | { kind: "status"; action: "model" | "thinking" | "voice" }
   | { kind: "thinking:set"; level: string }
+  | {
+      kind: "voice";
+      action:
+        | "noop"
+        | "back"
+        | "answerback"
+        | "answermenu"
+        | "langback"
+        | "langmenu"
+        | "styleback"
+        | "stylemenu"
+        | "voiceback"
+        | "voicemenu"
+        | "toggle"
+        | "answer"
+        | "style"
+        | "voice"
+        | "lang";
+      value?: string;
+    }
   | {
       kind: "model";
       action: "noop" | "scope" | "page" | "pick";
@@ -451,11 +551,36 @@ export function parseTelegramMenuCallbackAction(
   if (data === "status:thinking") {
     return { kind: "status", action: "thinking" };
   }
+  if (data === "status:voice") {
+    return { kind: "status", action: "voice" };
+  }
   if (data?.startsWith("thinking:set:")) {
     return {
       kind: "thinking:set",
       level: data.slice("thinking:set:".length),
     };
+  }
+  if (data?.startsWith("voice:")) {
+    const [, action, value] = data.split(":");
+    if (
+      action === "noop" ||
+      action === "back" ||
+      action === "answerback" ||
+      action === "answermenu" ||
+      action === "langback" ||
+      action === "langmenu" ||
+      action === "styleback" ||
+      action === "stylemenu" ||
+      action === "voiceback" ||
+      action === "voicemenu" ||
+      action === "toggle" ||
+      action === "answer" ||
+      action === "style" ||
+      action === "voice" ||
+      action === "lang"
+    ) {
+      return { kind: "voice", action, value };
+    }
   }
   if (data?.startsWith("model:")) {
     const [, action, value] = data.split(":");
@@ -594,6 +719,7 @@ export async function handleTelegramMenuCallbackEntry(
   const handled =
     (await deps.handleStatusAction()) ||
     (await deps.handleThinkingAction()) ||
+    (await deps.handleVoiceAction()) ||
     (await deps.handleModelAction());
   if (!handled) {
     await deps.answerCallbackQuery(callbackQueryId);
@@ -665,6 +791,11 @@ export async function handleTelegramStatusMenuCallbackAction(
     await deps.answerCallbackQuery(callbackQueryId);
     return true;
   }
+  if (action.kind === "status" && action.action === "voice") {
+    await deps.updateVoiceMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
   if (!(action.kind === "status" && action.action === "thinking")) {
     return false;
   }
@@ -705,6 +836,135 @@ export async function handleTelegramThinkingMenuCallbackAction(
     callbackQueryId,
     `Thinking: ${deps.getCurrentThinkingLevel()}`,
   );
+  return true;
+}
+
+export async function handleTelegramVoiceMenuCallbackAction(
+  callbackQueryId: string,
+  data: string | undefined,
+  deps: TelegramVoiceMenuCallbackDeps,
+): Promise<boolean> {
+  const action = parseTelegramMenuCallbackAction(data);
+  if (action.kind !== "voice") return false;
+  if (action.action === "noop") {
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  if (action.action === "answermenu") {
+    await deps.updateVoiceAnswerMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  if (action.action === "answerback") {
+    await deps.updateVoiceMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  if (action.action === "voicemenu") {
+    await deps.updateVoiceVoiceMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  if (action.action === "voiceback") {
+    await deps.updateVoiceMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  if (action.action === "stylemenu") {
+    await deps.updateVoiceStyleMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  if (action.action === "styleback") {
+    await deps.updateVoiceMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  if (action.action === "langmenu") {
+    await deps.updateVoiceLanguageMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  if (action.action === "langback") {
+    await deps.updateVoiceMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  if (action.action === "back") {
+    await deps.updateStatusMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
+  const apply = async (
+    command: Parameters<TelegramVoiceMenuCallbackDeps["saveVoiceSetting"]>[0],
+    text?: string,
+  ): Promise<boolean> => {
+    await deps.saveVoiceSetting(command);
+    await deps.updateVoiceMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId, text);
+    return true;
+  };
+  if (action.action === "toggle") {
+    if (action.value !== "on" && action.value !== "off") {
+      await deps.answerCallbackQuery(callbackQueryId, "Invalid voice mode.");
+      return true;
+    }
+    return apply(
+      { action: "toggle", enabled: action.value === "on" },
+      action.value === "on" ? "Voice replies allowed" : "Voice replies disabled",
+    );
+  }
+  if (action.action === "answer") {
+    if (
+      action.value !== "text" &&
+      action.value !== "voice" &&
+      action.value !== "voice-text"
+    ) {
+      await deps.answerCallbackQuery(callbackQueryId, "Invalid answer mode.");
+      return true;
+    }
+    if (action.value === "text") {
+      await deps.saveVoiceSetting({ action: "reply", enabled: false });
+      await deps.saveVoiceSetting({ action: "text", enabled: false });
+      await deps.updateVoiceAnswerMenuMessage();
+      await deps.answerCallbackQuery(callbackQueryId, "Answer mode: Text");
+      return true;
+    }
+    if (action.value === "voice") {
+      await deps.saveVoiceSetting({ action: "reply", enabled: true });
+      await deps.saveVoiceSetting({ action: "text", enabled: false });
+      await deps.updateVoiceAnswerMenuMessage();
+      await deps.answerCallbackQuery(callbackQueryId, "Answer mode: Voice");
+      return true;
+    }
+    await deps.saveVoiceSetting({ action: "reply", enabled: true });
+    await deps.saveVoiceSetting({ action: "text", enabled: true });
+    await deps.updateVoiceAnswerMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId, "Answer mode: Voice + text");
+    return true;
+  }
+  if (
+    action.action === "style" &&
+    (action.value === "literal" ||
+      action.value === "rewrite-light" ||
+      action.value === "rewrite-tags" ||
+      action.value === "rewrite-strong")
+  ) {
+    return apply(
+      { action: "style", style: action.value },
+      `Speech style: ${formatVoiceStyleLabel(action.value)}`,
+    );
+  }
+  if (action.action === "voice" && action.value) {
+    return apply({ action: "voice", voiceId: action.value }, `Voice: ${action.value}`);
+  }
+  if (action.action === "lang" && action.value) {
+    return apply(
+      { action: "language", language: action.value },
+      `Force language: ${formatVoiceLanguageLabel(action.value)}`,
+    );
+  }
+  await deps.answerCallbackQuery(callbackQueryId, "Unknown voice action.");
   return true;
 }
 
@@ -790,9 +1050,350 @@ export function buildThinkingMenuReplyMarkup(
   };
 }
 
+function formatVoiceButtonText(
+  current: string | undefined,
+  value: string,
+  label?: string,
+): string {
+  const resolvedLabel = label ?? value;
+  return current === value ? `✅ ${resolvedLabel}` : resolvedLabel;
+}
+
+const TELEGRAM_VOICE_LANGUAGE_LABELS: Record<string, string> = {
+  auto: "Auto",
+  en: "English (en)",
+  "ar-EG": "Arabic Egypt (ar-EG)",
+  "ar-SA": "Arabic Saudi Arabia (ar-SA)",
+  "ar-AE": "Arabic UAE (ar-AE)",
+  bn: "Bengali (bn)",
+  zh: "Chinese (zh)",
+  fr: "French (fr)",
+  de: "German (de)",
+  hi: "Hindi (hi)",
+  id: "Indonesian (id)",
+  it: "Italian (it)",
+  ja: "Japanese (ja)",
+  ko: "Korean (ko)",
+  "pt-BR": "Portuguese Brazil (pt-BR)",
+  "pt-PT": "Portuguese Portugal (pt-PT)",
+  ru: "Russian (ru)",
+  "es-MX": "Spanish Mexico (es-MX)",
+  "es-ES": "Spanish Spain (es-ES)",
+  tr: "Turkish (tr)",
+  vi: "Vietnamese (vi)",
+};
+
+const TELEGRAM_VOICE_CHOICE_METADATA: Record<
+  string,
+  { symbol: string; tone: string; description: string }
+> = {
+  eve: {
+    symbol: "♀",
+    tone: "Energetic, upbeat",
+    description: "Default voice, engaging and enthusiastic",
+  },
+  ara: {
+    symbol: "♀",
+    tone: "Warm, friendly",
+    description: "Balanced and conversational",
+  },
+  rex: {
+    symbol: "♂",
+    tone: "Confident, clear",
+    description: "Professional and articulate",
+  },
+  sal: {
+    symbol: "◌",
+    tone: "Smooth, balanced",
+    description: "Versatile and calm",
+  },
+  leo: {
+    symbol: "♂",
+    tone: "Authoritative, strong",
+    description: "Decisive and commanding",
+  },
+  una: {
+    symbol: "♀",
+    tone: "Bright, lively",
+    description: "Compact and playful",
+  },
+};
+
+const TELEGRAM_VOICE_STYLE_LABELS: Record<
+  TelegramVoiceMenuSettings["speechStyle"],
+  string
+> = {
+  literal: "Literal",
+  "rewrite-light": "Natural",
+  "rewrite-tags": "Expressive",
+  "rewrite-strong": "Expressive+",
+};
+
+function formatVoiceLanguageLabel(language: string | undefined): string {
+  if (!language) return "Auto";
+  return TELEGRAM_VOICE_LANGUAGE_LABELS[language] ?? language;
+}
+
+function formatVoiceStyleLabel(
+  style: TelegramVoiceMenuSettings["speechStyle"],
+): string {
+  return TELEGRAM_VOICE_STYLE_LABELS[style] ?? style;
+}
+
+function getVoiceAnswerMode(settings: TelegramVoiceMenuSettings):
+  | "text"
+  | "voice"
+  | "voice-text" {
+  if (!settings.replyWithVoiceOnIncomingVoice) return "text";
+  return settings.alsoSendTextReply ? "voice-text" : "voice";
+}
+
+function formatVoiceAnswerModeLabel(
+  mode: ReturnType<typeof getVoiceAnswerMode>,
+): string {
+  switch (mode) {
+    case "text":
+      return "Text";
+    case "voice":
+      return "Voice";
+    case "voice-text":
+      return "Voice + text";
+  }
+}
+
+function buildVoiceLanguageRows(settings: TelegramVoiceMenuSettings) {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  for (let index = 0; index < TELEGRAM_VOICE_MENU_LANGUAGES.length; index += 2) {
+    const pair = TELEGRAM_VOICE_MENU_LANGUAGES.slice(index, index + 2);
+    rows.push(
+      pair.map((language) => ({
+        text: formatVoiceButtonText(
+          settings.language,
+          language,
+          formatVoiceLanguageLabel(language),
+        ),
+        callback_data: `voice:lang:${language}`,
+      })),
+    );
+  }
+  return rows;
+}
+
+function buildVoiceRows(settings: TelegramVoiceMenuSettings) {
+  return [
+    TELEGRAM_VOICE_MENU_VOICE_IDS.slice(0, 3).map((voiceId) => ({
+      text: formatVoiceButtonText(
+        settings.voiceId,
+        voiceId,
+        `${TELEGRAM_VOICE_CHOICE_METADATA[voiceId]?.symbol ?? "•"} ${voiceId}`,
+      ),
+      callback_data: `voice:voice:${voiceId}`,
+    })),
+    TELEGRAM_VOICE_MENU_VOICE_IDS.slice(3).map((voiceId) => ({
+      text: formatVoiceButtonText(
+        settings.voiceId,
+        voiceId,
+        `${TELEGRAM_VOICE_CHOICE_METADATA[voiceId]?.symbol ?? "•"} ${voiceId}`,
+      ),
+      callback_data: `voice:voice:${voiceId}`,
+    })),
+  ];
+}
+
+function buildVoiceStyleRows(settings: TelegramVoiceMenuSettings) {
+  return TELEGRAM_VOICE_MENU_STYLES.map((style) => [
+    {
+      text: formatVoiceButtonText(
+        settings.speechStyle,
+        style,
+        formatVoiceStyleLabel(style),
+      ),
+      callback_data: `voice:style:${style}`,
+    },
+  ]);
+}
+
+export function buildVoiceMenuText(
+  settings: TelegramVoiceMenuSettings,
+): string {
+  const lines = [TELEGRAM_VOICE_MENU_TITLE];
+  lines.push("Choose how Telegram should answer with voice.");
+  lines.push(`Voice replies: ${settings.enabled ? "allowed" : "disabled"}`);
+  lines.push(`Answer mode: ${formatVoiceAnswerModeLabel(getVoiceAnswerMode(settings))}`);
+  lines.push("Incoming voice messages are transcribed automatically.");
+  lines.push(`Selected voice: ${settings.voiceId ?? "provider default"}`);
+  lines.push(`Force language: ${formatVoiceLanguageLabel(settings.language)}`);
+  lines.push(`Speech style: ${formatVoiceStyleLabel(settings.speechStyle)}`);
+  return lines.join("\n");
+}
+
+export function buildVoiceMenuReplyMarkup(
+  settings: TelegramVoiceMenuSettings,
+): TelegramReplyMarkup {
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: settings.enabled ? "✅ Allow voice replies" : "Allow voice replies",
+          callback_data: "voice:toggle:on",
+        },
+        {
+          text: !settings.enabled ? "✅ Disable voice replies" : "Disable voice replies",
+          callback_data: "voice:toggle:off",
+        },
+      ],
+      [
+        {
+          text: `Answer mode: ${formatVoiceAnswerModeLabel(getVoiceAnswerMode(settings))}`,
+          callback_data: "voice:answermenu",
+        },
+      ],
+      [
+        {
+          text: `Voice: ${settings.voiceId ?? "provider default"}`,
+          callback_data: "voice:voicemenu",
+        },
+      ],
+      [
+        {
+          text: `Speech style: ${formatVoiceStyleLabel(settings.speechStyle)}`,
+          callback_data: "voice:stylemenu",
+        },
+      ],
+      [
+        {
+          text: `Force language: ${formatVoiceLanguageLabel(settings.language)}`,
+          callback_data: "voice:langmenu",
+        },
+      ],
+      [{ text: "⬅️ Back", callback_data: "voice:back" }],
+    ],
+  };
+}
+
+export function buildVoiceLanguageMenuText(
+  settings: TelegramVoiceMenuSettings,
+): string {
+  return [
+    "<b>Force language</b>",
+    `Current: ${formatVoiceLanguageLabel(settings.language)}`,
+    "Pick the language you want TTS to force. Auto lets the provider decide.",
+  ].join("\n");
+}
+
+export function buildVoiceAnswerMenuText(
+  settings: TelegramVoiceMenuSettings,
+): string {
+  return [
+    "<b>Answer mode</b>",
+    `Current: ${formatVoiceAnswerModeLabel(getVoiceAnswerMode(settings))}`,
+    "Text keeps normal text replies.",
+    "Voice sends spoken replies.",
+    "Voice + text sends a voice reply plus a text copy.",
+  ].join("\n");
+}
+
+export function buildVoiceAnswerMenuReplyMarkup(
+  settings: TelegramVoiceMenuSettings,
+): TelegramReplyMarkup {
+  const current = getVoiceAnswerMode(settings);
+  return {
+    inline_keyboard: [
+      [
+        {
+          text: current === "text" ? "✅ Text" : "Text",
+          callback_data: "voice:answer:text",
+        },
+      ],
+      [
+        {
+          text: current === "voice" ? "✅ Voice" : "Voice",
+          callback_data: "voice:answer:voice",
+        },
+      ],
+      [
+        {
+          text: current === "voice-text" ? "✅ Voice + text" : "Voice + text",
+          callback_data: "voice:answer:voice-text",
+        },
+      ],
+      [{ text: "⬅️ Voice settings", callback_data: "voice:answerback" }],
+    ],
+  };
+}
+
+export function buildVoiceLanguageMenuReplyMarkup(
+  settings: TelegramVoiceMenuSettings,
+): TelegramReplyMarkup {
+  return {
+    inline_keyboard: [
+      ...buildVoiceLanguageRows(settings),
+      [{ text: "⬅️ Voice settings", callback_data: "voice:langback" }],
+    ],
+  };
+}
+
+export function buildVoiceStyleMenuText(
+  settings: TelegramVoiceMenuSettings,
+): string {
+  return [
+    "<b>Speech style</b>",
+    `Current: ${formatVoiceStyleLabel(settings.speechStyle)}`,
+    "Literal keeps wording close to the original.",
+    "Natural sounds more spoken.",
+    "Expressive adds a few speech tags.",
+    "Expressive+ leans into stronger delivery.",
+  ].join("\n");
+}
+
+export function buildVoiceStyleMenuReplyMarkup(
+  settings: TelegramVoiceMenuSettings,
+): TelegramReplyMarkup {
+  return {
+    inline_keyboard: [
+      ...buildVoiceStyleRows(settings),
+      [{ text: "⬅️ Voice settings", callback_data: "voice:styleback" }],
+    ],
+  };
+}
+
+export function buildVoiceVoiceMenuText(
+  settings: TelegramVoiceMenuSettings,
+): string {
+  const lines = [
+    "<b>Voice</b>",
+    `Current: ${settings.voiceId ?? "provider default"}`,
+    "Pick the xAI voice used for Telegram voice notes.",
+    "",
+  ];
+  for (const voiceId of TELEGRAM_VOICE_MENU_VOICE_IDS) {
+    const meta = TELEGRAM_VOICE_CHOICE_METADATA[voiceId];
+    if (!meta) {
+      lines.push(`• ${voiceId}`);
+      continue;
+    }
+    lines.push(
+      `${meta.symbol} ${voiceId} — ${meta.tone}. ${meta.description}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+export function buildVoiceVoiceMenuReplyMarkup(
+  settings: TelegramVoiceMenuSettings,
+): TelegramReplyMarkup {
+  return {
+    inline_keyboard: [
+      ...buildVoiceRows(settings),
+      [{ text: "⬅️ Voice settings", callback_data: "voice:voiceback" }],
+    ],
+  };
+}
+
 export function buildStatusReplyMarkup(
   activeModel: Model<any> | undefined,
   currentThinkingLevel: ThinkingLevel,
+  voiceSummary?: string,
 ): TelegramReplyMarkup {
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   rows.push([
@@ -812,6 +1413,14 @@ export function buildStatusReplyMarkup(
       },
     ]);
   }
+  rows.push([
+    {
+      text: voiceSummary
+        ? formatStatusButtonLabel("Voice settings", voiceSummary)
+        : "🔊 Voice settings",
+      callback_data: "status:voice",
+    },
+  ]);
   return { inline_keyboard: rows };
 }
 
@@ -843,16 +1452,76 @@ export function buildTelegramThinkingMenuRenderPayload(
   };
 }
 
+export function buildTelegramVoiceMenuRenderPayload(
+  settings: TelegramVoiceMenuSettings,
+): TelegramMenuRenderPayload {
+  return {
+    nextMode: "voice",
+    text: buildVoiceMenuText(settings),
+    mode: "html",
+    replyMarkup: buildVoiceMenuReplyMarkup(settings),
+  };
+}
+
+export function buildTelegramVoiceLanguageMenuRenderPayload(
+  settings: TelegramVoiceMenuSettings,
+): TelegramMenuRenderPayload {
+  return {
+    nextMode: "voice-language",
+    text: buildVoiceLanguageMenuText(settings),
+    mode: "html",
+    replyMarkup: buildVoiceLanguageMenuReplyMarkup(settings),
+  };
+}
+
+export function buildTelegramVoiceAnswerMenuRenderPayload(
+  settings: TelegramVoiceMenuSettings,
+): TelegramMenuRenderPayload {
+  return {
+    nextMode: "voice-answer",
+    text: buildVoiceAnswerMenuText(settings),
+    mode: "html",
+    replyMarkup: buildVoiceAnswerMenuReplyMarkup(settings),
+  };
+}
+
+export function buildTelegramVoiceStyleMenuRenderPayload(
+  settings: TelegramVoiceMenuSettings,
+): TelegramMenuRenderPayload {
+  return {
+    nextMode: "voice-style",
+    text: buildVoiceStyleMenuText(settings),
+    mode: "html",
+    replyMarkup: buildVoiceStyleMenuReplyMarkup(settings),
+  };
+}
+
+export function buildTelegramVoiceVoiceMenuRenderPayload(
+  settings: TelegramVoiceMenuSettings,
+): TelegramMenuRenderPayload {
+  return {
+    nextMode: "voice-voice",
+    text: buildVoiceVoiceMenuText(settings),
+    mode: "html",
+    replyMarkup: buildVoiceVoiceMenuReplyMarkup(settings),
+  };
+}
+
 export function buildTelegramStatusMenuRenderPayload(
   statusText: string,
   activeModel: Model<any> | undefined,
   currentThinkingLevel: ThinkingLevel,
+  voiceSummary?: string,
 ): TelegramMenuRenderPayload {
   return {
     nextMode: "status",
     text: statusText,
     mode: "html",
-    replyMarkup: buildStatusReplyMarkup(activeModel, currentThinkingLevel),
+    replyMarkup: buildStatusReplyMarkup(
+      activeModel,
+      currentThinkingLevel,
+      voiceSummary,
+    ),
   };
 }
 
@@ -892,17 +1561,99 @@ export async function updateTelegramThinkingMenuMessage(
   );
 }
 
+export async function updateTelegramVoiceMenuMessage(
+  state: TelegramModelMenuState,
+  settings: TelegramVoiceMenuSettings,
+  deps: TelegramMenuMessageRuntimeDeps,
+): Promise<void> {
+  const payload = buildTelegramVoiceMenuRenderPayload(settings);
+  state.mode = payload.nextMode;
+  await deps.editInteractiveMessage(
+    state.chatId,
+    state.messageId,
+    payload.text,
+    payload.mode,
+    payload.replyMarkup,
+  );
+}
+
+export async function updateTelegramVoiceLanguageMenuMessage(
+  state: TelegramModelMenuState,
+  settings: TelegramVoiceMenuSettings,
+  deps: TelegramMenuMessageRuntimeDeps,
+): Promise<void> {
+  const payload = buildTelegramVoiceLanguageMenuRenderPayload(settings);
+  state.mode = payload.nextMode;
+  await deps.editInteractiveMessage(
+    state.chatId,
+    state.messageId,
+    payload.text,
+    payload.mode,
+    payload.replyMarkup,
+  );
+}
+
+export async function updateTelegramVoiceAnswerMenuMessage(
+  state: TelegramModelMenuState,
+  settings: TelegramVoiceMenuSettings,
+  deps: TelegramMenuMessageRuntimeDeps,
+): Promise<void> {
+  const payload = buildTelegramVoiceAnswerMenuRenderPayload(settings);
+  state.mode = payload.nextMode;
+  await deps.editInteractiveMessage(
+    state.chatId,
+    state.messageId,
+    payload.text,
+    payload.mode,
+    payload.replyMarkup,
+  );
+}
+
+export async function updateTelegramVoiceStyleMenuMessage(
+  state: TelegramModelMenuState,
+  settings: TelegramVoiceMenuSettings,
+  deps: TelegramMenuMessageRuntimeDeps,
+): Promise<void> {
+  const payload = buildTelegramVoiceStyleMenuRenderPayload(settings);
+  state.mode = payload.nextMode;
+  await deps.editInteractiveMessage(
+    state.chatId,
+    state.messageId,
+    payload.text,
+    payload.mode,
+    payload.replyMarkup,
+  );
+}
+
+export async function updateTelegramVoiceVoiceMenuMessage(
+  state: TelegramModelMenuState,
+  settings: TelegramVoiceMenuSettings,
+  deps: TelegramMenuMessageRuntimeDeps,
+): Promise<void> {
+  const payload = buildTelegramVoiceVoiceMenuRenderPayload(settings);
+  state.mode = payload.nextMode;
+  await deps.editInteractiveMessage(
+    state.chatId,
+    state.messageId,
+    payload.text,
+    payload.mode,
+    payload.replyMarkup,
+  );
+}
+
 export async function updateTelegramStatusMessage(
   state: TelegramModelMenuState,
   statusText: string,
   activeModel: Model<any> | undefined,
   currentThinkingLevel: ThinkingLevel,
+  voiceSummary: string | undefined,
   deps: TelegramMenuMessageRuntimeDeps,
 ): Promise<void> {
   const payload = buildTelegramStatusMenuRenderPayload(
     statusText,
     activeModel,
     currentThinkingLevel,
+    voiceSummary,
   );
   state.mode = payload.nextMode;
   await deps.editInteractiveMessage(
@@ -919,12 +1670,14 @@ export async function sendTelegramStatusMessage(
   statusText: string,
   activeModel: Model<any> | undefined,
   currentThinkingLevel: ThinkingLevel,
+  voiceSummary: string | undefined,
   deps: TelegramMenuMessageRuntimeDeps,
 ): Promise<number | undefined> {
   const payload = buildTelegramStatusMenuRenderPayload(
     statusText,
     activeModel,
     currentThinkingLevel,
+    voiceSummary,
   );
   state.mode = payload.nextMode;
   return deps.sendInteractiveMessage(

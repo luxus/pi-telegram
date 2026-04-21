@@ -54,11 +54,23 @@ export interface TelegramMessageLike {
   sticker?: TelegramStickerLike;
 }
 
+export type TelegramFileKind =
+  | "photo"
+  | "document"
+  | "video"
+  | "audio"
+  | "voice"
+  | "animation"
+  | "sticker";
+
+export type TelegramInputModality = "text" | "voice" | "audio" | "mixed";
+
 export interface TelegramFileInfo {
   file_id: string;
   fileName: string;
   mimeType?: string;
   isImage: boolean;
+  kind: TelegramFileKind;
 }
 
 export interface DownloadedTelegramFileLike {
@@ -122,6 +134,28 @@ export function collectTelegramMessageIds(
   return [...new Set(messages.map((message) => message.message_id))];
 }
 
+export function detectTelegramInputModality(
+  messages: TelegramMessageLike[],
+): TelegramInputModality {
+  const hasVoice = messages.some((message) => !!message.voice);
+  const hasAudio = messages.some((message) => !!message.audio);
+  const hasText = messages.some(
+    (message) => extractTelegramMessageText(message).length > 0,
+  );
+  const hasOtherMedia = messages.some(
+    (message) =>
+      (Array.isArray(message.photo) && message.photo.length > 0) ||
+      !!message.document ||
+      !!message.video ||
+      !!message.animation ||
+      !!message.sticker,
+  );
+  if (hasVoice && !hasText && !hasAudio && !hasOtherMedia) return "voice";
+  if (hasAudio && !hasText && !hasVoice && !hasOtherMedia) return "audio";
+  if (hasVoice || hasAudio) return "mixed";
+  return "text";
+}
+
 export function formatTelegramHistoryText(
   rawText: string,
   files: DownloadedTelegramFileLike[],
@@ -151,6 +185,7 @@ export function collectTelegramFileInfos(
           fileName: `photo-${message.message_id}.jpg`,
           mimeType: "image/jpeg",
           isImage: true,
+          kind: "photo",
         });
       }
     }
@@ -166,6 +201,7 @@ export function collectTelegramFileInfos(
         fileName,
         mimeType: message.document.mime_type,
         isImage: isImageMimeType(message.document.mime_type),
+        kind: "document",
       });
     }
     if (message.video) {
@@ -180,6 +216,7 @@ export function collectTelegramFileInfos(
         fileName,
         mimeType: message.video.mime_type,
         isImage: false,
+        kind: "video",
       });
     }
     if (message.audio) {
@@ -194,6 +231,7 @@ export function collectTelegramFileInfos(
         fileName,
         mimeType: message.audio.mime_type,
         isImage: false,
+        kind: "audio",
       });
     }
     if (message.voice) {
@@ -205,6 +243,7 @@ export function collectTelegramFileInfos(
         )}`,
         mimeType: message.voice.mime_type,
         isImage: false,
+        kind: "voice",
       });
     }
     if (message.animation) {
@@ -219,6 +258,7 @@ export function collectTelegramFileInfos(
         fileName,
         mimeType: message.animation.mime_type,
         isImage: false,
+        kind: "animation",
       });
     }
     if (message.sticker) {
@@ -227,6 +267,7 @@ export function collectTelegramFileInfos(
         fileName: `sticker-${message.message_id}.webp`,
         mimeType: "image/webp",
         isImage: true,
+        kind: "sticker",
       });
     }
   }

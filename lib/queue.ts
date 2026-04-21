@@ -6,6 +6,10 @@
 import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 
+import type {
+  TelegramInputModality,
+} from "./media.ts";
+
 // --- Queue Items ---
 
 export interface QueuedAttachment {
@@ -32,6 +36,15 @@ export interface PendingTelegramTurn extends TelegramQueueItemBase {
   queuedAttachments: QueuedAttachment[];
   content: Array<TextContent | ImageContent>;
   historyText: string;
+  inputModality?: TelegramInputModality;
+  replyModality?: "text" | "voice-preferred" | "voice-required";
+  voiceFilePath?: string;
+  voiceTranscript?: string;
+  voiceTranscriptLanguage?: string;
+  voiceTranscriptionError?: string;
+  explicitTextCopyRequested?: boolean;
+  skipFinalTextReply?: boolean;
+  voiceReplyDelivered?: boolean;
 }
 
 export interface PendingTelegramControlItem extends TelegramQueueItemBase {
@@ -508,7 +521,9 @@ export interface TelegramDispatchRuntimeDeps {
   executeControlItem: (
     item: Extract<TelegramQueueDispatchAction, { kind: "control" }>["item"],
   ) => void;
-  onPromptDispatchStart: (chatId: number) => void;
+  onPromptDispatchStart: (
+    item: Extract<TelegramQueueDispatchAction, { kind: "prompt" }>["item"],
+  ) => void;
   sendUserMessage: (
     content: Extract<
       TelegramQueueDispatchAction,
@@ -531,7 +546,7 @@ export function executeTelegramQueueDispatchPlan(
     deps.executeControlItem(plan.item);
     return;
   }
-  deps.onPromptDispatchStart(plan.item.chatId);
+  deps.onPromptDispatchStart(plan.item);
   try {
     deps.sendUserMessage(plan.item.content);
   } catch (error) {

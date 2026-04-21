@@ -15,6 +15,7 @@ export interface TelegramReplyDeliveryDeps<TReplyMarkup> {
     text: string;
     parse_mode?: "HTML";
     reply_markup?: TReplyMarkup;
+    reply_to_message_id?: number;
   }) => Promise<TelegramSentMessageLike>;
   editMessage: (body: {
     chat_id: number;
@@ -29,13 +30,13 @@ export interface TelegramReplyTransport<TReplyMarkup> {
   sendRenderedChunks: (
     chatId: number,
     chunks: TelegramRenderedChunk[],
-    options?: { replyMarkup?: TReplyMarkup },
+    options?: { replyMarkup?: TReplyMarkup; replyToMessageId?: number },
   ) => Promise<number | undefined>;
   editRenderedMessage: (
     chatId: number,
     messageId: number,
     chunks: TelegramRenderedChunk[],
-    options?: { replyMarkup?: TReplyMarkup },
+    options?: { replyMarkup?: TReplyMarkup; replyToMessageId?: number },
   ) => Promise<number | undefined>;
 }
 
@@ -62,7 +63,7 @@ export async function sendTelegramRenderedChunks<TReplyMarkup>(
   chatId: number,
   chunks: TelegramRenderedChunk[],
   deps: TelegramReplyDeliveryDeps<TReplyMarkup>,
-  options?: { replyMarkup?: TReplyMarkup },
+  options?: { replyMarkup?: TReplyMarkup; replyToMessageId?: number },
 ): Promise<number | undefined> {
   let lastMessageId: number | undefined;
   for (const [index, chunk] of chunks.entries()) {
@@ -72,6 +73,8 @@ export async function sendTelegramRenderedChunks<TReplyMarkup>(
       parse_mode: chunk.parseMode,
       reply_markup:
         index === chunks.length - 1 ? options?.replyMarkup : undefined,
+      reply_to_message_id:
+        index === 0 ? options?.replyToMessageId : undefined,
     });
     lastMessageId = sent.message_id;
   }
@@ -83,7 +86,7 @@ export async function editTelegramRenderedMessage<TReplyMarkup>(
   messageId: number,
   chunks: TelegramRenderedChunk[],
   deps: TelegramReplyDeliveryDeps<TReplyMarkup>,
-  options?: { replyMarkup?: TReplyMarkup },
+  options?: { replyMarkup?: TReplyMarkup; replyToMessageId?: number },
 ): Promise<number | undefined> {
   if (chunks.length === 0) return messageId;
   const [firstChunk, ...remainingChunks] = chunks;
@@ -108,27 +111,35 @@ export interface TelegramReplyRuntimeDeps {
   ) => TelegramRenderedChunk[];
   sendRenderedChunks: (
     chunks: TelegramRenderedChunk[],
+    options?: { replyToMessageId?: number },
   ) => Promise<number | undefined>;
 }
 
 export async function sendTelegramPlainReply(
   text: string,
   deps: TelegramReplyRuntimeDeps,
-  options?: { parseMode?: "HTML" },
+  options?: { parseMode?: "HTML"; replyToMessageId?: number },
 ): Promise<number | undefined> {
   const chunks = deps.renderTelegramMessage(text, {
     mode: options?.parseMode === "HTML" ? "html" : "plain",
   });
-  return deps.sendRenderedChunks(chunks);
+  return deps.sendRenderedChunks(chunks, {
+    replyToMessageId: options?.replyToMessageId,
+  });
 }
 
 export async function sendTelegramMarkdownReply(
   markdown: string,
   deps: TelegramReplyRuntimeDeps,
+  options?: { replyToMessageId?: number },
 ): Promise<number | undefined> {
   const chunks = deps.renderTelegramMessage(markdown, { mode: "markdown" });
   if (chunks.length === 0) {
-    return sendTelegramPlainReply(markdown, deps);
+    return sendTelegramPlainReply(markdown, deps, {
+      replyToMessageId: options?.replyToMessageId,
+    });
   }
-  return deps.sendRenderedChunks(chunks);
+  return deps.sendRenderedChunks(chunks, {
+    replyToMessageId: options?.replyToMessageId,
+  });
 }
