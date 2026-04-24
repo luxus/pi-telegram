@@ -11,14 +11,16 @@ import {
   registerTelegramAttachmentTool,
   registerTelegramCommands,
   registerTelegramLifecycleHooks,
+  registerTelegramVoiceTool,
 } from "../lib/registration.ts";
 
 function createRegistrationApiHarness() {
-  let tool: any;
+  const tools: any[] = [];
   const commands = new Map<string, any>();
   const handlers = new Map<string, any>();
   return {
-    tool: () => tool,
+    tool: () => tools[0],
+    tools: () => tools,
     commands,
     handlers,
     api: {
@@ -26,7 +28,7 @@ function createRegistrationApiHarness() {
         handlers.set(event, handler);
       },
       registerTool: (definition: unknown) => {
-        tool = definition;
+        tools.push(definition);
       },
       registerCommand: (name: string, definition: unknown) => {
         commands.set(name, definition);
@@ -70,6 +72,9 @@ test("Registration commands expose setup and status behaviors", async () => {
       events.push("reload");
     },
     hasBotToken: () => false,
+    handleVoiceCommand: async (args) => {
+      events.push(`voice:${args}`);
+    },
     startPolling: async () => {
       events.push("start");
     },
@@ -82,6 +87,7 @@ test("Registration commands expose setup and status behaviors", async () => {
   });
   const setupCommand = harness.commands.get("telegram-setup");
   const statusCommand = harness.commands.get("telegram-status");
+  const voiceCommand = harness.commands.get("telegram-voice");
   const notifications: string[] = [];
   const ctx = {
     ui: {
@@ -92,7 +98,8 @@ test("Registration commands expose setup and status behaviors", async () => {
   } as never;
   await setupCommand.handler("", ctx);
   await statusCommand.handler("", ctx);
-  assert.deepEqual(events, ["setup"]);
+  await voiceCommand.handler("status", ctx);
+  assert.deepEqual(events, ["setup", "voice:status"]);
   assert.deepEqual(notifications, ["bot: @demo | polling: stopped"]);
 });
 
@@ -109,6 +116,9 @@ test("Registration connect and disconnect commands reload config and control pol
       events.push("reload");
     },
     hasBotToken: () => hasToken,
+    handleVoiceCommand: async () => {
+      events.push("voice");
+    },
     startPolling: async () => {
       events.push("start");
     },
@@ -135,6 +145,158 @@ test("Registration connect and disconnect commands reload config and control pol
     "stop",
     "update-status",
   ]);
+});
+
+test("Registration registers Telegram voice tool and delegates delivery", async () => {
+  const harness = createRegistrationApiHarness();
+  const events: Array<Record<string, unknown>> = [];
+  registerTelegramVoiceTool(harness.api, {
+    getActiveTurn: () => ({ kind: "prompt" }) as never,
+    getProactiveChatId: () => undefined,
+    shouldKeepTextReply: (_activeTurn, alsoSendText) => alsoSendText === true,
+    sendVoiceReply: async (options) => {
+      events.push(options);
+    },
+    getDefaultVoiceSettings: () =>
+      ({
+        enabled: true,
+        provider: "xai",
+        providerOptions: {},
+        autoTranscribeIncoming: true,
+        replyWithVoiceOnIncomingVoice: true,
+        alsoSendTextReply: false,
+        defaultVoiceId: "eve",
+        defaultLanguage: "de",
+        sttLanguage: "de",
+        speechStyle: "literal",
+        speechPreparationPrompt: "x",
+      }) as never,
+  });
+  const tool = harness.tools().find((entry) => entry.name === "telegram_send_voice");
+  assert.equal(tool?.name, "telegram_send_voice");
+  const result = await tool.execute("tool-call", { text: "Hallo" });
+  assert.deepEqual(events, [
+    {
+      text: "Hallo",
+      voiceId: "eve",
+      language: "de",
+      alsoSendText: false,
+      proactiveChatId: undefined,
+    },
+  ]);
+  assert.equal(result.content[0]?.text, "Queued Telegram voice reply.");
+  assert.equal(result.details.alsoSendText, false);
+});
+
+test("Registration voice tool suppresses text copy unless explicitly allowed", async () => {
+  const harness = createRegistrationApiHarness();
+  const events: Array<Record<string, unknown>> = [];
+  registerTelegramVoiceTool(harness.api, {
+    getActiveTurn: () => ({ kind: "prompt" }) as never,
+    getProactiveChatId: () => undefined,
+    shouldKeepTextReply: () => false,
+    sendVoiceReply: async (options) => {
+      events.push(options);
+    },
+    getDefaultVoiceSettings: () =>
+      ({
+        enabled: true,
+        provider: "xai",
+        providerOptions: {},
+        autoTranscribeIncoming: true,
+        replyWithVoiceOnIncomingVoice: true,
+        alsoSendTextReply: false,
+        defaultVoiceId: "eve",
+        defaultLanguage: "de",
+        sttLanguage: "de",
+        speechStyle: "literal",
+        speechPreparationPrompt: "x",
+      }) as never,
+  });
+  const tool = harness.tools().find((entry) => entry.name === "telegram_send_voice");
+  await tool.execute("tool-call", { text: "Hallo", alsoSendText: true });
+  assert.deepEqual(events, [
+    {
+      text: "Hallo",
+      voiceId: "eve",
+      language: "de",
+      alsoSendText: false,
+      proactiveChatId: undefined,
+    },
+  ]);
+});
+
+test("Registration voice tool falls back to normal text reply when voice sending fails", async () => {
+  const harness = createRegistrationApiHarness();
+  registerTelegramVoiceTool(harness.api, {
+    getActiveTurn: () => ({ kind: "prompt" }) as never,
+    getProactiveChatId: () => undefined,
+    shouldKeepTextReply: () => false,
+    sendVoiceReply: async () => {
+      throw new Error("tts down");
+    },
+    getDefaultVoiceSettings: () =>
+      ({
+        enabled: true,
+        provider: "xai",
+        providerOptions: {},
+        autoTranscribeIncoming: true,
+        replyWithVoiceOnIncomingVoice: true,
+        alsoSendTextReply: false,
+        defaultVoiceId: "eve",
+        defaultLanguage: "de",
+        sttLanguage: "de",
+        speechStyle: "literal",
+        speechPreparationPrompt: "x",
+      }) as never,
+  });
+  const tool = harness.tools().find((entry) => entry.name === "telegram_send_voice");
+  const result = await tool.execute("tool-call", { text: "Hallo" });
+  assert.match(
+    result.content[0]?.text,
+    /continuing with normal text reply/i,
+  );
+  assert.equal(result.details.alsoSendText, false);
+  assert.equal(result.details.error, "tts down");
+});
+
+test("Registration voice tool supports proactive paired delivery without active turn", async () => {
+  const harness = createRegistrationApiHarness();
+  const events: Array<Record<string, unknown>> = [];
+  registerTelegramVoiceTool(harness.api, {
+    getActiveTurn: () => undefined,
+    getProactiveChatId: () => 123,
+    shouldKeepTextReply: () => false,
+    sendVoiceReply: async (options) => {
+      events.push(options);
+    },
+    getDefaultVoiceSettings: () =>
+      ({
+        enabled: true,
+        provider: "xai",
+        providerOptions: {},
+        autoTranscribeIncoming: true,
+        replyWithVoiceOnIncomingVoice: true,
+        alsoSendTextReply: false,
+        defaultVoiceId: "eve",
+        defaultLanguage: "de",
+        sttLanguage: "de",
+        speechStyle: "literal",
+        speechPreparationPrompt: "x",
+      }) as never,
+  });
+  const tool = harness.tools().find((entry) => entry.name === "telegram_send_voice");
+  const result = await tool.execute("tool-call", { text: "Aufstehen" });
+  assert.deepEqual(events, [
+    {
+      text: "Aufstehen",
+      voiceId: "eve",
+      language: "de",
+      alsoSendText: false,
+      proactiveChatId: 123,
+    },
+  ]);
+  assert.equal(result.content[0]?.text, "Queued Telegram voice reply.");
 });
 
 test("Registration lifecycle hooks are registered and delegate to the provided handlers", async () => {
@@ -219,7 +381,10 @@ test("Registration lifecycle hooks are registered and delegate to the provided h
 test("Extension entrypoint wires registration domains into the pi API", () => {
   const harness = createRegistrationApiHarness();
   telegramExtension(harness.api);
-  assert.equal(harness.tool()?.name, "telegram_attach");
+  assert.deepEqual(
+    harness.tools().map((tool) => tool.name),
+    ["telegram_attach", "telegram_send_voice"],
+  );
   assert.deepEqual(
     [...harness.commands.keys()],
     [
@@ -227,6 +392,7 @@ test("Extension entrypoint wires registration domains into the pi API", () => {
       "telegram-status",
       "telegram-connect",
       "telegram-disconnect",
+      "telegram-voice",
     ],
   );
   assert.deepEqual(

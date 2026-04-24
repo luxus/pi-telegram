@@ -3,12 +3,12 @@
  * Keeps the runtime wiring in one place while delegating reusable domain logic to /lib modules
  */
 
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import type { Model } from "@mariozechner/pi-ai";
+import type { Context, Model } from "@mariozechner/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -24,13 +24,16 @@ import {
 import { sendQueuedTelegramAttachments } from "./lib/attachments.ts";
 import {
   collectTelegramFileInfos,
+  detectTelegramInputModality,
   extractFirstTelegramMessageText,
   extractTelegramMessagesText,
   guessMediaType,
+  type TelegramFileKind,
 } from "./lib/media.ts";
 import {
   buildTelegramModelMenuState,
   getCanonicalModelId,
+  handleTelegramVoiceMenuCallbackAction,
   handleTelegramMenuCallbackEntry,
   handleTelegramModelMenuCallbackAction,
   handleTelegramStatusMenuCallbackAction,
@@ -40,8 +43,14 @@ import {
   updateTelegramModelMenuMessage,
   updateTelegramStatusMessage,
   updateTelegramThinkingMenuMessage,
+  updateTelegramVoiceAnswerMenuMessage,
+  updateTelegramVoiceLanguageMenuMessage,
+  updateTelegramVoiceStyleMenuMessage,
+  updateTelegramVoiceMenuMessage,
+  updateTelegramVoiceVoiceMenuMessage,
   type ScopedTelegramModel,
   type TelegramModelMenuState,
+  type TelegramVoiceMenuSettings,
   type TelegramReplyMarkup,
   type ThinkingLevel,
 } from "./lib/menu.ts";
@@ -79,6 +88,7 @@ import {
   registerTelegramAttachmentTool,
   registerTelegramCommands,
   registerTelegramLifecycleHooks,
+  registerTelegramVoiceTool,
 } from "./lib/registration.ts";
 import {
   MAX_MESSAGE_LENGTH,
@@ -112,6 +122,18 @@ import {
   executeTelegramUpdate,
   getTelegramAuthorizationState,
 } from "./lib/updates.ts";
+import {
+  buildSpeechPreparationPrompt,
+  DEFAULT_TELEGRAM_SPEECH_PREPARATION_PROMPT,
+  formatTelegramVoiceStatus,
+  getTelegramVoiceProvider,
+  resolveTelegramVoiceLanguage,
+  parseTelegramVoiceCommand,
+  resolveTelegramVoiceSettings,
+  synthesizeTelegramVoiceReply,
+  transcribeTelegramAudio,
+  updateTelegramVoiceConfig,
+} from "./lib/voice.ts";
 
 // --- Telegram API Types ---
 
@@ -183,6 +205,7 @@ interface TelegramFileInfo {
   fileName: string;
   mimeType?: string;
   isImage: boolean;
+  kind: TelegramFileKind;
 }
 
 interface TelegramMessage {
@@ -266,6 +289,7 @@ interface DownloadedTelegramFile {
   fileName: string;
   isImage: boolean;
   mimeType?: string;
+  kind: TelegramFileKind;
 }
 
 type ActiveTelegramTurn = PendingTelegramTurn;
@@ -291,7 +315,10 @@ Telegram bridge extension is active.
 - Messages forwarded from Telegram are prefixed with "[telegram]".
 - [telegram] messages may include local temp file paths for Telegram attachments. Read those files as needed.
 - If a [telegram] user asked for a file or generated artifact, use the telegram_attach tool with the local file path so the extension can send it with your next final reply.
-- Do not assume mentioning a local file path in plain text will send it to Telegram. Use telegram_attach.`;
+- Do not assume mentioning a local file path in plain text will send it to Telegram. Use telegram_attach.
+- If a Telegram user explicitly asks for a spoken reply, voice note, or audio story, call telegram_send_voice with text to speak.
+- Do not request \`alsoSendText=true\` on telegram_send_voice unless the user explicitly asked for both a voice note and a text copy/transcript.
+- If the Telegram prompt says Reply modality: voice-required, write response text naturally for speech. Bridge may deliver it as Telegram voice note automatically unless telegram_send_voice already handled it.`;
 
 // --- Generic Utilities ---
 
@@ -312,6 +339,16 @@ function parseTelegramCommand(
   const name = head.slice(1).split("@")[0]?.toLowerCase();
   if (!name) return undefined;
   return { name, args: tail.join(" ").trim() };
+}
+
+function detectExplicitTelegramTextCopyRequest(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return false;
+  return [
+    /\b(text (copy|too|also)|also send text|send text too|voice and text|text and voice|both text and voice)\b/i,
+    /\b(transcript|caption|subtitles?)\b/i,
+    /\b(auch als text|auch text|zusätzlich als text|zusätzlich text|und schreib(?: es)? mir(?: das)? auch|bitte auch schreiben)\b/i,
+  ].some((pattern) => pattern.test(normalized));
 }
 
 function getCliScopedModelPatterns(): string[] | undefined {
@@ -388,6 +425,8 @@ export default function (pi: ExtensionAPI) {
   let pendingTelegramModelSwitch: ScopedTelegramModel | undefined;
   let telegramTurnDispatchPending = false;
   let typingInterval: ReturnType<typeof setInterval> | undefined;
+  let activeTelegramChatAction: "typing" | "record_voice" | undefined;
+  let activeTelegramChatActionChatId: number | undefined;
   let currentAbort: (() => void) | undefined;
   let preserveQueuedTurnsAsHistory = false;
   let compactionInProgress = false;
@@ -443,9 +482,9 @@ export default function (pi: ExtensionAPI) {
         updateStatus(ctx);
         executeQueuedTelegramControlItem(item, ctx);
       },
-      onPromptDispatchStart: (chatId) => {
+      onPromptDispatchStart: (item) => {
         telegramTurnDispatchPending = true;
-        startTypingLoop(ctx, chatId);
+        startTelegramTurnChatActionLoop(ctx, item);
         updateStatus(ctx);
       },
       sendUserMessage: (content) => {
@@ -530,69 +569,88 @@ export default function (pi: ExtensionAPI) {
   // --- Telegram API ---
 
   const telegramApi = createTelegramApiClient(() => config.botToken);
-
-  const callTelegramApi = <TResponse>(
-    method: string,
-    body: Record<string, unknown>,
-    options?: { signal?: AbortSignal },
-  ): Promise<TResponse> => {
-    return telegramApi.call<TResponse>(method, body, options);
-  };
-
-  const callTelegramMultipartApi = <TResponse>(
-    method: string,
-    fields: Record<string, string>,
-    fileField: string,
-    filePath: string,
-    fileName: string,
-    options?: { signal?: AbortSignal },
-  ): Promise<TResponse> => {
-    return telegramApi.callMultipart<TResponse>(
-      method,
-      fields,
-      fileField,
-      filePath,
-      fileName,
-      options,
-    );
-  };
-
+  const callTelegramApi = telegramApi.call;
+  const callTelegramMultipartApi = telegramApi.callMultipart;
+  const answerCallbackQuery = telegramApi.answerCallbackQuery;
   const downloadTelegramBridgeFile = (
     fileId: string,
     suggestedName: string,
-  ): Promise<string> => {
-    return telegramApi.downloadFile(fileId, suggestedName, TEMP_DIR);
-  };
-
-  const answerCallbackQuery = (
-    callbackQueryId: string,
-    text?: string,
-  ): Promise<void> => {
-    return telegramApi.answerCallbackQuery(callbackQueryId, text);
-  };
+  ): Promise<string> => telegramApi.downloadFile(fileId, suggestedName, TEMP_DIR);
 
   // --- Message Delivery & Preview ---
 
-  function startTypingLoop(ctx: ExtensionContext, chatId?: number): void {
+  function startTelegramChatActionLoop(
+    ctx: ExtensionContext,
+    action: "typing" | "record_voice",
+    chatId?: number,
+  ): void {
     const targetChatId = chatId ?? activeTelegramTurn?.chatId;
     if (typingInterval || targetChatId === undefined) return;
 
-    const sendTyping = async (): Promise<void> => {
+    const sendAction = async (): Promise<void> => {
       try {
         await callTelegramApi("sendChatAction", {
           chat_id: targetChatId,
-          action: "typing",
+          action,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        updateStatus(ctx, `typing failed: ${message}`);
+        updateStatus(ctx, `${action} failed: ${message}`);
       }
     };
 
-    void sendTyping();
+    void sendAction();
     typingInterval = setInterval(() => {
-      void sendTyping();
+      void sendAction();
     }, 4000);
+  }
+
+  function startTypingLoop(ctx: ExtensionContext, chatId?: number): void {
+    startTelegramChatActionLoop(ctx, "typing", chatId);
+  }
+
+  function startVoiceRecordingLoop(
+    ctx: ExtensionContext,
+    chatId?: number,
+  ): void {
+    startTelegramChatActionLoop(ctx, "record_voice", chatId);
+  }
+
+  function startTelegramTurnChatActionLoop(
+    ctx: ExtensionContext,
+    turn: Pick<PendingTelegramTurn, "replyModality" | "chatId">,
+  ): void {
+    if (turn.replyModality === "voice-required") {
+      startVoiceRecordingLoop(ctx, turn.chatId);
+      return;
+    }
+    startTypingLoop(ctx, turn.chatId);
+  }
+
+  function shouldSuppressTelegramTextPreview(
+    turn: Pick<
+      PendingTelegramTurn,
+      | "replyModality"
+      | "skipFinalTextReply"
+      | "voiceReplyDelivered"
+      | "explicitTextCopyRequested"
+    >,
+  ): boolean {
+    if (turn.explicitTextCopyRequested === true) {
+      return false;
+    }
+    return (
+      turn.replyModality === "voice-required" ||
+      turn.skipFinalTextReply === true ||
+      turn.voiceReplyDelivered === true
+    );
+  }
+
+  function shouldKeepTelegramTextReply(
+    turn: Pick<PendingTelegramTurn, "explicitTextCopyRequested">,
+    alsoSendText?: boolean,
+  ): boolean {
+    return alsoSendText === true && turn.explicitTextCopyRequested === true;
   }
 
   function stopTypingLoop(): void {
@@ -653,6 +711,16 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  async function deleteTelegramMessage(
+    chatId: number,
+    messageId: number,
+  ): Promise<void> {
+    await callTelegramApi("deleteMessage", {
+      chat_id: chatId,
+      message_id: messageId,
+    });
+  }
+
   const replyTransport = buildTelegramReplyTransport<TelegramReplyMarkup>({
     sendMessage: async (body) => {
       return callTelegramApi<TelegramSentMessage>("sendMessage", body);
@@ -673,6 +741,7 @@ export default function (pi: ExtensionAPI) {
         clearTimeout(state.flushTimer);
         state.flushTimer = undefined;
       },
+      getReplyToMessageId: () => activeTelegramTurn?.replyToMessageId,
       maxMessageLength: MAX_MESSAGE_LENGTH,
       renderPreviewText: renderMarkdownPreviewText,
       getDraftSupport: () => draftSupport,
@@ -690,12 +759,15 @@ export default function (pi: ExtensionAPI) {
       sendMessage: async (
         chatId: number,
         text: string,
-        options?: { parseMode?: "HTML" },
+        options?: { parseMode?: "HTML"; replyToMessageId?: number },
       ) => {
         return callTelegramApi<TelegramSentMessage>("sendMessage", {
           chat_id: chatId,
           text,
           parse_mode: options?.parseMode,
+          ...(options?.replyToMessageId
+            ? { reply_to_message_id: options.replyToMessageId }
+            : {}),
         });
       },
       editMessageText: async (
@@ -711,8 +783,13 @@ export default function (pi: ExtensionAPI) {
           parse_mode: options?.parseMode,
         });
       },
+      deleteMessage: async (chatId: number, messageId: number) => {
+        await deleteTelegramMessage(chatId, messageId);
+      },
       renderTelegramMessage,
-      sendRenderedChunks: replyTransport.sendRenderedChunks,
+      sendRenderedChunks: (chatId, chunks, options) => {
+        return replyTransport.sendRenderedChunks(chatId, chunks, options);
+      },
       editRenderedMessage: replyTransport.editRenderedMessage,
     };
   }
@@ -749,7 +826,7 @@ export default function (pi: ExtensionAPI) {
 
   async function sendTextReply(
     chatId: number,
-    _replyToMessageId: number,
+    replyToMessageId: number,
     text: string,
     options?: { parseMode?: "HTML" },
   ): Promise<number | undefined> {
@@ -757,10 +834,12 @@ export default function (pi: ExtensionAPI) {
       text,
       {
         renderTelegramMessage,
-        sendRenderedChunks: async (chunks) =>
-          replyTransport.sendRenderedChunks(chatId, chunks),
+        sendRenderedChunks: async (chunks, sendOptions) =>
+          replyTransport.sendRenderedChunks(chatId, chunks, {
+            replyToMessageId: sendOptions?.replyToMessageId,
+          }),
       },
-      options,
+      { ...options, replyToMessageId },
     );
   }
 
@@ -769,15 +848,21 @@ export default function (pi: ExtensionAPI) {
     replyToMessageId: number,
     markdown: string,
   ): Promise<number | undefined> {
-    return sendTelegramMarkdownReply(markdown, {
-      renderTelegramMessage,
-      sendRenderedChunks: async (chunks) => {
-        if (chunks.length === 0) {
-          return sendTextReply(chatId, replyToMessageId, markdown);
-        }
-        return replyTransport.sendRenderedChunks(chatId, chunks);
+    return sendTelegramMarkdownReply(
+      markdown,
+      {
+        renderTelegramMessage,
+        sendRenderedChunks: async (chunks, sendOptions) => {
+          if (chunks.length === 0) {
+            return sendTextReply(chatId, replyToMessageId, markdown);
+          }
+          return replyTransport.sendRenderedChunks(chatId, chunks, {
+            replyToMessageId: sendOptions?.replyToMessageId,
+          });
+        },
       },
-    });
+      { replyToMessageId },
+    );
   }
 
   async function sendQueuedAttachments(
@@ -795,6 +880,155 @@ export default function (pi: ExtensionAPI) {
       },
       sendTextReply,
     });
+  }
+
+  function getVoiceSettings(cwd: string): ReturnType<typeof resolveTelegramVoiceSettings> {
+    return resolveTelegramVoiceSettings(config, cwd);
+  }
+
+  function getVoiceMenuSettings(cwd: string): TelegramVoiceMenuSettings {
+    const settings = getVoiceSettings(cwd);
+    return {
+      enabled: settings.enabled,
+      provider: settings.provider,
+      replyWithVoiceOnIncomingVoice: settings.replyWithVoiceOnIncomingVoice,
+      autoTranscribeIncoming: settings.autoTranscribeIncoming,
+      alsoSendTextReply: settings.alsoSendTextReply,
+      voiceId: settings.defaultVoiceId,
+      language: settings.defaultLanguage ?? "auto",
+      speechStyle: settings.speechStyle,
+    };
+  }
+
+  function getVoiceStatusButtonSummary(cwd: string): string {
+    const settings = getVoiceSettings(cwd);
+    return settings.enabled ? "open" : "off";
+  }
+
+  function shouldRewriteSpeechText(
+    settings: ReturnType<typeof resolveTelegramVoiceSettings>,
+  ): boolean {
+    return (
+      settings.speechStyle !== "literal" ||
+      settings.speechPreparationPrompt !==
+        DEFAULT_TELEGRAM_SPEECH_PREPARATION_PROMPT
+    );
+  }
+
+  async function rewriteTelegramSpeechText(options: {
+    text: string;
+    settings: ReturnType<typeof resolveTelegramVoiceSettings>;
+    inputModality?: PendingTelegramTurn["inputModality"];
+    language?: string;
+  }): Promise<string> {
+    if (!shouldRewriteSpeechText(options.settings) || !currentTelegramModel) {
+      return options.text;
+    }
+    const provider = getTelegramVoiceProvider(options.settings.provider);
+    const prompt = buildSpeechPreparationPrompt({
+      settings: options.settings,
+      inputModality: options.inputModality,
+      language: options.language,
+      tagStyle: provider?.tagStyle || "none",
+      text: options.text,
+    });
+    const context: Context = {
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+          timestamp: Date.now(),
+        },
+      ],
+    };
+    const { completeSimple } = await import("@mariozechner/pi-ai");
+    const response = await completeSimple(currentTelegramModel, context);
+    if (response.stopReason === "error" || response.stopReason === "aborted") {
+      return options.text;
+    }
+    const rewritten = response.content
+      .filter((content): content is { type: "text"; text: string } => {
+        return content.type === "text";
+      })
+      .map((content) => content.text)
+      .join("")
+      .trim();
+    return rewritten || options.text;
+  }
+
+  async function sendTelegramVoiceReply(options: {
+    chatId: number;
+    replyToMessageId?: number;
+    text: string;
+    cwd: string;
+    ctx?: ExtensionContext;
+    voiceId?: string;
+    language?: string;
+    alsoSendText?: boolean;
+    inputModality?: PendingTelegramTurn["inputModality"];
+    transcriptLanguage?: PendingTelegramTurn["voiceTranscriptLanguage"];
+  }): Promise<void> {
+    const voiceSettings = getVoiceSettings(options.cwd);
+    if (!getTelegramVoiceProvider(voiceSettings.provider)) {
+      throw new Error(
+        `Unsupported Telegram voice provider: ${voiceSettings.provider}`,
+      );
+    }
+    if (options.ctx) {
+      stopTypingLoop();
+      startVoiceRecordingLoop(options.ctx, options.chatId);
+    } else {
+      await callTelegramApi("sendChatAction", {
+        chat_id: options.chatId,
+        action: "record_voice",
+      }).catch(() => undefined);
+    }
+    const resolvedLanguage = resolveTelegramVoiceLanguage({
+      text: options.text,
+      requestedLanguage: options.language || voiceSettings.defaultLanguage,
+      transcriptLanguage: options.transcriptLanguage,
+    });
+    const rewrittenText = await rewriteTelegramSpeechText({
+      text: options.text,
+      settings: voiceSettings,
+      inputModality: options.inputModality,
+      language: resolvedLanguage,
+    });
+    const delivery = await synthesizeTelegramVoiceReply({
+      cwd: options.cwd,
+      text: rewrittenText,
+      voiceId: options.voiceId,
+      language: resolvedLanguage,
+      settings: voiceSettings,
+      inputModality: options.inputModality,
+    });
+    let delivered = false;
+    try {
+      try {
+        await callTelegramMultipartApi<TelegramSentMessage>(
+          delivery.method,
+          {
+            chat_id: String(options.chatId),
+            ...(options.replyToMessageId
+              ? { reply_to_message_id: String(options.replyToMessageId) }
+              : {}),
+          },
+          delivery.fieldName,
+          delivery.filePath,
+          delivery.fileName,
+        );
+        delivered = true;
+      } catch (error) {
+        throw error;
+      }
+    } finally {
+      if (options.ctx) {
+        stopTypingLoop();
+      }
+      for (const path of delivery.cleanupPaths) {
+        await unlink(path).catch(() => undefined);
+      }
+    }
   }
 
   function extractAssistantText(messages: AgentMessage[]): {
@@ -937,6 +1171,61 @@ export default function (pi: ExtensionAPI) {
     );
   }
 
+  async function updateVoiceMenuMessage(
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    await updateTelegramVoiceMenuMessage(
+      state,
+      getVoiceMenuSettings(ctx.cwd),
+      { editInteractiveMessage, sendInteractiveMessage },
+    );
+  }
+
+  async function updateVoiceLanguageMenuMessage(
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    await updateTelegramVoiceLanguageMenuMessage(
+      state,
+      getVoiceMenuSettings(ctx.cwd),
+      { editInteractiveMessage, sendInteractiveMessage },
+    );
+  }
+
+  async function updateVoiceAnswerMenuMessage(
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    await updateTelegramVoiceAnswerMenuMessage(
+      state,
+      getVoiceMenuSettings(ctx.cwd),
+      { editInteractiveMessage, sendInteractiveMessage },
+    );
+  }
+
+  async function updateVoiceStyleMenuMessage(
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    await updateTelegramVoiceStyleMenuMessage(
+      state,
+      getVoiceMenuSettings(ctx.cwd),
+      { editInteractiveMessage, sendInteractiveMessage },
+    );
+  }
+
+  async function updateVoiceVoiceMenuMessage(
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    await updateTelegramVoiceVoiceMenuMessage(
+      state,
+      getVoiceMenuSettings(ctx.cwd),
+      { editInteractiveMessage, sendInteractiveMessage },
+    );
+  }
+
   async function editInteractiveMessage(
     chatId: number,
     messageId: number,
@@ -985,6 +1274,7 @@ export default function (pi: ExtensionAPI) {
       buildStatusHtml(ctx, getCurrentTelegramModel(ctx)),
       getCurrentTelegramModel(ctx),
       pi.getThinkingLevel(),
+      getVoiceStatusButtonSummary(ctx.cwd),
       { editInteractiveMessage, sendInteractiveMessage },
     );
   }
@@ -1007,6 +1297,7 @@ export default function (pi: ExtensionAPI) {
       buildStatusHtml(ctx, getCurrentTelegramModel(ctx)),
       getCurrentTelegramModel(ctx),
       pi.getThinkingLevel(),
+      getVoiceStatusButtonSummary(ctx.cwd),
       { editInteractiveMessage, sendInteractiveMessage },
     );
     if (messageId === undefined) return;
@@ -1166,6 +1457,7 @@ export default function (pi: ExtensionAPI) {
         updateModelMenuMessage: async () => updateModelMenuMessage(state, ctx),
         updateThinkingMenuMessage: async () =>
           updateThinkingMenuMessage(state, ctx),
+        updateVoiceMenuMessage: async () => updateVoiceMenuMessage(state, ctx),
         answerCallbackQuery,
       },
     );
@@ -1190,6 +1482,32 @@ export default function (pi: ExtensionAPI) {
         answerCallbackQuery,
       },
     );
+  }
+
+  async function handleVoiceCallbackAction(
+    query: TelegramCallbackQuery,
+    state: TelegramModelMenuState,
+    ctx: ExtensionContext,
+  ): Promise<boolean> {
+    return handleTelegramVoiceMenuCallbackAction(query.id, query.data, {
+      getVoiceSettings: () => getVoiceMenuSettings(ctx.cwd),
+      saveVoiceSetting: async (command) => {
+        config = updateTelegramVoiceConfig(config, command);
+        await writeTelegramConfig(AGENT_DIR, CONFIG_PATH, config);
+        updateStatus(ctx);
+      },
+      updateVoiceMenuMessage: async () => updateVoiceMenuMessage(state, ctx),
+      updateVoiceAnswerMenuMessage: async () =>
+        updateVoiceAnswerMenuMessage(state, ctx),
+      updateVoiceLanguageMenuMessage: async () =>
+        updateVoiceLanguageMenuMessage(state, ctx),
+      updateVoiceStyleMenuMessage: async () =>
+        updateVoiceStyleMenuMessage(state, ctx),
+      updateVoiceVoiceMenuMessage: async () =>
+        updateVoiceVoiceMenuMessage(state, ctx),
+      updateStatusMessage: async () => showStatusMessage(state, ctx),
+      answerCallbackQuery,
+    });
   }
 
   async function handleModelCallbackAction(
@@ -1266,6 +1584,11 @@ export default function (pi: ExtensionAPI) {
           if (!state) return false;
           return handleThinkingCallbackAction(query, state, ctx);
         },
+        handleVoiceAction: async () => {
+          const state = messageId ? modelMenus.get(messageId) : undefined;
+          if (!state) return false;
+          return handleVoiceCallbackAction(query, state, ctx);
+        },
         handleModelAction: async () => {
           const state = messageId ? modelMenus.get(messageId) : undefined;
           if (!state) return false;
@@ -1294,6 +1617,7 @@ export default function (pi: ExtensionAPI) {
         fileName: file.fileName,
         isImage: file.isImage,
         mimeType: file.mimeType,
+        kind: file.kind,
       });
     }
     return downloaded;
@@ -1405,15 +1729,59 @@ export default function (pi: ExtensionAPI) {
     messages: TelegramMessage[],
     historyTurns: PendingTelegramTurn[] = [],
   ): Promise<PendingTelegramTurn> {
+    const files = await buildTelegramFiles(messages);
+    const rawText = extractTelegramMessagesText(messages);
+    const inputModality = detectTelegramInputModality(messages);
+    const voiceSettings = getVoiceSettings(process.cwd());
+    const voiceFile = files.find(
+      (file) => file.kind === "voice" || file.kind === "audio",
+    );
+    let voiceTranscript: string | undefined;
+    let voiceTranscriptLanguage: string | undefined;
+    let voiceTranscriptionError: string | undefined;
+    if (
+      voiceSettings.enabled &&
+      voiceSettings.autoTranscribeIncoming &&
+      voiceFile
+    ) {
+      try {
+        const transcript = await transcribeTelegramAudio({
+          cwd: process.cwd(),
+          filePath: voiceFile.path,
+          settings: voiceSettings,
+          language: voiceSettings.sttLanguage || voiceSettings.defaultLanguage,
+        });
+        voiceTranscript = transcript.text || undefined;
+        voiceTranscriptLanguage = transcript.language || undefined;
+      } catch (error) {
+        voiceTranscriptionError =
+          error instanceof Error ? error.message : String(error);
+      }
+    }
+    const replyModality =
+      inputModality === "voice" &&
+      voiceSettings.enabled &&
+      voiceSettings.replyWithVoiceOnIncomingVoice
+        ? "voice-required"
+        : "text";
     return buildTelegramPromptTurn({
       telegramPrefix: TELEGRAM_PREFIX,
       messages,
       historyTurns,
       queueOrder: nextQueuedTelegramItemOrder++,
-      rawText: extractTelegramMessagesText(messages),
-      files: await buildTelegramFiles(messages),
+      rawText,
+      files,
       readBinaryFile: async (path) => readFile(path),
       inferImageMimeType: guessMediaType,
+      inputModality,
+      replyModality,
+      voiceFilePath: voiceFile?.kind === "voice" ? voiceFile.path : undefined,
+      voiceTranscript,
+      voiceTranscriptLanguage,
+      voiceTranscriptionError,
+      explicitTextCopyRequested: detectExplicitTelegramTextCopyRequest(
+        [rawText, voiceTranscript].filter(Boolean).join("\n\n"),
+      ),
     });
   }
 
@@ -1751,6 +2119,55 @@ export default function (pi: ExtensionAPI) {
     updateStatus(ctx);
   }
 
+  async function handleVoiceSettingsCommand(
+    args: string,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    const command = parseTelegramVoiceCommand(args);
+    if (!command) {
+      ctx.ui.notify(
+        "Usage: /telegram-voice [status|on|off|reply on|reply off|transcribe on|transcribe off|text on|text off|voice <id>|lang <code>|provider <id>|style literal|rewrite-light|rewrite-tags|rewrite-strong|prompt|prompt reset]",
+        "error",
+      );
+      return;
+    }
+    if (command.action === "prompt") {
+      const currentPrompt =
+        config.voice?.speechPreparationPrompt ||
+        DEFAULT_TELEGRAM_SPEECH_PREPARATION_PROMPT;
+      const edited = await ctx.ui.editor(
+        "Telegram voice speech-preparation prompt",
+        currentPrompt,
+      );
+      if (edited === undefined) {
+        return;
+      }
+      config = {
+        ...config,
+        voice: {
+          ...(config.voice || {}),
+          speechPreparationPrompt: edited.trim() || undefined,
+        },
+      };
+      await writeTelegramConfig(AGENT_DIR, CONFIG_PATH, config);
+    } else if (command.action === "prompt-reset") {
+      config = {
+        ...config,
+        voice: {
+          ...(config.voice || {}),
+          speechPreparationPrompt: undefined,
+        },
+      };
+      await writeTelegramConfig(AGENT_DIR, CONFIG_PATH, config);
+    } else if (command.action !== "status") {
+      config = updateTelegramVoiceConfig(config, command);
+      await writeTelegramConfig(AGENT_DIR, CONFIG_PATH, config);
+    }
+    const status = formatTelegramVoiceStatus(getVoiceSettings(ctx.cwd));
+    ctx.ui.notify(status, "info");
+    updateStatus(ctx);
+  }
+
   // --- Extension Registration ---
 
   registerTelegramAttachmentTool(pi, {
@@ -1759,21 +2176,62 @@ export default function (pi: ExtensionAPI) {
     statPath: stat,
   });
 
+  registerTelegramVoiceTool(pi, {
+    getActiveTurn: () => activeTelegramTurn,
+    getProactiveChatId: () => config.allowedUserId,
+    shouldKeepTextReply: (activeTurn, alsoSendText) => {
+      return shouldKeepTelegramTextReply(activeTurn, alsoSendText);
+    },
+    sendVoiceReply: async (options) => {
+      const turn = activeTelegramTurn;
+      const proactiveChatId = options.proactiveChatId ?? config.allowedUserId;
+      if (!turn && !proactiveChatId) {
+        throw new Error(
+          "telegram_send_voice requires an active Telegram turn or a paired Telegram user for proactive delivery",
+        );
+      }
+      const voiceSettings = getVoiceSettings(process.cwd());
+      const shouldSkipFinalTextReply = options.alsoSendText !== true;
+      if (turn) {
+        await clearPreview(turn.chatId);
+      }
+      await sendTelegramVoiceReply({
+        chatId: turn?.chatId ?? proactiveChatId!,
+        replyToMessageId: turn?.replyToMessageId,
+        text: options.text,
+        cwd: process.cwd(),
+        voiceId: options.voiceId || voiceSettings.defaultVoiceId,
+        language: options.language || voiceSettings.defaultLanguage,
+        alsoSendText: options.alsoSendText,
+        inputModality: turn?.inputModality,
+        transcriptLanguage: turn?.voiceTranscriptLanguage,
+      });
+      if (turn) {
+        turn.skipFinalTextReply = shouldSkipFinalTextReply;
+        turn.voiceReplyDelivered = true;
+      }
+    },
+    getDefaultVoiceSettings: () => getVoiceSettings(process.cwd()),
+  });
+
   registerTelegramCommands(pi, {
     promptForConfig,
     getStatusLines: () => {
+      const voiceSettings = getVoiceSettings(process.cwd());
       return [
         `bot: ${config.botUsername ? `@${config.botUsername}` : "not configured"}`,
         `allowed user: ${config.allowedUserId ?? "not paired"}`,
         `polling: ${pollingPromise ? "running" : "stopped"}`,
         `active telegram turn: ${activeTelegramTurn ? "yes" : "no"}`,
         `queued telegram turns: ${queuedTelegramItems.length}`,
+        `voice: ${voiceSettings.enabled ? "on" : "off"}/${voiceSettings.provider}/${voiceSettings.speechStyle}${voiceSettings.alsoSendTextReply ? " + text" : ""}`,
       ];
     },
     reloadConfig: async () => {
       config = await readTelegramConfig(CONFIG_PATH);
     },
     hasBotToken: () => !!config.botToken,
+    handleVoiceCommand: handleVoiceSettingsCommand,
     startPolling,
     stopPolling,
     updateStatus,
@@ -1858,7 +2316,7 @@ export default function (pi: ExtensionAPI) {
       if (startPlan.activeTurn) {
         activeTelegramTurn = { ...startPlan.activeTurn };
         previewState = createPreviewState();
-        startTypingLoop(ctx);
+        startTelegramTurnChatActionLoop(ctx, startPlan.activeTurn);
       }
       updateStatus(ctx);
     },
@@ -1886,6 +2344,11 @@ export default function (pi: ExtensionAPI) {
         (previewState.pendingText.trim().length > 0 ||
           previewState.lastSentText.trim().length > 0)
       ) {
+        if (shouldSuppressTelegramTextPreview(activeTelegramTurn)) {
+          await clearPreview(activeTelegramTurn.chatId);
+          previewState = createPreviewState();
+          return;
+        }
         const previousText = previewState.pendingText.trim();
         if (previousText.length > 0) {
           await finalizeMarkdownPreview(
@@ -1901,6 +2364,13 @@ export default function (pi: ExtensionAPI) {
     onMessageUpdate: async (event, _ctx) => {
       const nextEvent = event as { message: AgentMessage };
       if (!activeTelegramTurn || !isAssistantMessage(nextEvent.message)) return;
+      if (shouldSuppressTelegramTextPreview(activeTelegramTurn)) {
+        if (previewState) {
+          await clearPreview(activeTelegramTurn.chatId);
+        }
+        previewState = createPreviewState();
+        return;
+      }
       if (!previewState) {
         previewState = createPreviewState();
       }
@@ -1951,7 +2421,41 @@ export default function (pi: ExtensionAPI) {
       if (previewState) {
         previewState.pendingText = finalText ?? previewState.pendingText;
       }
-      if (endPlan.kind === "text" && finalText) {
+      if (
+        endPlan.kind === "text" &&
+        finalText &&
+        turn.replyModality === "voice-required" &&
+        !turn.voiceReplyDelivered
+      ) {
+        const voiceSettings = getVoiceSettings(ctx.cwd);
+        try {
+          const keepTextReply =
+            turn.explicitTextCopyRequested === true ||
+            voiceSettings.alsoSendTextReply === true;
+          await sendTelegramVoiceReply({
+            chatId: turn.chatId,
+            replyToMessageId: turn.replyToMessageId,
+            text: finalText,
+            cwd: ctx.cwd,
+            ctx,
+            voiceId: voiceSettings.defaultVoiceId,
+            language: voiceSettings.defaultLanguage,
+            alsoSendText: keepTextReply,
+            inputModality: turn.inputModality,
+            transcriptLanguage: turn.voiceTranscriptLanguage,
+          });
+          turn.voiceReplyDelivered = true;
+          turn.skipFinalTextReply = !keepTextReply;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await sendTextReply(
+            turn.chatId,
+            turn.replyToMessageId,
+            `Voice reply failed. Falling back to text.\n${message}`,
+          );
+        }
+      }
+      if (endPlan.kind === "text" && finalText && !turn.skipFinalTextReply) {
         const finalized = await finalizeMarkdownPreview(turn.chatId, finalText);
         if (!finalized) {
           await clearPreview(turn.chatId);
@@ -1961,6 +2465,8 @@ export default function (pi: ExtensionAPI) {
             finalText,
           );
         }
+      } else if (turn.skipFinalTextReply) {
+        await clearPreview(turn.chatId);
       }
       if (endPlan.shouldSendAttachmentNotice) {
         await sendTextReply(

@@ -12,6 +12,20 @@ export interface TelegramConfig {
   botId?: number;
   allowedUserId?: number;
   lastUpdateId?: number;
+  voice?: TelegramVoiceConfig;
+}
+
+export interface TelegramVoiceConfig {
+  enabled?: boolean;
+  provider?: string;
+  providerOptions?: Record<string, unknown>;
+  autoTranscribeIncoming?: boolean;
+  replyWithVoiceOnIncomingVoice?: boolean;
+  alsoSendTextReply?: boolean;
+  defaultVoiceId?: string;
+  defaultLanguage?: string;
+  speechStyle?: "literal" | "rewrite-light" | "rewrite-tags" | "rewrite-strong";
+  speechPreparationPrompt?: string;
 }
 
 interface TelegramApiResponse<T> {

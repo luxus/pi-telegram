@@ -46,11 +46,18 @@ test("Reply delivery sends chunks and applies reply markup only to the last chun
       replyMarkup: {
         inline_keyboard: [[{ text: "ok", callback_data: "noop" }]],
       },
+      replyToMessageId: 42,
     },
   );
   assert.equal(messageId, 2);
   assert.deepEqual(sentBodies, [
-    { chat_id: 7, text: "one", parse_mode: undefined, reply_markup: undefined },
+    {
+      chat_id: 7,
+      text: "one",
+      parse_mode: undefined,
+      reply_markup: undefined,
+      reply_to_message_id: 42,
+    },
     {
       chat_id: 7,
       text: "two",
@@ -58,6 +65,7 @@ test("Reply delivery sends chunks and applies reply markup only to the last chun
       reply_markup: {
         inline_keyboard: [[{ text: "ok", callback_data: "noop" }]],
       },
+      reply_to_message_id: undefined,
     },
   ]);
 });
@@ -82,6 +90,7 @@ test("Reply delivery edits the first chunk and sends remaining chunks separately
       replyMarkup: {
         inline_keyboard: [[{ text: "ok", callback_data: "noop" }]],
       },
+      replyToMessageId: 42,
     },
   );
   assert.equal(result, 123);
@@ -102,6 +111,7 @@ test("Reply delivery edits the first chunk and sends remaining chunks separately
       reply_markup: {
         inline_keyboard: [[{ text: "ok", callback_data: "noop" }]],
       },
+      reply_to_message_id: 42,
     },
   ]);
 });

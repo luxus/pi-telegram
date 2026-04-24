@@ -37,5 +37,11 @@
     "@mariozechner/pi-agent-core": "*",
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
   }
 }

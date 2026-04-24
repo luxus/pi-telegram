@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   collectTelegramFileInfos,
   collectTelegramMessageIds,
+  detectTelegramInputModality,
   extractFirstTelegramMessageText,
   extractTelegramMessagesText,
   formatTelegramHistoryText,
@@ -43,13 +44,31 @@ test("Media helpers collect file infos across Telegram message variants", () => 
       id: file.file_id,
       name: file.fileName,
       image: file.isImage,
+      kind: file.kind,
     })),
     [
-      { id: "large", name: "photo-1.jpg", image: true },
-      { id: "doc", name: "report.png", image: true },
-      { id: "voice", name: "voice-1.ogg", image: false },
-      { id: "sticker", name: "sticker-1.webp", image: true },
+      { id: "large", name: "photo-1.jpg", image: true, kind: "photo" },
+      { id: "doc", name: "report.png", image: true, kind: "document" },
+      { id: "voice", name: "voice-1.ogg", image: false, kind: "voice" },
+      { id: "sticker", name: "sticker-1.webp", image: true, kind: "sticker" },
     ],
+  );
+});
+
+test("Media helpers detect voice, audio, and mixed input modalities", () => {
+  assert.equal(
+    detectTelegramInputModality([{ message_id: 1, voice: { file_id: "v" } }]),
+    "voice",
+  );
+  assert.equal(
+    detectTelegramInputModality([{ message_id: 1, audio: { file_id: "a" } }]),
+    "audio",
+  );
+  assert.equal(
+    detectTelegramInputModality([
+      { message_id: 1, voice: { file_id: "v" }, text: "hi" },
+    ]),
+    "mixed",
   );
 });
 

@@ -929,8 +929,8 @@ test("Dispatch runtime reports prompt dispatch failures after starting", () => {
       executeControlItem: () => {
         events.push("control");
       },
-      onPromptDispatchStart: (chatId) => {
-        events.push(`start:${chatId}`);
+      onPromptDispatchStart: (item) => {
+        events.push(`start:${item.chatId}:${item.replyModality ?? "text"}`);
       },
       sendUserMessage: () => {
         throw new Error("boom");
@@ -943,7 +943,7 @@ test("Dispatch runtime reports prompt dispatch failures after starting", () => {
       },
     },
   );
-  assert.deepEqual(events, ["start:2", "error:boom"]);
+  assert.deepEqual(events, ["start:2:text", "error:boom"]);
 });
 
 test("Session runtime helper starts polling only when a bot token exists and polling is idle", () => {

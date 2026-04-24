@@ -33,6 +33,7 @@ export interface TelegramPreviewRuntimeDeps {
   getState: () => TelegramPreviewRuntimeState | undefined;
   setState: (state: TelegramPreviewRuntimeState | undefined) => void;
   clearScheduledFlush: (state: TelegramPreviewRuntimeState) => void;
+  getReplyToMessageId: () => number | undefined;
   maxMessageLength: number;
   renderPreviewText: (markdown: string) => string;
   getDraftSupport: () => "unknown" | "supported" | "unsupported";
@@ -42,7 +43,7 @@ export interface TelegramPreviewRuntimeDeps {
   sendMessage: (
     chatId: number,
     text: string,
-    options?: { parseMode?: "HTML" },
+    options?: { parseMode?: "HTML"; replyToMessageId?: number },
   ) => Promise<TelegramSentPreviewMessageLike>;
   editMessageText: (
     chatId: number,
@@ -50,6 +51,7 @@ export interface TelegramPreviewRuntimeDeps {
     text: string,
     options?: { parseMode?: "HTML" },
   ) => Promise<void>;
+  deleteMessage: (chatId: number, messageId: number) => Promise<void>;
   renderTelegramMessage: (
     text: string,
     options?: { mode?: TelegramRenderMode },
@@ -57,6 +59,7 @@ export interface TelegramPreviewRuntimeDeps {
   sendRenderedChunks: (
     chatId: number,
     chunks: TelegramRenderedChunk[],
+    options?: { replyToMessageId?: number },
   ) => Promise<number | undefined>;
   editRenderedMessage: (
     chatId: number,
@@ -97,9 +100,17 @@ export async function clearTelegramPreview(
   if (!state) return;
   deps.clearScheduledFlush(state);
   deps.setState(undefined);
-  if (state.mode !== "draft" || state.draftId === undefined) return;
+  if (state.mode === "draft" && state.draftId !== undefined) {
+    try {
+      await deps.sendDraft(chatId, state.draftId, "");
+    } catch {
+      // ignore
+    }
+    return;
+  }
+  if (state.mode !== "message" || state.messageId === undefined) return;
   try {
-    await deps.sendDraft(chatId, state.draftId, "");
+    await deps.deleteMessage(chatId, state.messageId);
   } catch {
     // ignore
   }
@@ -149,6 +160,7 @@ export async function flushTelegramPreview(
   if (state.messageId === undefined) {
     const sent = await deps.sendMessage(chatId, snapshot.text, {
       parseMode: snapshot.parseMode,
+      replyToMessageId: deps.getReplyToMessageId(),
     });
     state.messageId = sent.message_id;
     state.mode = "message";
@@ -179,7 +191,9 @@ export async function finalizeTelegramPreview(
     return false;
   }
   if (state.mode === "draft") {
-    await deps.sendMessage(chatId, finalText);
+    await deps.sendMessage(chatId, finalText, {
+      replyToMessageId: deps.getReplyToMessageId(),
+    });
     await clearTelegramPreview(chatId, deps);
     return true;
   }
@@ -201,7 +215,9 @@ export async function finalizeTelegramMarkdownPreview(
     return false;
   }
   if (state.mode === "draft") {
-    await deps.sendRenderedChunks(chatId, chunks);
+    await deps.sendRenderedChunks(chatId, chunks, {
+      replyToMessageId: deps.getReplyToMessageId(),
+    });
     await clearTelegramPreview(chatId, deps);
     return true;
   }
