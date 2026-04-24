@@ -31,7 +31,7 @@ Current runtime areas include:
 - Telegram updates extraction, authorization, flow, execution-planning, direct execute-from-update routing, and runtime helpers in `/lib/updates.ts`
 - Telegram attachment queueing and delivery helpers in `/lib/attachments.ts`
 - Telegram tool, command, and lifecycle-hook registration helpers in `/lib/registration.ts`
-- Telegram voice settings, provider adapters, STT/TTS orchestration, speech preparation helpers, and Telegram voice-note delivery helpers in `/lib/voice.ts`
+- Telegram voice settings, provider adapters, STT/TTS orchestration, speech preparation helpers, and Telegram voice-note delivery helpers in `/lib/voice.ts`; voice support defaults to enabled only when the configured provider is locally available, config can still explicitly set `voice.enabled`, and `pi-xai-voice` can be used as an optional code-level adapter while preserving xAI speech tags. The adapter resolves by package name, `PI_XAI_VOICE_ADAPTER`, or a sibling `../pi-xai-voice/voice-adapter.ts` checkout for local development
 - Setup/token prompt helpers in `/lib/setup.ts`
 - Markdown, preview-snapshot, and Telegram message rendering helpers in `/lib/rendering.ts`
 - Status rendering helpers in `/lib/status.ts`
@@ -59,7 +59,7 @@ Because `ctx.ui.input()` only exposes placeholder text, the bridge uses `ctx.ui.
 2. The bridge filters to the paired private user
 3. Media groups are coalesced into a single Telegram turn when needed
 4. Files are downloaded into `~/.pi/agent/tmp/telegram`
-5. Voice and audio turns can be transcribed through the configured voice-provider adapter before prompt construction when Telegram voice mode is enabled
+5. Voice and audio turns can be transcribed through the configured voice-provider adapter before prompt construction when Telegram voice mode is enabled, which is the default only when the configured provider is locally available
 6. A `PendingTelegramTurn` is created and queued locally with modality metadata such as text vs voice and preferred reply modality
 7. The queue dispatcher sends the turn into pi only when dispatch is safe
 

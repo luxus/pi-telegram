@@ -21,7 +21,7 @@ This repository is an actively maintained fork of [`badlogic/pi-telegram`](https
 - **Smart Message Queue**: Messages sent while the agent is busy are queued and previewed in the pi status bar, and queued turns can be reprioritized or removed with Telegram reactions.
 - **Mobile-Optimized Rendering**: Tables and lists are formatted for narrow screens. Markdown is correctly parsed and split to fit Telegram's limits without breaking HTML structures or code blocks, block spacing stays faithful to the original Markdown with readable heading separation, supported absolute links stay clickable, and unsupported link forms degrade safely.
 - **File Handling & Attachments**: Send images and files to the agent, or ask it to generate and return artifacts. Outbound files are delivered automatically via the `telegram_attach` tool.
-- **Voice Notes**: Telegram voice messages can be transcribed through configurable voice-provider adapters, voice turns can prefer spoken replies automatically, and the agent can send real Telegram voice notes through `telegram_send_voice`.
+- **Voice Notes**: Voice support is enabled by default when a configured provider is locally available. Telegram voice messages can be transcribed through configurable voice-provider adapters, voice turns can prefer spoken replies automatically, and the agent can send real Telegram voice notes through `telegram_send_voice`.
 - **Streaming Responses**: Closed Markdown blocks stream back as rich Telegram HTML while pi is generating, and the still-growing tail stays readable until the final fully rendered reply lands.
 
 ## Install
@@ -90,6 +90,7 @@ Useful subcommands:
 - `/telegram-voice reply on`
 - `/telegram-voice transcribe on`
 - `/telegram-voice provider xai`
+- `/telegram-voice provider pi-xai-voice`
 - `/telegram-voice voice eve`
 - `/telegram-voice lang auto`
 - `/telegram-voice style rewrite-light`
@@ -105,8 +106,8 @@ Useful subcommands:
 - `👎` removes a waiting turn from the queue. Telegram Bot API does not expose ordinary DM message-deletion events through the polling path used here, so queue removal is bound to the dislike reaction.
 - For media groups, a reaction on any message in the group applies to the whole queued turn.
 - Inbound images, albums, and files are downloaded to `~/.pi/agent/tmp/telegram`, local file paths are included in the prompt, and inbound images are forwarded to pi as image inputs.
-- Inbound Telegram voice messages and audio files can be transcribed through the configured voice provider when voice support is enabled.
-- If voice mode is enabled and a turn started from a Telegram voice message, the bridge can send the final assistant reply back as a Telegram voice note automatically.
+- Inbound Telegram voice messages and audio files are transcribed through the configured voice provider by default when provider credentials are available; use `/telegram-voice off` when you want to disable voice support.
+- If a turn started from a Telegram voice message, the bridge can send the final assistant reply back as a Telegram voice note automatically when voice support is available.
 - Queue reactions depend on Telegram delivering `message_reaction` updates for your bot and chat type.
 
 ### Requesting Files
@@ -132,9 +133,9 @@ Example voice config in `~/.pi/agent/telegram.json`:
 }
 ```
 
-`provider` and `speechPreparationPrompt` are provider-neutral bridge settings. Today `xai` adapter is built in; additional providers can plug into same orchestration path later.
+`provider` and `speechPreparationPrompt` are provider-neutral bridge settings. The built-in `xai` adapter is available directly, and `pi-xai-voice` can be selected when the `pi-xai-voice` package is installed. For local development, set `PI_XAI_VOICE_ADAPTER=/path/to/pi-xai-voice/voice-adapter.ts` or keep `pi-xai-voice` as a sibling checkout. Both xAI-backed providers use the same constrained speech-tag allowlist, and tagged text is passed through to xAI TTS.
 
-For the built-in xAI adapter, speech tags are intentionally constrained to a fixed allowlist. The prompt explicitly tells the model to use only these tags and the voice layer strips unsupported invented tags before synthesis.
+For xAI-backed adapters, speech tags are intentionally constrained to a fixed allowlist. The prompt explicitly tells the model to use only these tags and the voice layer strips unsupported invented tags before synthesis.
 
 Supported xAI inline tags:
 

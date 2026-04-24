@@ -4,10 +4,12 @@
  */
 
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, extname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import type { TelegramConfig, TelegramVoiceConfig } from "./api.ts";
 import type { TelegramInputModality } from "./media.ts";
@@ -15,6 +17,7 @@ import type { TelegramInputModality } from "./media.ts";
 const XAI_API_BASE = "https://api.x.ai/v1";
 const USER_PI_SETTINGS_PATH = resolve(homedir(), ".pi/agent/settings.json");
 const TEMP_AUDIO_DIR = join(tmpdir(), "pi-telegram", "voice");
+const require = createRequire(import.meta.url);
 
 export const DEFAULT_TELEGRAM_VOICE_PROVIDER = "xai";
 export const DEFAULT_TELEGRAM_SPEECH_STYLE = "literal";
@@ -313,6 +316,40 @@ export function resolveTelegramVoiceLanguage(options: {
   );
 }
 
+interface PiVoiceAdapterV1 {
+  version: 1;
+  id: string;
+  capabilities: {
+    stt: boolean;
+    tts: boolean;
+  };
+  tagStyle?: TelegramVoiceTagStyle;
+  allowedTags?: string[];
+  isAvailable: () => boolean | Promise<boolean>;
+  getDefaults: () => {
+    voiceId?: string;
+    language?: string;
+    sttLanguage?: string;
+  };
+  transcribe?: (input: {
+    filePath: string;
+    language?: string;
+    signal?: AbortSignal;
+  }) => Promise<{ text: string; language?: string }>;
+  synthesize?: (input: {
+    text: string;
+    voiceId?: string;
+    language?: string;
+    fileName?: string;
+    signal?: AbortSignal;
+  }) => Promise<{
+    filePath: string;
+    mimeType?: string;
+    fileName?: string;
+    cleanupPaths?: string[];
+  }>;
+}
+
 function inferAudioMimeType(filePath: string): string {
   const extension = extname(filePath).slice(1).toLowerCase();
   switch (extension) {
@@ -598,6 +635,136 @@ export async function transcodeTelegramVoiceNote(
   return outputPath;
 }
 
+function prepareXaiTaggedSpeech(input: TelegramVoicePreparationInput): TelegramVoicePreparedSpeech {
+  const stripped = stripMarkdownForSpeech(input.text);
+  if (!stripped) {
+    throw new Error("Voice reply text is empty after markdown cleanup");
+  }
+  const rewritten = applyBasicSpeechRewrite(stripped, input.settings.speechStyle);
+  const speechText =
+    input.settings.speechStyle === "rewrite-tags" ||
+    input.settings.speechStyle === "rewrite-strong"
+      ? hasXaiSpeechTags(rewritten)
+        ? rewritten
+        : applyXaiSpeechTags(rewritten, input.settings.speechStyle)
+      : rewritten;
+  return {
+    speechText: normalizeXaiSpeechTags(speechText),
+    appliedStyle: input.settings.speechStyle,
+  };
+}
+
+function resolvePiXaiVoiceAdapterSpecifier(cwd = process.cwd()): string | undefined {
+  try {
+    require.resolve("pi-xai-voice/voice-adapter.ts");
+    return "pi-xai-voice/voice-adapter.ts";
+  } catch {
+    // Continue with explicit/local development fallbacks.
+  }
+  const explicitPath = process.env.PI_XAI_VOICE_ADAPTER?.trim();
+  if (explicitPath && existsSync(explicitPath)) {
+    return pathToFileURL(explicitPath).href;
+  }
+  const localSiblingPath = resolve(cwd, "../pi-xai-voice/voice-adapter.ts");
+  if (existsSync(localSiblingPath)) {
+    return pathToFileURL(localSiblingPath).href;
+  }
+  return undefined;
+}
+
+async function loadPiXaiVoiceAdapter(cwd?: string): Promise<PiVoiceAdapterV1> {
+  const specifier = resolvePiXaiVoiceAdapterSpecifier(cwd);
+  if (!specifier) {
+    throw new Error("pi-xai-voice adapter is not installed");
+  }
+  const module = (await import(specifier)) as {
+    piVoiceAdapterV1?: unknown;
+    default?: unknown;
+  };
+  const adapter = module.piVoiceAdapterV1 || module.default;
+  if (!adapter || typeof adapter !== "object") {
+    throw new Error("Invalid pi-xai-voice adapter: missing piVoiceAdapterV1 export");
+  }
+  const candidate = adapter as Partial<PiVoiceAdapterV1>;
+  if (
+    candidate.version !== 1 ||
+    typeof candidate.id !== "string" ||
+    !candidate.capabilities ||
+    typeof candidate.isAvailable !== "function" ||
+    typeof candidate.getDefaults !== "function"
+  ) {
+    throw new Error("Invalid pi-xai-voice adapter: expected Pi Voice Adapter v1");
+  }
+  return candidate as PiVoiceAdapterV1;
+}
+
+function hasPiXaiVoiceAdapter(cwd?: string): boolean {
+  return Boolean(resolvePiXaiVoiceAdapterSpecifier(cwd));
+}
+
+const piXaiVoiceProvider: TelegramVoiceProvider = {
+  id: "pi-xai-voice",
+  tagStyle: "xai",
+  allowedTags: [...XAI_ALLOWED_SPEECH_TAGS],
+  getDefaults(cwd) {
+    if (!hasPiXaiVoiceAdapter(cwd)) {
+      throw new Error("pi-xai-voice adapter is not installed");
+    }
+    const defaults = getRequiredXaiVoiceDefaults(cwd);
+    return {
+      defaultVoiceId: defaults.defaultVoiceId,
+      defaultLanguage: defaults.defaultLanguage,
+      sttLanguage: defaults.sttLanguage,
+    };
+  },
+  prepareSpeechText(input) {
+    return prepareXaiTaggedSpeech(input);
+  },
+  async transcribe(input) {
+    const adapter = await loadPiXaiVoiceAdapter(input.cwd);
+    if (!adapter.capabilities.stt || !adapter.transcribe) {
+      throw new Error("pi-xai-voice adapter does not support STT");
+    }
+    const available = await adapter.isAvailable();
+    if (!available) {
+      throw new Error("pi-xai-voice adapter is not available");
+    }
+    return adapter.transcribe({
+      filePath: input.filePath,
+      language: input.language || input.settings.sttLanguage || input.settings.defaultLanguage,
+    });
+  },
+  async synthesize(input) {
+    const adapter = await loadPiXaiVoiceAdapter(input.cwd);
+    if (!adapter.capabilities.tts || !adapter.synthesize) {
+      throw new Error("pi-xai-voice adapter does not support TTS");
+    }
+    const available = await adapter.isAvailable();
+    if (!available) {
+      throw new Error("pi-xai-voice adapter is not available");
+    }
+    const prepared = await this.prepareSpeechText({
+      text: input.text,
+      settings: input.settings,
+      inputModality: input.inputModality,
+      language: input.language,
+    });
+    const speech = await adapter.synthesize({
+      text: prepared.speechText,
+      voiceId: input.voiceId || input.settings.defaultVoiceId,
+      language: input.language || input.settings.defaultLanguage,
+      fileName: "telegram-voice",
+    });
+    return {
+      method: "sendVoice",
+      fieldName: "voice",
+      filePath: speech.filePath,
+      fileName: speech.fileName || basename(speech.filePath),
+      cleanupPaths: speech.cleanupPaths || [speech.filePath],
+    };
+  },
+};
+
 const xaiVoiceProvider: TelegramVoiceProvider = {
   id: "xai",
   tagStyle: "xai",
@@ -611,22 +778,7 @@ const xaiVoiceProvider: TelegramVoiceProvider = {
     };
   },
   prepareSpeechText(input) {
-    const stripped = stripMarkdownForSpeech(input.text);
-    if (!stripped) {
-      throw new Error("Voice reply text is empty after markdown cleanup");
-    }
-    const rewritten = applyBasicSpeechRewrite(stripped, input.settings.speechStyle);
-    const speechText =
-      input.settings.speechStyle === "rewrite-tags" ||
-      input.settings.speechStyle === "rewrite-strong"
-        ? hasXaiSpeechTags(rewritten)
-          ? rewritten
-          : applyXaiSpeechTags(rewritten, input.settings.speechStyle)
-        : rewritten;
-    return {
-      speechText: normalizeXaiSpeechTags(speechText),
-      appliedStyle: input.settings.speechStyle,
-    };
+    return prepareXaiTaggedSpeech(input);
   },
   async transcribe(input) {
     const defaults = getRequiredXaiVoiceDefaults(input.cwd);
@@ -682,6 +834,7 @@ const xaiVoiceProvider: TelegramVoiceProvider = {
 
 const TELEGRAM_VOICE_PROVIDERS: Record<string, TelegramVoiceProvider> = {
   [xaiVoiceProvider.id]: xaiVoiceProvider,
+  [piXaiVoiceProvider.id]: piXaiVoiceProvider,
 };
 
 export function getTelegramVoiceProvider(
@@ -696,9 +849,9 @@ export function normalizeTelegramVoiceSettings(
   defaults: Pick<
     ResolvedTelegramVoiceSettings,
     "defaultVoiceId" | "defaultLanguage" | "sttLanguage"
-  > = {},
+  > & { enabled?: boolean } = {},
 ): ResolvedTelegramVoiceSettings {
-  const enabled = configVoice?.enabled === true;
+  const enabled = configVoice?.enabled ?? defaults.enabled ?? true;
   return {
     enabled,
     provider:
@@ -731,17 +884,22 @@ export function resolveTelegramVoiceSettings(
     defaultLanguage?: string;
     sttLanguage?: string;
   } = {};
+  let providerAvailable = false;
   try {
-    providerDefaults = adapter?.getDefaults(cwd) || {};
+    if (adapter) {
+      providerDefaults = adapter.getDefaults(cwd) || {};
+      providerAvailable = true;
+    }
   } catch {
     providerDefaults = {};
+    providerAvailable = false;
   }
   return normalizeTelegramVoiceSettings(
     {
       ...config.voice,
       provider,
     },
-    providerDefaults,
+    { ...providerDefaults, enabled: providerAvailable },
   );
 }
 

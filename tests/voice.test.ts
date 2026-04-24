@@ -17,6 +17,7 @@ import {
   resolveTelegramVoiceLanguage,
   stripMarkdownForSpeech,
   normalizeTelegramVoiceLanguage,
+  resolveTelegramVoiceSettings,
   updateTelegramVoiceConfig,
 } from "../lib/voice.ts";
 
@@ -48,6 +49,49 @@ test("Voice helpers normalize settings with defaults", () => {
   });
 });
 
+test("Voice helpers enable voice by default when provider is available", () => {
+  const settings = normalizeTelegramVoiceSettings(undefined, {
+    enabled: true,
+    defaultVoiceId: "eve",
+    defaultLanguage: "de",
+    sttLanguage: "de",
+  });
+  assert.equal(settings.enabled, true);
+  assert.equal(settings.autoTranscribeIncoming, true);
+  assert.equal(settings.replyWithVoiceOnIncomingVoice, true);
+});
+
+test("Voice helpers disable voice by default when provider is unavailable", () => {
+  const settings = normalizeTelegramVoiceSettings(undefined, {
+    enabled: false,
+  });
+  assert.equal(settings.enabled, false);
+  assert.equal(settings.autoTranscribeIncoming, false);
+  assert.equal(settings.replyWithVoiceOnIncomingVoice, false);
+});
+
+test("Voice helpers respect explicit disabled config", () => {
+  const settings = normalizeTelegramVoiceSettings({ enabled: false }, { enabled: true });
+  assert.equal(settings.enabled, false);
+  assert.equal(settings.autoTranscribeIncoming, false);
+  assert.equal(settings.replyWithVoiceOnIncomingVoice, false);
+});
+
+test("Voice helpers resolve provider availability from local xAI config", () => {
+  const previous = process.env.XAI_API_KEY;
+  process.env.XAI_API_KEY = "test-key";
+  try {
+    const settings = resolveTelegramVoiceSettings({}, process.cwd());
+    assert.equal(settings.enabled, true);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.XAI_API_KEY;
+    } else {
+      process.env.XAI_API_KEY = previous;
+    }
+  }
+});
+
 test("Voice helpers parse commands", () => {
   assert.deepEqual(parseTelegramVoiceCommand(""), { action: "status" });
   assert.deepEqual(parseTelegramVoiceCommand("on"), {
@@ -77,6 +121,10 @@ test("Voice helpers parse commands", () => {
   assert.deepEqual(parseTelegramVoiceCommand("provider xai"), {
     action: "provider",
     provider: "xai",
+  });
+  assert.deepEqual(parseTelegramVoiceCommand("provider pi-xai-voice"), {
+    action: "provider",
+    provider: "pi-xai-voice",
   });
   assert.deepEqual(parseTelegramVoiceCommand("style rewrite-tags"), {
     action: "style",
@@ -151,6 +199,21 @@ test("Voice helpers update config and format status", () => {
   assert.match(status, /provider: xai/);
   assert.match(status, /voice: ara/);
   assert.match(status, /prompt: default/);
+});
+
+test("Voice helpers preserve xAI tags through pi-xai-voice provider preparation", async () => {
+  const settings = normalizeTelegramVoiceSettings({
+    enabled: true,
+    provider: "pi-xai-voice",
+    speechStyle: "rewrite-tags",
+  });
+  const prepared = await prepareTelegramSpeechText({
+    text: "Hallo [pause] <soft>Welt</soft>",
+    settings,
+    language: "de",
+  });
+  assert.match(prepared.speechText, /\[pause\]/);
+  assert.match(prepared.speechText, /<soft>Welt<\/soft>/);
 });
 
 test("Voice helpers build configurable preparation prompts and provider rewrite", async () => {

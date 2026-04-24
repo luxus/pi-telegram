@@ -11,19 +11,20 @@ Manual validation plan for Telegram voice-message support.
 
 ## Recommended Baseline Setup
 
-Run in pi:
+Voice support is enabled by default when the configured provider is locally available. For the built-in xAI provider, this means `XAI_API_KEY` or `xai.apiKey` is configured. Run in pi only to customize the baseline:
 
 ```text
-/telegram-voice on
 /telegram-voice reply on
 /telegram-voice transcribe on
 /telegram-voice provider xai
+# or, when pi-xai-voice is installed:
+/telegram-voice provider pi-xai-voice
 /telegram-voice voice eve
 /telegram-voice lang auto
 /telegram-voice style rewrite-light
 ```
 
-Confirm `/telegram-status` shows voice enabled.
+Confirm `/telegram-status` shows voice enabled. If provider credentials are missing, configure them first. If a previous config disabled voice, run `/telegram-voice on` once.
 
 ## Scenario 1 — Inbound Voice → Automatic Voice Reply
 
