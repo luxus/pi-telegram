@@ -76,6 +76,11 @@ export interface TelegramPollLoopDeps<TUpdate extends TelegramUpdateLike> {
   onErrorStatus: (message: string) => void;
   onStatusReset: () => void;
   sleep: (ms: number) => Promise<void>;
+  maxUpdateFailures?: number;
+}
+
+function getTelegramPollingErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export async function runTelegramPollLoop<TUpdate extends TelegramUpdateLike>(
@@ -102,6 +107,8 @@ export async function runTelegramPollLoop<TUpdate extends TelegramUpdateLike>(
       // ignore
     }
   }
+  const maxUpdateFailures = Math.max(1, deps.maxUpdateFailures ?? 3);
+  const updateFailures = new Map<number, number>();
   while (!deps.signal.aborted) {
     try {
       const updates = await deps.getUpdates(
@@ -109,14 +116,27 @@ export async function runTelegramPollLoop<TUpdate extends TelegramUpdateLike>(
         deps.signal,
       );
       for (const update of updates) {
-        deps.config.lastUpdateId = update.update_id;
-        await deps.persistConfig();
-        await deps.handleUpdate(update, deps.ctx);
+        try {
+          await deps.handleUpdate(update, deps.ctx);
+          deps.config.lastUpdateId = update.update_id;
+          updateFailures.delete(update.update_id);
+          await deps.persistConfig();
+        } catch (error) {
+          const failureCount = (updateFailures.get(update.update_id) ?? 0) + 1;
+          updateFailures.set(update.update_id, failureCount);
+          if (failureCount < maxUpdateFailures) throw error;
+          const message = getTelegramPollingErrorMessage(error);
+          deps.onErrorStatus(
+            `skipping Telegram update ${update.update_id} after ${failureCount} failures: ${message}`,
+          );
+          deps.config.lastUpdateId = update.update_id;
+          updateFailures.delete(update.update_id);
+          await deps.persistConfig();
+        }
       }
     } catch (error) {
       if (shouldStopTelegramPolling(deps.signal.aborted, error)) return;
-      const message = error instanceof Error ? error.message : String(error);
-      deps.onErrorStatus(message);
+      deps.onErrorStatus(getTelegramPollingErrorMessage(error));
       await deps.sleep(3000);
       deps.onStatusReset();
     }

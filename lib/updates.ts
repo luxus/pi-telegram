@@ -119,7 +119,22 @@ export function getAuthorizedTelegramCallbackQuery(
 export function getAuthorizedTelegramMessage(
   update: TelegramUpdateRoutingLike,
 ): TelegramMessageLike | undefined {
-  const message = update.message || update.edited_message;
+  const message = update.message;
+  if (
+    !message ||
+    message.chat.type !== "private" ||
+    !message.from ||
+    message.from.is_bot
+  ) {
+    return undefined;
+  }
+  return message;
+}
+
+export function getAuthorizedTelegramEditedMessage(
+  update: TelegramUpdateRoutingLike,
+): TelegramMessageLike | undefined {
+  const message = update.edited_message;
   if (
     !message ||
     message.chat.type !== "private" ||
@@ -154,6 +169,11 @@ export type TelegramUpdateFlowAction =
     }
   | {
       kind: "message";
+      message: TelegramMessageLike & { from: TelegramUserLike };
+      authorization: TelegramAuthorizationState;
+    }
+  | {
+      kind: "edited-message";
       message: TelegramMessageLike & { from: TelegramUserLike };
       authorization: TelegramAuthorizationState;
     };
@@ -191,6 +211,19 @@ export function buildTelegramUpdateFlowAction(
       ),
     };
   }
+  const editedMessage = getAuthorizedTelegramEditedMessage(update);
+  if (editedMessage?.from) {
+    return {
+      kind: "edited-message",
+      message: editedMessage as TelegramMessageLike & {
+        from: TelegramUserLike;
+      },
+      authorization: getTelegramAuthorizationState(
+        editedMessage.from.id,
+        allowedUserId,
+      ),
+    };
+  }
   return { kind: "ignore" };
 }
 
@@ -214,6 +247,12 @@ export type TelegramUpdateExecutionPlan =
       message: TelegramMessageLike & { from: TelegramUserLike };
       shouldPair: boolean;
       shouldNotifyPaired: boolean;
+      shouldDeny: boolean;
+    }
+  | {
+      kind: "edited-message";
+      message: TelegramMessageLike & { from: TelegramUserLike };
+      shouldPair: boolean;
       shouldDeny: boolean;
     };
 
@@ -240,6 +279,13 @@ export function buildTelegramUpdateExecutionPlan(
         message: action.message,
         shouldPair: action.authorization.kind === "pair",
         shouldNotifyPaired: action.authorization.kind === "pair",
+        shouldDeny: action.authorization.kind === "deny",
+      };
+    case "edited-message":
+      return {
+        kind: "edited-message",
+        message: action.message,
+        shouldPair: action.authorization.kind === "pair",
         shouldDeny: action.authorization.kind === "deny",
       };
   }
@@ -293,6 +339,13 @@ export interface TelegramUpdateRuntimeDeps {
     message: Extract<
       TelegramUpdateExecutionPlan,
       { kind: "message" }
+    >["message"],
+    ctx: ExtensionContext,
+  ) => Promise<void>;
+  handleAuthorizedTelegramEditedMessage: (
+    message: Extract<
+      TelegramUpdateExecutionPlan,
+      { kind: "edited-message" }
     >["message"],
     ctx: ExtensionContext,
   ) => Promise<void>;
@@ -368,7 +421,12 @@ export async function executeTelegramUpdatePlan(
     ? await deps.pairTelegramUserIfNeeded(plan.message.from.id, deps.ctx)
     : false;
   const replyTarget = getTelegramMessageReplyTarget(plan.message);
-  if (pairedNow && plan.shouldNotifyPaired && replyTarget) {
+  if (
+    plan.kind === "message" &&
+    pairedNow &&
+    plan.shouldNotifyPaired &&
+    replyTarget
+  ) {
     await deps.sendTextReply(
       replyTarget.chatId,
       replyTarget.messageId,
@@ -383,6 +441,10 @@ export async function executeTelegramUpdatePlan(
         "This bot is not authorized for your account.",
       );
     }
+    return;
+  }
+  if (plan.kind === "edited-message") {
+    await deps.handleAuthorizedTelegramEditedMessage(plan.message, deps.ctx);
     return;
   }
   await deps.handleAuthorizedTelegramMessage(plan.message, deps.ctx);

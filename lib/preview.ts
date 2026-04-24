@@ -23,6 +23,8 @@ export interface TelegramPreviewStateLike {
 
 export interface TelegramPreviewRuntimeState extends TelegramPreviewStateLike {
   flushTimer?: ReturnType<typeof setTimeout>;
+  flushPromise?: Promise<void>;
+  flushRequested?: boolean;
 }
 
 export interface TelegramSentPreviewMessageLike {
@@ -105,13 +107,11 @@ export async function clearTelegramPreview(
   }
 }
 
-export async function flushTelegramPreview(
+async function performTelegramPreviewFlush(
   chatId: number,
+  state: TelegramPreviewRuntimeState,
   deps: TelegramPreviewRuntimeDeps,
 ): Promise<void> {
-  const state = deps.getState();
-  if (!state) return;
-  state.flushTimer = undefined;
   const snapshot = buildTelegramPreviewSnapshot({
     state,
     maxMessageLength: deps.maxMessageLength,
@@ -164,6 +164,33 @@ export async function flushTelegramPreview(
   state.lastSentText = snapshot.text;
   state.lastSentParseMode = snapshot.parseMode;
   state.lastSentStrategy = snapshot.strategy;
+}
+
+export async function flushTelegramPreview(
+  chatId: number,
+  deps: TelegramPreviewRuntimeDeps,
+): Promise<void> {
+  const state = deps.getState();
+  if (!state) return;
+  if (state.flushPromise) {
+    state.flushRequested = true;
+    await state.flushPromise;
+    return;
+  }
+  state.flushTimer = undefined;
+  state.flushPromise = (async () => {
+    do {
+      state.flushRequested = false;
+      await performTelegramPreviewFlush(chatId, state, deps);
+    } while (deps.getState() === state && state.flushRequested);
+  })();
+  try {
+    await state.flushPromise;
+  } finally {
+    if (deps.getState() === state) {
+      state.flushPromise = undefined;
+    }
+  }
 }
 
 export async function finalizeTelegramPreview(

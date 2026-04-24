@@ -93,6 +93,79 @@ test("Poll loop initializes lastUpdateId and processes updates", async () => {
   assert.equal(persistCount, 3);
 });
 
+test("Poll loop persists long-poll offsets only after handling updates", async () => {
+  const config = { botToken: "123:abc", lastUpdateId: 5 };
+  const handled: number[] = [];
+  const persisted: number[] = [];
+  let calls = 0;
+  await runTelegramPollLoop({
+    ctx: {} as never,
+    signal: new AbortController().signal,
+    config,
+    deleteWebhook: async () => {},
+    getUpdates: async () => {
+      calls += 1;
+      if (calls === 1) return [{ update_id: 6 }];
+      throw new DOMException("stop", "AbortError");
+    },
+    persistConfig: async () => {
+      persisted.push(config.lastUpdateId ?? -1);
+    },
+    handleUpdate: async (update) => {
+      handled.push(update.update_id);
+      throw new Error("handler failed");
+    },
+    onErrorStatus: () => {},
+    onStatusReset: () => {},
+    sleep: async () => {},
+  });
+  assert.deepEqual(handled, [6]);
+  assert.equal(config.lastUpdateId, 5);
+  assert.deepEqual(persisted, []);
+});
+
+test("Poll loop skips repeatedly failing updates after the configured threshold", async () => {
+  const config = { botToken: "123:abc", lastUpdateId: 5 };
+  const persisted: number[] = [];
+  const statusMessages: string[] = [];
+  let calls = 0;
+  await runTelegramPollLoop({
+    ctx: {} as never,
+    signal: new AbortController().signal,
+    config,
+    maxUpdateFailures: 2,
+    deleteWebhook: async () => {},
+    getUpdates: async () => {
+      calls += 1;
+      if (calls <= 2) return [{ update_id: 6 }];
+      throw new DOMException("stop", "AbortError");
+    },
+    persistConfig: async () => {
+      persisted.push(config.lastUpdateId ?? -1);
+    },
+    handleUpdate: async () => {
+      throw new Error("handler failed");
+    },
+    onErrorStatus: (message) => {
+      statusMessages.push(message);
+    },
+    onStatusReset: () => {
+      statusMessages.push("reset");
+    },
+    sleep: async (ms) => {
+      statusMessages.push(`sleep:${ms}`);
+    },
+  });
+  assert.equal(config.lastUpdateId, 6);
+  assert.deepEqual(persisted, [6]);
+  assert.deepEqual(statusMessages, [
+    "handler failed",
+    "sleep:3000",
+    "reset",
+    "skipping Telegram update 6 after 2 failures: handler failed",
+  ]);
+});
+
 test("Poll loop reports retryable errors and sleeps before retrying", async () => {
   const config = { botToken: "123:abc", lastUpdateId: 1 };
   const statusMessages: string[] = [];

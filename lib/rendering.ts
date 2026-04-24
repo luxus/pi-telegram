@@ -14,6 +14,10 @@ function escapeHtml(text: string): string {
     .replace(/>/g, "&gt;");
 }
 
+function escapeHtmlAttribute(text: string): string {
+  return escapeHtml(text).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 // --- Plain Preview Rendering ---
 
 function splitPlainMarkdownLine(line: string, maxLength = 1500): string[] {
@@ -746,12 +750,12 @@ function renderInlineMarkdown(text: string): string {
       const renderedLabel =
         plainLabel.length > 0 ? plainLabel : link.destination;
       return makeToken(
-        `<a href="${escapeHtml(link.destination)}">${escapeHtml(renderedLabel)}</a>`,
+        `<a href="${escapeHtmlAttribute(link.destination)}">${escapeHtml(renderedLabel)}</a>`,
       );
     },
     renderAutolink: (link) => {
       return makeToken(
-        `<a href="${escapeHtml(link.destination)}">${escapeHtml(link.destination)}</a>`,
+        `<a href="${escapeHtmlAttribute(link.destination)}">${escapeHtml(link.destination)}</a>`,
       );
     },
   });
@@ -877,9 +881,14 @@ function renderMarkdownTextLines(block: string): string[] {
   return rendered;
 }
 
+function sanitizeTelegramCodeLanguage(language: string): string {
+  return language.split(/\s+/)[0]?.replace(/[^A-Za-z0-9_+.-]/g, "") ?? "";
+}
+
 function renderMarkdownCodeBlock(code: string, language?: string): string[] {
-  const open = language
-    ? `<pre><code class="language-${escapeHtml(language)}">`
+  const safeLanguage = language ? sanitizeTelegramCodeLanguage(language) : "";
+  const open = safeLanguage
+    ? `<pre><code class="language-${escapeHtmlAttribute(safeLanguage)}">`
     : "<pre><code>";
   const close = "</code></pre>";
   const maxContentLength = MAX_MESSAGE_LENGTH - open.length - close.length;
@@ -1236,6 +1245,94 @@ function chunkParagraphs(text: string): string[] {
   return chunks;
 }
 
+interface OpenHtmlTag {
+  name: string;
+  openTag: string;
+}
+
+const TELEGRAM_VOID_HTML_TAGS = new Set(["br", "hr"]);
+
+function getHtmlTagName(tag: string): string | undefined {
+  return tag.match(/^<\/?\s*([a-zA-Z][\w-]*)/)?.[1]?.toLowerCase();
+}
+
+function isHtmlClosingTag(tag: string): boolean {
+  return /^<\//.test(tag);
+}
+
+function isHtmlSelfClosingTag(tag: string): boolean {
+  return /\/\s*>$/.test(tag);
+}
+
+function getHtmlClosingTags(openTags: OpenHtmlTag[]): string {
+  return [...openTags]
+    .reverse()
+    .map((tag) => `</${tag.name}>`)
+    .join("");
+}
+
+function getHtmlOpeningTags(openTags: OpenHtmlTag[]): string {
+  return openTags.map((tag) => tag.openTag).join("");
+}
+
+function updateOpenHtmlTags(tag: string, openTags: OpenHtmlTag[]): void {
+  const name = getHtmlTagName(tag);
+  if (!name || TELEGRAM_VOID_HTML_TAGS.has(name)) return;
+  if (isHtmlClosingTag(tag)) {
+    const index = openTags.map((openTag) => openTag.name).lastIndexOf(name);
+    if (index !== -1) openTags.splice(index, 1);
+    return;
+  }
+  if (isHtmlSelfClosingTag(tag)) return;
+  openTags.push({ name, openTag: tag });
+}
+
+function chunkHtmlPreservingTags(html: string): string[] {
+  if (html.length <= MAX_MESSAGE_LENGTH) return [html];
+  const chunks: string[] = [];
+  const openTags: OpenHtmlTag[] = [];
+  const tagPattern = /<\/?[a-zA-Z][^>]*>/g;
+  let current = "";
+  let index = 0;
+  const flushCurrent = (): void => {
+    if (current.length === 0) return;
+    chunks.push(`${current}${getHtmlClosingTags(openTags)}`);
+    current = getHtmlOpeningTags(openTags);
+  };
+  const appendText = (text: string): void => {
+    let remaining = text;
+    while (remaining.length > 0) {
+      const closingTags = getHtmlClosingTags(openTags);
+      const available =
+        MAX_MESSAGE_LENGTH - current.length - closingTags.length;
+      if (available <= 0) {
+        flushCurrent();
+        continue;
+      }
+      const slice = remaining.slice(0, available);
+      current += slice;
+      remaining = remaining.slice(slice.length);
+      if (remaining.length > 0) flushCurrent();
+    }
+  };
+  const appendTag = (tag: string): void => {
+    const closingTags = getHtmlClosingTags(openTags);
+    if (current.length + tag.length + closingTags.length > MAX_MESSAGE_LENGTH) {
+      flushCurrent();
+    }
+    current += tag;
+    updateOpenHtmlTags(tag, openTags);
+  };
+  for (const match of html.matchAll(tagPattern)) {
+    appendText(html.slice(index, match.index));
+    appendTag(match[0]);
+    index = match.index + match[0].length;
+  }
+  appendText(html.slice(index));
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
 export function renderTelegramMessage(
   text: string,
   options?: { mode?: TelegramRenderMode },
@@ -1245,7 +1342,10 @@ export function renderTelegramMessage(
     return chunkParagraphs(text).map((chunk) => ({ text: chunk }));
   }
   if (mode === "html") {
-    return [{ text, parseMode: "HTML" }];
+    return chunkHtmlPreservingTags(text).map((chunk) => ({
+      text: chunk,
+      parseMode: "HTML",
+    }));
   }
   return renderMarkdownToTelegramHtmlChunks(text).map((chunk) => ({
     text: chunk,

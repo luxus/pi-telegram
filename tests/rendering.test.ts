@@ -232,6 +232,57 @@ test("Links, code spans, and underscore-heavy text coexist safely", () => {
   assert.equal((chunks[0]?.text ?? "").includes("<i>bar</i>"), false);
 });
 
+test("HTML attributes are escaped or sanitized in generated Telegram markup", () => {
+  const linkChunks = __telegramTestUtils.renderTelegramMessage(
+    '[quoted](<https://example.com/"quoted">)',
+    { mode: "markdown" },
+  );
+  assert.match(
+    linkChunks[0]?.text ?? "",
+    /<a href="https:\/\/example.com\/&quot;quoted&quot;">quoted<\/a>/,
+  );
+  const codeChunks = __telegramTestUtils.renderTelegramMessage(
+    '```ts"onclick=bad\nconst value = 1;\n```',
+    { mode: "markdown" },
+  );
+  assert.match(
+    codeChunks[0]?.text ?? "",
+    /<pre><code class="language-tsonclickbad">/,
+  );
+  assert.equal((codeChunks[0]?.text ?? "").includes('"onclick'), false);
+});
+
+test("HTML mode chunks long messages below Telegram limits", () => {
+  const chunks = __telegramTestUtils.renderTelegramMessage("x".repeat(5000), {
+    mode: "html",
+  });
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) {
+    assert.equal(chunk.parseMode, "HTML");
+    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+  }
+});
+
+test("HTML mode keeps tags balanced across long chunk boundaries", () => {
+  const chunks = __telegramTestUtils.renderTelegramMessage(
+    `<blockquote><b>${"x".repeat(5000)}</b></blockquote>`,
+    { mode: "html" },
+  );
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) {
+    assert.equal(chunk.parseMode, "HTML");
+    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.equal(
+      (chunk.text.match(/<blockquote>/g) ?? []).length,
+      (chunk.text.match(/<\/blockquote>/g) ?? []).length,
+    );
+    assert.equal(
+      (chunk.text.match(/<b>/g) ?? []).length,
+      (chunk.text.match(/<\/b>/g) ?? []).length,
+    );
+  }
+});
+
 test("Links degrade or normalize safely across supported and unsupported markdown forms", () => {
   const markdown = [
     "[**Bold** label](https://example.com/path)",

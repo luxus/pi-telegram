@@ -16,6 +16,7 @@ import type {
 import { SettingsManager } from "@mariozechner/pi-coding-agent";
 
 import {
+  cleanupTelegramTempFiles,
   createTelegramApiClient,
   readTelegramConfig,
   writeTelegramConfig,
@@ -23,10 +24,18 @@ import {
 } from "./lib/api.ts";
 import { sendQueuedTelegramAttachments } from "./lib/attachments.ts";
 import {
+  buildTelegramCommandAction,
+  executeTelegramCommandAction,
+  parseTelegramCommand,
+} from "./lib/commands.ts";
+import {
   collectTelegramFileInfos,
   extractFirstTelegramMessageText,
   extractTelegramMessagesText,
   guessMediaType,
+  queueTelegramMediaGroupMessage,
+  removePendingTelegramMediaGroupMessages,
+  type TelegramMediaGroupState,
 } from "./lib/media.ts";
 import {
   buildTelegramModelMenuState,
@@ -52,6 +61,13 @@ import {
   shouldTriggerPendingTelegramModelSwitchAbort,
 } from "./lib/model-switch.ts";
 import { runTelegramPollLoop } from "./lib/polling.ts";
+import {
+  clearTelegramPreview,
+  finalizeTelegramMarkdownPreview,
+  finalizeTelegramPreview,
+  flushTelegramPreview,
+  type TelegramPreviewRuntimeState,
+} from "./lib/preview.ts";
 import {
   buildTelegramAgentEndPlan,
   buildTelegramAgentStartPlan,
@@ -87,13 +103,6 @@ import {
   type TelegramRenderMode,
 } from "./lib/rendering.ts";
 import {
-  clearTelegramPreview,
-  finalizeTelegramMarkdownPreview,
-  finalizeTelegramPreview,
-  flushTelegramPreview,
-  type TelegramPreviewRuntimeState,
-} from "./lib/preview.ts";
-import {
   buildTelegramReplyTransport,
   sendTelegramMarkdownReply,
   sendTelegramPlainReply,
@@ -106,158 +115,23 @@ import { buildStatusHtml } from "./lib/status.ts";
 import {
   buildTelegramPromptTurn,
   truncateTelegramQueueSummary,
+  updateTelegramPromptTurnText,
 } from "./lib/turns.ts";
+import type {
+  TelegramApiResponse,
+  TelegramBotCommand,
+  TelegramCallbackQuery,
+  TelegramMessage,
+  TelegramMessageReactionUpdated,
+  TelegramSentMessage,
+  TelegramUpdate,
+  TelegramUser,
+} from "./lib/types.ts";
 import {
   collectTelegramReactionEmojis,
   executeTelegramUpdate,
   getTelegramAuthorizationState,
 } from "./lib/updates.ts";
-
-// --- Telegram API Types ---
-
-interface TelegramApiResponse<T> {
-  ok: boolean;
-  result?: T;
-  description?: string;
-  error_code?: number;
-}
-
-interface TelegramUser {
-  id: number;
-  is_bot: boolean;
-  first_name: string;
-  username?: string;
-}
-
-interface TelegramChat {
-  id: number;
-  type: string;
-}
-
-interface TelegramPhotoSize {
-  file_id: string;
-  file_size?: number;
-}
-
-interface TelegramDocument {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramVideo {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramAudio {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramVoice {
-  file_id: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramAnimation {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-  file_size?: number;
-}
-
-interface TelegramSticker {
-  file_id: string;
-  emoji?: string;
-}
-
-interface TelegramFileInfo {
-  file_id: string;
-  fileName: string;
-  mimeType?: string;
-  isImage: boolean;
-}
-
-interface TelegramMessage {
-  message_id: number;
-  chat: TelegramChat;
-  from?: TelegramUser;
-  text?: string;
-  caption?: string;
-  media_group_id?: string;
-  photo?: TelegramPhotoSize[];
-  document?: TelegramDocument;
-  video?: TelegramVideo;
-  audio?: TelegramAudio;
-  voice?: TelegramVoice;
-  animation?: TelegramAnimation;
-  sticker?: TelegramSticker;
-}
-
-interface TelegramCallbackQuery {
-  id: string;
-  from: TelegramUser;
-  message?: TelegramMessage;
-  data?: string;
-}
-
-interface TelegramReactionTypeEmoji {
-  type: "emoji";
-  emoji: string;
-}
-
-interface TelegramReactionTypeCustomEmoji {
-  type: "custom_emoji";
-  custom_emoji_id: string;
-}
-
-interface TelegramReactionTypePaid {
-  type: "paid";
-}
-
-type TelegramReactionType =
-  | TelegramReactionTypeEmoji
-  | TelegramReactionTypeCustomEmoji
-  | TelegramReactionTypePaid;
-
-interface TelegramMessageReactionUpdated {
-  chat: TelegramChat;
-  message_id: number;
-  user?: TelegramUser;
-  actor_chat?: TelegramChat;
-  old_reaction: TelegramReactionType[];
-  new_reaction: TelegramReactionType[];
-  date: number;
-}
-
-interface TelegramUpdate {
-  update_id: number;
-  message?: TelegramMessage;
-  edited_message?: TelegramMessage;
-  callback_query?: TelegramCallbackQuery;
-  message_reaction?: TelegramMessageReactionUpdated;
-  deleted_business_messages?: { message_ids?: unknown };
-}
-
-interface TelegramGetFileResult {
-  file_path: string;
-}
-
-interface TelegramSentMessage {
-  message_id: number;
-}
-
-interface TelegramBotCommand {
-  command: string;
-  description: string;
-}
 
 // --- Extension State Types ---
 
@@ -272,19 +146,30 @@ type ActiveTelegramTurn = PendingTelegramTurn;
 
 type TelegramPreviewState = TelegramPreviewRuntimeState;
 
-interface TelegramMediaGroupState {
-  messages: TelegramMessage[];
-  flushTimer?: ReturnType<typeof setTimeout>;
+interface StoredTelegramModelMenuState {
+  state: TelegramModelMenuState;
+  updatedAt: number;
+}
+
+interface CachedTelegramModelMenuInputs {
+  expiresAt: number;
+  availableModels: Model<any>[];
+  configuredScopedModelPatterns: string[];
+  cliScopedModelPatterns?: string[];
 }
 
 const AGENT_DIR = join(homedir(), ".pi", "agent");
 const CONFIG_PATH = join(AGENT_DIR, "telegram.json");
 const TEMP_DIR = join(AGENT_DIR, "tmp", "telegram");
+const TELEGRAM_TEMP_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const TELEGRAM_PREFIX = "[telegram]";
 const MAX_ATTACHMENTS_PER_TURN = 10;
 const PREVIEW_THROTTLE_MS = 750;
 const TELEGRAM_DRAFT_ID_MAX = 2_147_483_647;
 const TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS = 1200;
+const TELEGRAM_MODEL_MENU_CACHE_TTL_MS = 5000;
+const TELEGRAM_MODEL_MENU_STATE_TTL_MS = 10 * 60 * 1000;
+const MAX_STORED_TELEGRAM_MODEL_MENUS = 50;
 const SYSTEM_PROMPT_SUFFIX = `
 
 Telegram bridge extension is active.
@@ -301,17 +186,6 @@ function isTelegramPrompt(prompt: string): boolean {
 
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_");
-}
-
-function parseTelegramCommand(
-  text: string,
-): { name: string; args: string } | undefined {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("/")) return undefined;
-  const [head, ...tail] = trimmed.split(/\s+/);
-  const name = head.slice(1).split("@")[0]?.toLowerCase();
-  if (!name) return undefined;
-  return { name, args: tail.join(" ").trim() };
 }
 
 function getCliScopedModelPatterns(): string[] | undefined {
@@ -396,8 +270,12 @@ export default function (pi: ExtensionAPI) {
   let draftSupport: "unknown" | "supported" | "unsupported" = "unknown";
   let nextDraftId = 0;
   let currentTelegramModel: Model<any> | undefined;
-  const mediaGroups = new Map<string, TelegramMediaGroupState>();
-  const modelMenus = new Map<number, TelegramModelMenuState>();
+  const mediaGroups = new Map<
+    string,
+    TelegramMediaGroupState<TelegramMessage>
+  >();
+  const modelMenus = new Map<number, StoredTelegramModelMenuState>();
+  let cachedModelMenuInputs: CachedTelegramModelMenuInputs | undefined;
 
   // --- Runtime State ---
 
@@ -892,24 +770,73 @@ export default function (pi: ExtensionAPI) {
 
   // --- Interactive Menu State & Builders ---
 
+  function pruneStoredModelMenus(now = Date.now()): void {
+    for (const [messageId, entry] of modelMenus.entries()) {
+      if (now - entry.updatedAt <= TELEGRAM_MODEL_MENU_STATE_TTL_MS) continue;
+      modelMenus.delete(messageId);
+    }
+    while (modelMenus.size > MAX_STORED_TELEGRAM_MODEL_MENUS) {
+      const oldestMessageId = modelMenus.keys().next().value as
+        | number
+        | undefined;
+      if (oldestMessageId === undefined) return;
+      modelMenus.delete(oldestMessageId);
+    }
+  }
+
+  function storeModelMenuState(state: TelegramModelMenuState): void {
+    pruneStoredModelMenus();
+    modelMenus.set(state.messageId, { state, updatedAt: Date.now() });
+  }
+
+  function getStoredModelMenuState(
+    messageId: number | undefined,
+  ): TelegramModelMenuState | undefined {
+    if (messageId === undefined) return undefined;
+    pruneStoredModelMenus();
+    const entry = modelMenus.get(messageId);
+    if (!entry) return undefined;
+    modelMenus.delete(messageId);
+    entry.updatedAt = Date.now();
+    modelMenus.set(messageId, entry);
+    return entry.state;
+  }
+
+  async function getCachedModelMenuInputs(
+    ctx: ExtensionContext,
+  ): Promise<CachedTelegramModelMenuInputs> {
+    const now = Date.now();
+    if (cachedModelMenuInputs && cachedModelMenuInputs.expiresAt > now) {
+      return cachedModelMenuInputs;
+    }
+    const settingsManager = SettingsManager.create(ctx.cwd);
+    await settingsManager.reload();
+    ctx.modelRegistry.refresh();
+    const availableModels = ctx.modelRegistry.getAvailable();
+    const cliScopedModelPatterns = getCliScopedModelPatterns();
+    const configuredScopedModelPatterns =
+      cliScopedModelPatterns ?? settingsManager.getEnabledModels() ?? [];
+    cachedModelMenuInputs = {
+      expiresAt: now + TELEGRAM_MODEL_MENU_CACHE_TTL_MS,
+      availableModels,
+      configuredScopedModelPatterns,
+      cliScopedModelPatterns,
+    };
+    return cachedModelMenuInputs;
+  }
+
   async function getModelMenuState(
     chatId: number,
     ctx: ExtensionContext,
   ): Promise<TelegramModelMenuState> {
-    const settingsManager = SettingsManager.create(ctx.cwd);
-    await settingsManager.reload();
-    ctx.modelRegistry.refresh();
     const activeModel = getCurrentTelegramModel(ctx);
-    const availableModels = ctx.modelRegistry.getAvailable();
-    const cliScopedModels = getCliScopedModelPatterns();
-    const configuredScopedModels =
-      cliScopedModels ?? settingsManager.getEnabledModels() ?? [];
+    const inputs = await getCachedModelMenuInputs(ctx);
     return buildTelegramModelMenuState({
       chatId,
       activeModel,
-      availableModels,
-      configuredScopedModelPatterns: configuredScopedModels,
-      cliScopedModelPatterns: cliScopedModels ?? undefined,
+      availableModels: inputs.availableModels,
+      configuredScopedModelPatterns: inputs.configuredScopedModelPatterns,
+      cliScopedModelPatterns: inputs.cliScopedModelPatterns,
     });
   }
 
@@ -1012,7 +939,7 @@ export default function (pi: ExtensionAPI) {
     if (messageId === undefined) return;
     state.messageId = messageId;
     state.mode = "status";
-    modelMenus.set(messageId, state);
+    storeModelMenuState(state);
   }
 
   function canOfferInFlightTelegramModelSwitch(ctx: ExtensionContext): boolean {
@@ -1150,7 +1077,7 @@ export default function (pi: ExtensionAPI) {
     if (messageId === undefined) return;
     state.messageId = messageId;
     state.mode = "model";
-    modelMenus.set(messageId, state);
+    storeModelMenuState(state);
   }
 
   async function handleStatusCallbackAction(
@@ -1251,32 +1178,23 @@ export default function (pi: ExtensionAPI) {
     ctx: ExtensionContext,
   ): Promise<void> {
     const messageId = query.message?.message_id;
-    await handleTelegramMenuCallbackEntry(
-      query.id,
-      query.data,
-      messageId ? modelMenus.get(messageId) : undefined,
-      {
-        handleStatusAction: async () => {
-          const state = messageId ? modelMenus.get(messageId) : undefined;
-          if (!state) return false;
-          return handleStatusCallbackAction(query, state, ctx);
-        },
-        handleThinkingAction: async () => {
-          const state = messageId ? modelMenus.get(messageId) : undefined;
-          if (!state) return false;
-          return handleThinkingCallbackAction(query, state, ctx);
-        },
-        handleModelAction: async () => {
-          const state = messageId ? modelMenus.get(messageId) : undefined;
-          if (!state) return false;
-          return handleModelCallbackAction(query, state, ctx);
-        },
-        answerCallbackQuery,
+    const state = getStoredModelMenuState(messageId);
+    await handleTelegramMenuCallbackEntry(query.id, query.data, state, {
+      handleStatusAction: async () => {
+        if (!state) return false;
+        return handleStatusCallbackAction(query, state, ctx);
       },
-    );
+      handleThinkingAction: async () => {
+        if (!state) return false;
+        return handleThinkingCallbackAction(query, state, ctx);
+      },
+      handleModelAction: async () => {
+        if (!state) return false;
+        return handleModelCallbackAction(query, state, ctx);
+      },
+      answerCallbackQuery,
+    });
   }
-
-  // --- Status Rendering ---
 
   // --- Turn Queue & Message Dispatch ---
 
@@ -1305,19 +1223,11 @@ export default function (pi: ExtensionAPI) {
   }
 
   function removePendingMediaGroupMessages(messageIds: number[]): void {
-    if (messageIds.length === 0 || mediaGroups.size === 0) return;
-    const deletedMessageIds = new Set(messageIds);
-    for (const [key, state] of mediaGroups.entries()) {
-      if (
-        !state.messages.some((message) =>
-          deletedMessageIds.has(message.message_id),
-        )
-      ) {
-        continue;
-      }
-      if (state.flushTimer) clearTimeout(state.flushTimer);
-      mediaGroups.delete(key);
-    }
+    removePendingTelegramMediaGroupMessages(
+      mediaGroups,
+      messageIds,
+      clearTimeout,
+    );
   }
 
   function removeQueuedTelegramTurnsByMessageIds(
@@ -1572,19 +1482,18 @@ export default function (pi: ExtensionAPI) {
     message: TelegramMessage,
     ctx: ExtensionContext,
   ): Promise<boolean> {
-    if (!commandName) return false;
-    const handlers: Partial<Record<string, () => Promise<void>>> = {
-      stop: () => handleStopCommand(message, ctx),
-      compact: () => handleCompactCommand(message, ctx),
-      status: () => handleStatusCommand(message, ctx),
-      model: () => handleModelCommand(message, ctx),
-      help: () => handleHelpCommand(message, commandName, ctx),
-      start: () => handleHelpCommand(message, commandName, ctx),
-    };
-    const handler = handlers[commandName];
-    if (!handler) return false;
-    await handler();
-    return true;
+    return executeTelegramCommandAction(
+      buildTelegramCommandAction(commandName),
+      message,
+      ctx,
+      {
+        handleStop: handleStopCommand,
+        handleCompact: handleCompactCommand,
+        handleStatus: handleStatusCommand,
+        handleModel: handleModelCommand,
+        handleHelp: handleHelpCommand,
+      },
+    );
   }
 
   async function enqueueTelegramTurn(
@@ -1615,25 +1524,53 @@ export default function (pi: ExtensionAPI) {
     await enqueueTelegramTurn(messages, ctx);
   }
 
+  function updateQueuedTelegramTurnFromEditedMessage(
+    message: TelegramMessage,
+    ctx: ExtensionContext,
+  ): boolean {
+    const messageText = extractTelegramMessagesText([message]);
+    let changed = false;
+    queuedTelegramItems = queuedTelegramItems.map((item) => {
+      if (
+        item.kind !== "prompt" ||
+        message.message_id === undefined ||
+        !item.sourceMessageIds.includes(message.message_id)
+      ) {
+        return item;
+      }
+      changed = true;
+      return updateTelegramPromptTurnText({
+        turn: item,
+        telegramPrefix: TELEGRAM_PREFIX,
+        rawText: messageText,
+      });
+    });
+    if (changed) updateStatus(ctx);
+    return changed;
+  }
+
+  async function handleAuthorizedTelegramEditedMessage(
+    message: TelegramMessage,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    updateQueuedTelegramTurnFromEditedMessage(message, ctx);
+  }
+
   async function handleAuthorizedTelegramMessage(
     message: TelegramMessage,
     ctx: ExtensionContext,
   ): Promise<void> {
-    if (message.media_group_id) {
-      const key = `${message.chat.id}:${message.media_group_id}`;
-      const existing = mediaGroups.get(key) ?? { messages: [] };
-      existing.messages.push(message);
-      if (existing.flushTimer) clearTimeout(existing.flushTimer);
-      existing.flushTimer = setTimeout(() => {
-        const state = mediaGroups.get(key);
-        mediaGroups.delete(key);
-        if (!state) return;
-        void dispatchAuthorizedTelegramMessages(state.messages, ctx);
-      }, TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS);
-      mediaGroups.set(key, existing);
-      return;
-    }
-
+    const queuedMediaGroup = queueTelegramMediaGroupMessage({
+      message,
+      groups: mediaGroups,
+      debounceMs: TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS,
+      setTimer: setTimeout,
+      clearTimer: clearTimeout,
+      dispatchMessages: (messages) => {
+        void dispatchAuthorizedTelegramMessages(messages, ctx);
+      },
+    });
+    if (queuedMediaGroup) return;
     await dispatchAuthorizedTelegramMessages([message], ctx);
   }
 
@@ -1680,6 +1617,12 @@ export default function (pi: ExtensionAPI) {
       sendTextReply,
       handleAuthorizedTelegramMessage: async (message, nextCtx) => {
         await handleAuthorizedTelegramMessage(
+          message as TelegramMessage,
+          nextCtx,
+        );
+      },
+      handleAuthorizedTelegramEditedMessage: async (message, nextCtx) => {
+        await handleAuthorizedTelegramEditedMessage(
           message as TelegramMessage,
           nextCtx,
         );
@@ -1797,6 +1740,7 @@ export default function (pi: ExtensionAPI) {
         sessionStartState.telegramTurnDispatchPending;
       compactionInProgress = sessionStartState.compactionInProgress;
       await mkdir(TEMP_DIR, { recursive: true });
+      await cleanupTelegramTempFiles(TEMP_DIR, TELEGRAM_TEMP_FILE_MAX_AGE_MS);
       updateStatus(ctx);
     },
     onSessionShutdown: async (_event, _ctx) => {
@@ -1817,6 +1761,7 @@ export default function (pi: ExtensionAPI) {
       }
       mediaGroups.clear();
       modelMenus.clear();
+      cachedModelMenuInputs = undefined;
       if (activeTelegramTurn) {
         await clearPreview(activeTelegramTurn.chatId);
       }

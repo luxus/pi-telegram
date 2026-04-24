@@ -89,6 +89,92 @@ export function buildTelegramTurnPrompt(options: {
   return prompt;
 }
 
+function splitTelegramPromptAttachmentSuffix(prompt: string): {
+  promptWithoutAttachments: string;
+  attachmentSuffix: string;
+  attachmentFiles: DownloadedTelegramTurnFileLike[];
+} {
+  const marker = "\n\nTelegram attachments were saved locally:";
+  const markerIndex = prompt.indexOf(marker);
+  if (markerIndex === -1) {
+    return {
+      promptWithoutAttachments: prompt,
+      attachmentSuffix: "",
+      attachmentFiles: [],
+    };
+  }
+  const promptWithoutAttachments = prompt.slice(0, markerIndex);
+  const attachmentSuffix = prompt.slice(markerIndex);
+  const attachmentFiles = attachmentSuffix
+    .split("\n")
+    .map((line) => line.match(/^- (.+)$/)?.[1]?.trim())
+    .filter((path): path is string => !!path)
+    .map((path) => ({ path, fileName: basename(path), isImage: false }));
+  return { promptWithoutAttachments, attachmentSuffix, attachmentFiles };
+}
+
+function buildEditedTelegramPromptText(options: {
+  existingPrompt: string;
+  telegramPrefix: string;
+  rawText: string;
+}): { text: string; attachmentFiles: DownloadedTelegramTurnFileLike[] } {
+  const { promptWithoutAttachments, attachmentSuffix, attachmentFiles } =
+    splitTelegramPromptAttachmentSuffix(options.existingPrompt);
+  const currentMessageMarker = "Current Telegram message:";
+  const currentMessageIndex = promptWithoutAttachments.lastIndexOf(
+    currentMessageMarker,
+  );
+  if (currentMessageIndex !== -1) {
+    const prefix = promptWithoutAttachments.slice(
+      0,
+      currentMessageIndex + currentMessageMarker.length,
+    );
+    const separator = options.rawText.length > 0 ? "\n" : "";
+    return {
+      text: `${prefix}${separator}${options.rawText}${attachmentSuffix}`,
+      attachmentFiles,
+    };
+  }
+  const promptText =
+    options.rawText.length > 0
+      ? `${options.telegramPrefix} ${options.rawText}`
+      : options.telegramPrefix;
+  return {
+    text: `${promptText}${attachmentSuffix}`,
+    attachmentFiles,
+  };
+}
+
+export function updateTelegramPromptTurnText(options: {
+  turn: PendingTelegramTurn;
+  telegramPrefix: string;
+  rawText: string;
+}): PendingTelegramTurn {
+  let attachmentFiles: DownloadedTelegramTurnFileLike[] = [];
+  const nextContent = options.turn.content.map((block, index) => {
+    if (index !== 0 || block.type !== "text") return block;
+    const updated = buildEditedTelegramPromptText({
+      existingPrompt: block.text,
+      telegramPrefix: options.telegramPrefix,
+      rawText: options.rawText,
+    });
+    attachmentFiles = updated.attachmentFiles;
+    return {
+      ...block,
+      text: updated.text,
+    };
+  });
+  return {
+    ...options.turn,
+    content: nextContent,
+    historyText: formatTelegramHistoryText(options.rawText, attachmentFiles),
+    statusSummary: formatTelegramTurnStatusSummary(
+      options.rawText,
+      attachmentFiles,
+    ),
+  };
+}
+
 export async function buildTelegramPromptTurn(options: {
   telegramPrefix: string;
   messages: TelegramTurnMessageLike[];

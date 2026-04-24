@@ -410,6 +410,45 @@ test("Preview runtime falls back to editable plain messages when draft delivery 
   assert.equal(harness.getDraftSupport(), "unsupported");
 });
 
+test("Preview runtime serializes overlapping flush requests", async () => {
+  const harness = createPreviewRuntimeHarness({
+    mode: "message",
+    messageId: 44,
+    pendingText: "first",
+    lastSentText: "",
+  });
+  harness.setDraftSupport("unsupported");
+  let releaseEdit: (() => void) | undefined;
+  harness.deps.editMessageText = async (
+    chatId: number,
+    messageId: number,
+    text: string,
+    options?: { parseMode?: "HTML" },
+  ) => {
+    harness.events.push(
+      `edit:${chatId}:${messageId}:${text}:${options?.parseMode ?? "plain"}`,
+    );
+    if (!releaseEdit) {
+      await new Promise<void>((resolve) => {
+        releaseEdit = resolve;
+      });
+    }
+  };
+  const firstFlush = flushTelegramPreview(7, harness.deps);
+  await Promise.resolve();
+  const state = harness.getState();
+  assert.ok(state);
+  state.pendingText = "second";
+  const secondFlush = flushTelegramPreview(7, harness.deps);
+  releaseEdit?.();
+  await Promise.all([firstFlush, secondFlush]);
+  assert.deepEqual(harness.events, [
+    "edit:7:44:first:plain",
+    "edit:7:44:second:plain",
+  ]);
+  assert.equal(harness.getState()?.lastSentText, "second");
+});
+
 test("Preview runtime finalizes plain and markdown previews", async () => {
   const plainHarness = createPreviewRuntimeHarness({
     mode: "message",

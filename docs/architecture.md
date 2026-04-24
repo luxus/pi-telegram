@@ -19,7 +19,7 @@ Naming rule: because the repository already scopes this codebase to Telegram, ex
 
 Current runtime areas include:
 
-- Telegram API types and local bridge state in `index.ts`
+- Telegram Bot API transport shape types in `/lib/types.ts`, with local bridge state still composed in `index.ts`
 - Queueing and queue-runtime helpers in `/lib/queue.ts`
 - Preview transport-selection, preview-finalization, and preview-runtime helpers in `/lib/preview.ts`
 - Reply-transport and rendered-message delivery helpers in `/lib/replies.ts`
@@ -27,7 +27,8 @@ Current runtime areas include:
 - Polling request, stop-condition, and long-poll loop helpers in `/lib/polling.ts`
 - Telegram API/config helpers and lazy bot-token client wrappers in `/lib/api.ts`
 - Telegram turn-building helpers in `/lib/turns.ts`
-- Telegram media/text extraction helpers in `/lib/media.ts`
+- Telegram media/text extraction, file-info normalization, and media-group debounce helpers in `/lib/media.ts`
+- Telegram slash-command parsing and command-action routing helpers in `/lib/commands.ts`
 - Telegram updates extraction, authorization, flow, execution-planning, direct execute-from-update routing, and runtime helpers in `/lib/updates.ts`
 - Telegram attachment queueing and delivery helpers in `/lib/attachments.ts`
 - Telegram tool, command, and lifecycle-hook registration helpers in `/lib/registration.ts`
@@ -55,11 +56,13 @@ Because `ctx.ui.input()` only exposes placeholder text, the bridge uses `ctx.ui.
 ### Inbound Path
 
 1. Telegram updates are polled through `getUpdates`
-2. The bridge filters to the paired private user
-3. Media groups are coalesced into a single Telegram turn when needed
-4. Files are downloaded into `~/.pi/agent/tmp/telegram`
-5. A `PendingTelegramTurn` is created and queued locally
-6. The queue dispatcher sends the turn into pi only when dispatch is safe
+2. Each update offset is persisted only after the update handler succeeds; repeated handler failures are bounded so one poisoned update cannot stall polling forever
+3. The bridge filters to the paired private user
+4. Media groups are coalesced into a single Telegram turn when needed
+5. Files are streamed into `~/.pi/agent/tmp/telegram` with size-limit checks, partial-download cleanup on failures, and stale temp cleanup on session start
+6. A `PendingTelegramTurn` is created and queued locally
+7. Telegram `edited_message` updates are routed separately and update a matching queued turn when the original message has not been dispatched yet
+8. The queue dispatcher sends the turn into pi only when dispatch is safe
 
 ### Queue Safety Model
 
@@ -96,13 +99,13 @@ Key rules:
 
 - Rich text should render cleanly in Telegram chats
 - Real code blocks must remain literal and escaped
-- Supported absolute HTTP(S) and mailto links should stay clickable, while unsupported link forms such as unresolved references, footnotes, or relative links without a known base should degrade safely instead of producing broken Telegram anchors
+- Supported absolute HTTP(S) and mailto links should stay clickable, with generated HTML attributes escaped separately from text content, while unsupported link forms such as unresolved references, footnotes, or relative links without a known base should degrade safely instead of producing broken Telegram anchors
 - Markdown tables should keep their internal separators but drop the outer left and right borders when rendered as monospace blocks so narrow Telegram clients keep more usable width
 - Unordered Markdown lists should render with a monospace `-` marker and ordered Markdown lists should render with monospace numeric markers so list indentation stays more predictable on narrow Telegram clients
 - Real Markdown task-list items should render with checkbox markers, while standalone `[x]` and `[ ]` prose should stay literal instead of being reinterpreted as checklists
 - Nested Markdown quotes should flatten into one Telegram blockquote with added non-breaking-space indentation because Telegram does not render nested blockquotes reliably
 - Original blank-line spacing between Markdown blocks should stay intact in both preview and final rendering instead of being collapsed to one generic block separator, while headings should still keep readable separation from following blocks such as code fences even when source Markdown omits a blank line
-- Long replies must be split below Telegram's 4096-character limit
+- Long replies, including raw HTML-mode replies used by interactive/status flows, must be split below Telegram's 4096-character limit
 - Chunking should avoid breaking HTML structure where possible
 - Preview rendering uses stable top-level Markdown blocks for rich Telegram HTML and appends the still-growing tail conservatively as readable plain text so the preview stays valid even when the answer is incomplete
 
@@ -116,11 +119,12 @@ Preferred order:
 
 1. Re-render the current Markdown buffer into a preview snapshot that renders closed top-level blocks as rich Telegram HTML and keeps the unstable tail conservative and readable
 2. Send or update that preview through `sendMessage` plus `editMessageText`, because `sendMessageDraft` is text-only for rich previews
-3. Replace the preview with the final rendered reply when generation ends
+3. Serialize overlapping preview flushes so older Telegram edit calls cannot race newer streamed snapshots
+4. Replace the preview with the final rendered reply when generation ends
 
 Draft streaming can remain as a plain-text fallback path, but rich Telegram previews are driven through editable messages and stable-block snapshot selection.
 
-Outbound files are sent only after the active Telegram turn completes and must be staged through the `telegram_attach` tool.
+Outbound files are sent only after the active Telegram turn completes, must be staged through the `telegram_attach` tool, and use file-backed multipart blobs so large sends do not require preloading whole files into memory.
 
 ## Interactive Controls
 
@@ -129,7 +133,7 @@ The bridge exposes Telegram-side session controls in addition to regular chat fo
 Current operator controls include:
 
 - `/status` for model, usage, cost, and context visibility, queued as a high-priority control item when needed
-- Inline status buttons for model and thinking adjustments, applying idle selections immediately while still respecting busy-run restart rules
+- Inline status buttons for model and thinking adjustments, applying idle selections immediately while still respecting busy-run restart rules; model-menu inputs are cached briefly and stored inline-menu states are pruned by TTL/LRU so old keyboards expire predictably
 - `/model` for interactive model selection, queued as a high-priority control item when needed and supporting in-flight restart of the active Telegram-owned run on a newly selected model
 - `/compact` for Telegram-triggered pi session compaction when the bridge is idle
 - Queue reactions using `👍` and `👎`, with `👎` acting as the canonical queue-removal path because ordinary Telegram DM message deletions are not exposed through the Bot API polling path this bridge uses

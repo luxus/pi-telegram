@@ -2,8 +2,6 @@
 
 ![pi-telegram screenshot](screenshot.png)
 
-Better Telegram DM bridge for pi.
-
 This repository is an actively maintained fork of [`badlogic/pi-telegram`](https://github.com/badlogic/pi-telegram). It started from upstream commit [`cb34008460b6c1ca036d92322f69d87f626be0fc`](https://github.com/badlogic/pi-telegram/commit/cb34008460b6c1ca036d92322f69d87f626be0fc) and has since diverged substantially.
 
 ## Start Here
@@ -90,17 +88,13 @@ Once paired, simply chat with your bot in Telegram. All text, images, and files 
 - `👍` moves a waiting turn into the priority block. Removing `👍` sends it back to its normal queue position, and adding `👍` again gives it a fresh priority position.
 - `👎` removes a waiting turn from the queue. Telegram Bot API does not expose ordinary DM message-deletion events through the polling path used here, so queue removal is bound to the dislike reaction.
 - For media groups, a reaction on any message in the group applies to the whole queued turn.
-- Inbound images, albums, and files are downloaded to `~/.pi/agent/tmp/telegram`, local file paths are included in the prompt, and inbound images are forwarded to pi as image inputs.
+- If you edit a Telegram message while it is still waiting in the queue, the queued turn is updated instead of creating a duplicate prompt. Edits after a turn has already started may not affect the active run.
+- Inbound images, albums, and files are saved to `~/.pi/agent/tmp/telegram`, local file paths are included in the prompt, and inbound images are forwarded to pi as image inputs.
 - Queue reactions depend on Telegram delivering `message_reaction` updates for your bot and chat type.
 
 ### Requesting Files
 
 If you ask pi for a file or generated artifact (e.g., _"generate a shell script and attach it"_), pi will call the `telegram_attach` tool, and the extension will send the file alongside its next Telegram reply.
-
-Examples:
-
-- `summarize this image`
-- `generate a shell script and attach it`
 
 ## Streaming
 
@@ -108,12 +102,21 @@ The extension streams assistant previews back to Telegram while pi is generating
 
 Rich previews are sent through editable messages because Telegram drafts are text-only. Closed top-level Markdown blocks can appear with formatting before the answer finishes, while the still-growing tail remains conservative and readable until the preview is replaced with the fully rendered Telegram HTML reply.
 
+## Status bar
+
+The pi status bar shows queued Telegram turns as compact previews, for example:
+
+```text
++3: [⬆ write a shell script…, summarize this image…, 📎 2 attachments]
+```
+
 ## Notes
 
 - Only one pi session should be connected to the bot at a time
 - Replies are sent as normal Telegram messages, not quote-replies
-- Long replies are split below Telegram's 4096 character limit
+- Long replies are split below Telegram's 4096 character limit without intentionally breaking Telegram HTML formatting
 - Outbound files are sent via `telegram_attach`
+- Temporary inbound Telegram files are cleaned up on later session starts
 
 ## License
 

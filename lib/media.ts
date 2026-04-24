@@ -1,6 +1,6 @@
 /**
  * Telegram media and text extraction helpers
- * Normalizes inbound Telegram messages into reusable file, text, id, and history metadata
+ * Normalizes inbound Telegram messages into reusable file, text, id, history, and media-group metadata
  */
 
 export interface TelegramPhotoSizeLike {
@@ -45,6 +45,7 @@ export interface TelegramMessageLike {
   message_id: number;
   text?: string;
   caption?: string;
+  media_group_id?: string;
   photo?: TelegramPhotoSizeLike[];
   document?: TelegramDocumentLike;
   video?: TelegramVideoLike;
@@ -52,6 +53,17 @@ export interface TelegramMessageLike {
   voice?: TelegramVoiceLike;
   animation?: TelegramAnimationLike;
   sticker?: TelegramStickerLike;
+}
+
+export interface TelegramMediaGroupMessageLike {
+  message_id: number;
+  chat: { id: number };
+  media_group_id?: string;
+}
+
+export interface TelegramMediaGroupState<TMessage> {
+  messages: TMessage[];
+  flushTimer?: ReturnType<typeof setTimeout>;
 }
 
 export interface TelegramFileInfo {
@@ -120,6 +132,63 @@ export function collectTelegramMessageIds(
   messages: TelegramMessageLike[],
 ): number[] {
   return [...new Set(messages.map((message) => message.message_id))];
+}
+
+export function getTelegramMediaGroupKey(
+  message: TelegramMediaGroupMessageLike,
+): string | undefined {
+  if (!message.media_group_id) return undefined;
+  return `${message.chat.id}:${message.media_group_id}`;
+}
+
+export function removePendingTelegramMediaGroupMessages<
+  TMessage extends TelegramMediaGroupMessageLike,
+>(
+  groups: Map<string, TelegramMediaGroupState<TMessage>>,
+  messageIds: number[],
+  clearTimer: (timer: ReturnType<typeof setTimeout>) => void,
+): number {
+  if (messageIds.length === 0 || groups.size === 0) return 0;
+  const deletedMessageIds = new Set(messageIds);
+  let removedGroups = 0;
+  for (const [key, state] of groups.entries()) {
+    if (
+      !state.messages.some((message) =>
+        deletedMessageIds.has(message.message_id),
+      )
+    ) {
+      continue;
+    }
+    if (state.flushTimer) clearTimer(state.flushTimer);
+    groups.delete(key);
+    removedGroups += 1;
+  }
+  return removedGroups;
+}
+
+export function queueTelegramMediaGroupMessage<
+  TMessage extends TelegramMediaGroupMessageLike,
+>(options: {
+  message: TMessage;
+  groups: Map<string, TelegramMediaGroupState<TMessage>>;
+  debounceMs: number;
+  setTimer: (callback: () => void, ms: number) => ReturnType<typeof setTimeout>;
+  clearTimer: (timer: ReturnType<typeof setTimeout>) => void;
+  dispatchMessages: (messages: TMessage[]) => void;
+}): boolean {
+  const key = getTelegramMediaGroupKey(options.message);
+  if (!key) return false;
+  const existing = options.groups.get(key) ?? { messages: [] };
+  existing.messages.push(options.message);
+  if (existing.flushTimer) options.clearTimer(existing.flushTimer);
+  existing.flushTimer = options.setTimer(() => {
+    const state = options.groups.get(key);
+    options.groups.delete(key);
+    if (!state) return;
+    options.dispatchMessages(state.messages);
+  }, options.debounceMs);
+  options.groups.set(key, existing);
+  return true;
 }
 
 export function formatTelegramHistoryText(

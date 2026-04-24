@@ -15,6 +15,7 @@ import {
   executeTelegramUpdatePlan,
   extractDeletedTelegramMessageIds,
   getAuthorizedTelegramCallbackQuery,
+  getAuthorizedTelegramEditedMessage,
   getAuthorizedTelegramMessage,
   getTelegramAuthorizationState,
   normalizeTelegramReactionEmoji,
@@ -74,7 +75,7 @@ test("Update routing extracts only private human callback queries", () => {
   assert.ok(query);
 });
 
-test("Update routing extracts private human messages from message or edited_message", () => {
+test("Update routing extracts private human messages and edited messages separately", () => {
   assert.equal(
     getAuthorizedTelegramMessage({
       message: {
@@ -85,12 +86,19 @@ test("Update routing extracts private human messages from message or edited_mess
     undefined,
   );
   const directMessage = getAuthorizedTelegramMessage({
-    edited_message: {
+    message: {
       chat: { type: "private" },
       from: { id: 1, is_bot: false },
     },
   });
   assert.ok(directMessage);
+  const editedMessage = getAuthorizedTelegramEditedMessage({
+    edited_message: {
+      chat: { type: "private" },
+      from: { id: 1, is_bot: false },
+    },
+  });
+  assert.ok(editedMessage);
 });
 
 test("Update flow prioritizes deleted business-message handling over other update kinds", () => {
@@ -107,7 +115,7 @@ test("Update flow prioritizes deleted business-message handling over other updat
   assert.deepEqual(action, { kind: "deleted", messageIds: [1, 2] });
 });
 
-test("Update flow returns authorized callback and message actions", () => {
+test("Update flow returns authorized callback, message, and edit actions", () => {
   const callbackAction = buildTelegramUpdateFlowAction(
     {
       callback_query: {
@@ -135,6 +143,16 @@ test("Update flow returns authorized callback and message actions", () => {
     messageAction.kind === "message" ? messageAction.authorization : undefined,
     { kind: "pair", userId: 9 },
   );
+  const editAction = buildTelegramUpdateFlowAction(
+    {
+      edited_message: {
+        chat: { type: "private" },
+        from: { id: 9, is_bot: false },
+      },
+    },
+    9,
+  );
+  assert.equal(editAction.kind, "edited-message");
 });
 
 test("Update flow ignores unauthorized transport shapes and preserves reaction events", () => {
@@ -239,6 +257,7 @@ test("Update runtime executes delete and reaction plans through the right side e
       handleAuthorizedTelegramCallbackQuery: async () => {},
       sendTextReply: async () => undefined,
       handleAuthorizedTelegramMessage: async () => {},
+      handleAuthorizedTelegramEditedMessage: async () => {},
     },
   );
   assert.deepEqual(events, ["media:1,2", "queue:1,2"]);
@@ -273,6 +292,9 @@ test("Update runtime can execute directly from raw updates", async () => {
       handleAuthorizedTelegramMessage: async () => {
         events.push("message");
       },
+      handleAuthorizedTelegramEditedMessage: async () => {
+        events.push("edited-message");
+      },
     },
   );
   assert.deepEqual(events, [
@@ -280,6 +302,37 @@ test("Update runtime can execute directly from raw updates", async () => {
     "reply:Telegram bridge paired with this account.",
     "message",
   ]);
+});
+
+test("Update runtime routes edited messages without creating normal message turns", async () => {
+  const events: string[] = [];
+  await executeTelegramUpdate(
+    {
+      edited_message: {
+        chat: { id: 10, type: "private" },
+        message_id: 20,
+        from: { id: 7, is_bot: false },
+      },
+    },
+    7,
+    {
+      ctx: {} as never,
+      removePendingMediaGroupMessages: () => {},
+      removeQueuedTelegramTurnsByMessageIds: () => 0,
+      handleAuthorizedTelegramReactionUpdate: async () => {},
+      pairTelegramUserIfNeeded: async () => false,
+      answerCallbackQuery: async () => {},
+      handleAuthorizedTelegramCallbackQuery: async () => {},
+      sendTextReply: async () => undefined,
+      handleAuthorizedTelegramMessage: async () => {
+        events.push("message");
+      },
+      handleAuthorizedTelegramEditedMessage: async () => {
+        events.push("edited-message");
+      },
+    },
+  );
+  assert.deepEqual(events, ["edited-message"]);
 });
 
 test("Update runtime handles callback deny and message pair flows", async () => {
@@ -317,6 +370,9 @@ test("Update runtime handles callback deny and message pair flows", async () => 
       handleAuthorizedTelegramMessage: async () => {
         events.push("message");
       },
+      handleAuthorizedTelegramEditedMessage: async () => {
+        events.push("edited-message");
+      },
     },
   );
   await executeTelegramUpdatePlan(
@@ -345,6 +401,9 @@ test("Update runtime handles callback deny and message pair flows", async () => 
       },
       handleAuthorizedTelegramMessage: async () => {
         events.push("message");
+      },
+      handleAuthorizedTelegramEditedMessage: async () => {
+        events.push("edited-message");
       },
     },
   );

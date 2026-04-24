@@ -11,6 +11,7 @@ import {
   buildTelegramTurnPrompt,
   formatTelegramTurnStatusSummary,
   truncateTelegramQueueSummary,
+  updateTelegramPromptTurnText,
 } from "../lib/turns.ts";
 
 test("Turn helpers truncate queue summaries predictably", () => {
@@ -67,6 +68,120 @@ test("Turn helpers summarize text and attachment-only turns", () => {
     ]),
     "📎 2 attachments",
   );
+});
+
+test("Turn helpers update queued prompt text for edited Telegram messages", () => {
+  const turn = {
+    kind: "prompt" as const,
+    chatId: 99,
+    replyToMessageId: 10,
+    sourceMessageIds: [10],
+    queueOrder: 1,
+    queueLane: "default" as const,
+    laneOrder: 1,
+    queuedAttachments: [],
+    content: [{ type: "text" as const, text: "[telegram] old" }],
+    historyText: "old",
+    statusSummary: "old",
+  };
+  const updated = updateTelegramPromptTurnText({
+    turn,
+    telegramPrefix: "[telegram]",
+    rawText: "new edited message",
+  });
+  assert.equal(updated.content[0]?.type, "text");
+  assert.equal(
+    (updated.content[0] as { type: "text"; text: string }).text,
+    "[telegram] new edited message",
+  );
+  assert.equal(updated.historyText, "new edited message");
+  assert.equal(updated.statusSummary, "new edited message");
+  assert.notEqual(updated, turn);
+});
+
+test("Turn helpers preserve queued prompt attachments when captions are edited", () => {
+  const turn = {
+    kind: "prompt" as const,
+    chatId: 99,
+    replyToMessageId: 10,
+    sourceMessageIds: [10],
+    queueOrder: 1,
+    queueLane: "default" as const,
+    laneOrder: 1,
+    queuedAttachments: [],
+    content: [
+      {
+        type: "text" as const,
+        text:
+          "[telegram] old caption\n\n" +
+          "Telegram attachments were saved locally:\n" +
+          "- /tmp/demo.png\n" +
+          "- /tmp/report.txt",
+      },
+      { type: "image" as const, data: "abc", mimeType: "image/png" },
+    ],
+    historyText: "old caption\nAttachments:\n- /tmp/demo.png\n- /tmp/report.txt",
+    statusSummary: "old caption",
+  };
+  const updated = updateTelegramPromptTurnText({
+    turn,
+    telegramPrefix: "[telegram]",
+    rawText: "new caption",
+  });
+  assert.equal(
+    (updated.content[0] as { type: "text"; text: string }).text,
+    "[telegram] new caption\n\n" +
+      "Telegram attachments were saved locally:\n" +
+      "- /tmp/demo.png\n" +
+      "- /tmp/report.txt",
+  );
+  assert.deepEqual(updated.content[1], turn.content[1]);
+  assert.equal(
+    updated.historyText,
+    "new caption\nAttachments:\n- /tmp/demo.png\n- /tmp/report.txt",
+  );
+  assert.equal(updated.statusSummary, "new caption");
+});
+
+test("Turn helpers preserve abort-history prompt context when queued turns are edited", () => {
+  const turn = {
+    kind: "prompt" as const,
+    chatId: 99,
+    replyToMessageId: 10,
+    sourceMessageIds: [10],
+    queueOrder: 1,
+    queueLane: "default" as const,
+    laneOrder: 1,
+    queuedAttachments: [],
+    content: [
+      {
+        type: "text" as const,
+        text:
+          "[telegram]\n\n" +
+          "Earlier Telegram messages arrived after an aborted turn. " +
+          "Treat them as prior user messages, in order:\n\n" +
+          "1. older Current Telegram message: quote\n\n" +
+          "Current Telegram message:\nold current",
+      },
+    ],
+    historyText: "old current",
+    statusSummary: "old current",
+  };
+  const updated = updateTelegramPromptTurnText({
+    turn,
+    telegramPrefix: "[telegram]",
+    rawText: "new current",
+  });
+  assert.equal(
+    (updated.content[0] as { type: "text"; text: string }).text,
+    "[telegram]\n\n" +
+      "Earlier Telegram messages arrived after an aborted turn. " +
+      "Treat them as prior user messages, in order:\n\n" +
+      "1. older Current Telegram message: quote\n\n" +
+      "Current Telegram message:\nnew current",
+  );
+  assert.equal(updated.historyText, "new current");
+  assert.equal(updated.statusSummary, "new current");
 });
 
 test("Turn helpers assemble prompt turns with text, ids, history, and image payloads", async () => {
