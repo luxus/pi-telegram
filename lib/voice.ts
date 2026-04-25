@@ -68,6 +68,26 @@ export const XAI_ALLOWED_SPEECH_TAGS = [
   ...XAI_WRAPPER_SPEECH_TAGS.map((tag) => `<${tag}>...</${tag}>`),
 ] as const;
 
+export const ELEVENLABS_SPEECH_TAGS = [
+  "[pause]",
+  "[long pause]",
+  "[laughs]",
+  "[chuckles]",
+  "[giggles]",
+  "[sighs]",
+  "[whispers]",
+  "[shouts]",
+  "[excited]",
+  "[sad]",
+  "[curious]",
+  "[crying]",
+  "[mischievously]",
+  "[clears throat]",
+  "[softly]",
+  "[slowly]",
+  "[emphasizes]",
+] as const;
+
 const XAI_INLINE_SPEECH_TAG_SET = new Set<string>(XAI_INLINE_SPEECH_TAGS);
 const XAI_WRAPPER_SPEECH_TAG_SET = new Set<string>(XAI_WRAPPER_SPEECH_TAGS);
 
@@ -84,7 +104,7 @@ interface XaiVoiceDefaults {
 }
 
 export type TelegramSpeechStyle = "literal" | "rewrite-light" | "rewrite-tags" | "rewrite-strong";
-export type TelegramVoiceTagStyle = "none" | "xai" | "ssml" | "custom";
+export type TelegramVoiceTagStyle = "none" | "xai" | "elevenlabs" | "ssml" | "custom";
 
 export interface ResolvedTelegramVoiceSettings {
   enabled: boolean;
@@ -207,6 +227,8 @@ export interface TelegramVoiceProvider {
     defaultVoiceId?: string;
     defaultLanguage?: string;
     sttLanguage?: string;
+    canTranscribe?: boolean;
+    canSynthesize?: boolean;
   };
   prepareSpeechText(
     input: TelegramVoicePreparationInput,
@@ -524,9 +546,37 @@ function hasXaiSpeechTags(text: string): boolean {
   return /\[([a-z-]+)\]|<(\/)?([a-z-]+)>/i.test(normalizeXaiSpeechTags(text));
 }
 
+function normalizeElevenLabsSpeechTags(text: string): string {
+  return text
+    .replace(/\[long-pause\]/gi, "[long pause]")
+    .replace(/\[laugh\]/gi, "[laughs]")
+    .replace(/\[chuckle\]/gi, "[chuckles]")
+    .replace(/\[giggle\]/gi, "[giggles]")
+    .replace(/\[sigh\]/gi, "[sighs]")
+    .replace(/<whisper>(.*?)<\/whisper>/gis, "[whispers] $1")
+    .replace(/<shout>(.*?)<\/shout>/gis, "[shouts] $1")
+    .replace(/<soft>(.*?)<\/soft>/gis, "[softly] $1")
+    .replace(/<slow>(.*?)<\/slow>/gis, "[slowly] $1")
+    .replace(/<emphasis>(.*?)<\/emphasis>/gis, "[emphasizes] $1")
+    .replace(/<laugh-speak>(.*?)<\/laugh-speak>/gis, "[laughs] $1")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\[([a-z -]+)\]/gi, (match) => {
+      const lower = match.toLowerCase();
+      return (ELEVENLABS_SPEECH_TAGS as readonly string[]).includes(lower) ? lower : "";
+    })
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function hasElevenLabsSpeechTags(text: string): boolean {
+  return /\[(pause|long pause|laughs|chuckles|giggles|sighs|whispers|shouts|excited|sad|curious|crying|mischievously|clears throat|softly|slowly|emphasizes)\]/i.test(
+    normalizeElevenLabsSpeechTags(text),
+  );
+}
+
 function looksLikeJoke(text: string): boolean {
-  return /(witz|scherz|pointe|haha|hehe|lustig|witzig|😂|🤣)/i.test(text)
-    || /(warum .*\?|kommt .* in .*bar|treffen sich .*|sagt .* zu .*)/i.test(text);
+  return /(haha|hehe|lol|lmao|rofl|😂|🤣)/i.test(text)
+    || /(why .*\?|walks? into .*bar|punchline|knock[- ]knock|joke)/i.test(text);
 }
 
 function applyXaiSpeechTags(text: string, style: TelegramSpeechStyle): string {
@@ -542,6 +592,22 @@ function applyXaiSpeechTags(text: string, style: TelegramSpeechStyle): string {
       tagged = tagged.replace(/([,;:])\s+/g, "$1 [pause] ");
     }
     return tagged.trim();
+  }
+  return tagged;
+}
+
+function applyElevenLabsSpeechTags(text: string, style: TelegramSpeechStyle): string {
+  let tagged = text.replace(/\n\n+/g, style === "rewrite-strong" ? " [long pause] " : " [pause] ").trim();
+  if (style === "rewrite-strong") {
+    if (tagged.length > 80 && !hasElevenLabsSpeechTags(tagged)) {
+      tagged = `[softly] [slowly] ${tagged}`;
+    }
+    if (looksLikeJoke(tagged) && !/\[(laughs|giggles|chuckles)\]/i.test(tagged)) {
+      tagged = tagged.replace(/([.!?])\s*$/, "$1 [giggles]");
+    }
+    if (!/\[(pause|long pause)\]/i.test(tagged) && /[,;:]/.test(tagged)) {
+      tagged = tagged.replace(/([,;:])\s+/g, "$1 [pause] ");
+    }
   }
   return tagged;
 }
@@ -654,28 +720,65 @@ function prepareXaiTaggedSpeech(input: TelegramVoicePreparationInput): TelegramV
   };
 }
 
-function resolvePiXaiVoiceAdapterSpecifier(cwd = process.cwd()): string | undefined {
+function prepareElevenLabsTaggedSpeech(input: TelegramVoicePreparationInput): TelegramVoicePreparedSpeech {
+  const stripped = stripMarkdownForSpeech(input.text);
+  if (!stripped) {
+    throw new Error("Voice reply text is empty after markdown cleanup");
+  }
+  const rewritten = applyBasicSpeechRewrite(stripped, input.settings.speechStyle);
+  const speechText =
+    input.settings.speechStyle === "rewrite-tags" ||
+    input.settings.speechStyle === "rewrite-strong"
+      ? hasElevenLabsSpeechTags(rewritten)
+        ? rewritten
+        : applyElevenLabsSpeechTags(rewritten, input.settings.speechStyle)
+      : rewritten;
+  return {
+    speechText: normalizeElevenLabsSpeechTags(speechText),
+    appliedStyle: input.settings.speechStyle,
+  };
+}
+
+function resolveExternalVoiceAdapterSpecifier(packageName: string, envName: string, siblingDir: string, cwd = process.cwd()): string | undefined {
+  const packageSpecifier = `${packageName}/voice-adapter.ts`;
   try {
-    require.resolve("pi-xai-voice/voice-adapter.ts");
-    return "pi-xai-voice/voice-adapter.ts";
+    require.resolve(packageSpecifier);
+    return packageSpecifier;
   } catch {
     // Continue with explicit/local development fallbacks.
   }
-  const explicitPath = process.env.PI_XAI_VOICE_ADAPTER?.trim();
+  const explicitPath = process.env[envName]?.trim();
   if (explicitPath && existsSync(explicitPath)) {
     return pathToFileURL(explicitPath).href;
   }
-  const localSiblingPath = resolve(cwd, "../pi-xai-voice/voice-adapter.ts");
+  const localSiblingPath = resolve(cwd, `../${siblingDir}/voice-adapter.ts`);
   if (existsSync(localSiblingPath)) {
     return pathToFileURL(localSiblingPath).href;
   }
   return undefined;
 }
 
-async function loadPiXaiVoiceAdapter(cwd?: string): Promise<PiVoiceAdapterV1> {
-  const specifier = resolvePiXaiVoiceAdapterSpecifier(cwd);
+function resolvePiXaiVoiceAdapterSpecifier(cwd = process.cwd()): string | undefined {
+  return resolveExternalVoiceAdapterSpecifier(
+    "pi-xai-voice",
+    "PI_XAI_VOICE_ADAPTER",
+    "pi-xai-voice",
+    cwd,
+  );
+}
+
+function resolvePiElevenLabsVoiceAdapterSpecifier(cwd = process.cwd()): string | undefined {
+  return resolveExternalVoiceAdapterSpecifier(
+    "pi-elevenlabs",
+    "PI_ELEVENLABS_ADAPTER",
+    "pi-elevenlabs",
+    cwd,
+  );
+}
+
+async function loadExternalVoiceAdapter(specifier: string | undefined, label: string): Promise<PiVoiceAdapterV1> {
   if (!specifier) {
-    throw new Error("pi-xai-voice adapter is not installed");
+    throw new Error(`${label} adapter is not installed`);
   }
   const module = (await import(specifier)) as {
     piVoiceAdapterV1?: unknown;
@@ -683,7 +786,7 @@ async function loadPiXaiVoiceAdapter(cwd?: string): Promise<PiVoiceAdapterV1> {
   };
   const adapter = module.piVoiceAdapterV1 || module.default;
   if (!adapter || typeof adapter !== "object") {
-    throw new Error("Invalid pi-xai-voice adapter: missing piVoiceAdapterV1 export");
+    throw new Error(`Invalid ${label} adapter: missing piVoiceAdapterV1 export`);
   }
   const candidate = adapter as Partial<PiVoiceAdapterV1>;
   if (
@@ -693,13 +796,48 @@ async function loadPiXaiVoiceAdapter(cwd?: string): Promise<PiVoiceAdapterV1> {
     typeof candidate.isAvailable !== "function" ||
     typeof candidate.getDefaults !== "function"
   ) {
-    throw new Error("Invalid pi-xai-voice adapter: expected Pi Voice Adapter v1");
+    throw new Error(`Invalid ${label} adapter: expected Pi Voice Adapter v1`);
   }
   return candidate as PiVoiceAdapterV1;
 }
 
+function loadPiXaiVoiceAdapter(cwd?: string): Promise<PiVoiceAdapterV1> {
+  return loadExternalVoiceAdapter(resolvePiXaiVoiceAdapterSpecifier(cwd), "pi-xai-voice");
+}
+
+function loadPiElevenLabsVoiceAdapter(cwd?: string): Promise<PiVoiceAdapterV1> {
+  return loadExternalVoiceAdapter(
+    resolvePiElevenLabsVoiceAdapterSpecifier(cwd),
+    "pi-elevenlabs",
+  );
+}
+
 function hasPiXaiVoiceAdapter(cwd?: string): boolean {
   return Boolean(resolvePiXaiVoiceAdapterSpecifier(cwd));
+}
+
+function hasPiElevenLabsVoiceAdapter(cwd?: string): boolean {
+  return Boolean(resolvePiElevenLabsVoiceAdapterSpecifier(cwd));
+}
+
+function getElevenLabsVoiceDefaults(cwd: string): {
+  apiKey?: string;
+  defaultVoiceId?: string;
+  defaultLanguage?: string;
+} {
+  const projectConfig = readJsonRecord(getProjectPiSettingsPath(cwd));
+  const userConfig = readJsonRecord(USER_PI_SETTINGS_PATH);
+  const merged = mergeRecords(userConfig, projectConfig);
+  const elevenlabs = getRecordValue(merged.elevenlabs);
+  const voice = getRecordValue(elevenlabs.voice);
+  return {
+    apiKey: process.env.ELEVENLABS_API_KEY?.trim() || getStringValue(elevenlabs.apiKey),
+    defaultVoiceId:
+      getStringValue(voice.defaultVoiceId) ||
+      getStringValue(voice.defaultVoice) ||
+      "JBFqnCBsd6RMkjVDRZzb",
+    defaultLanguage: getStringValue(voice.defaultLanguage),
+  };
 }
 
 const piXaiVoiceProvider: TelegramVoiceProvider = {
@@ -742,6 +880,59 @@ const piXaiVoiceProvider: TelegramVoiceProvider = {
     const available = await adapter.isAvailable();
     if (!available) {
       throw new Error("pi-xai-voice adapter is not available");
+    }
+    const prepared = await this.prepareSpeechText({
+      text: input.text,
+      settings: input.settings,
+      inputModality: input.inputModality,
+      language: input.language,
+    });
+    const speech = await adapter.synthesize({
+      text: prepared.speechText,
+      voiceId: input.voiceId || input.settings.defaultVoiceId,
+      language: input.language || input.settings.defaultLanguage,
+      fileName: "telegram-voice",
+    });
+    return {
+      method: "sendVoice",
+      fieldName: "voice",
+      filePath: speech.filePath,
+      fileName: speech.fileName || basename(speech.filePath),
+      cleanupPaths: speech.cleanupPaths || [speech.filePath],
+    };
+  },
+};
+
+const piElevenLabsVoiceProvider: TelegramVoiceProvider = {
+  id: "pi-elevenlabs",
+  tagStyle: "elevenlabs",
+  allowedTags: [...ELEVENLABS_SPEECH_TAGS],
+  getDefaults(cwd) {
+    if (!hasPiElevenLabsVoiceAdapter(cwd)) {
+      throw new Error("pi-elevenlabs adapter is not installed");
+    }
+    const defaults = getElevenLabsVoiceDefaults(cwd);
+    return {
+      defaultVoiceId: defaults.defaultVoiceId,
+      defaultLanguage: defaults.defaultLanguage,
+      canTranscribe: false,
+      canSynthesize: Boolean(defaults.apiKey),
+    };
+  },
+  prepareSpeechText(input) {
+    return prepareElevenLabsTaggedSpeech(input);
+  },
+  async transcribe() {
+    throw new Error("pi-elevenlabs supports TTS only; configure an STT-capable provider for transcription.");
+  },
+  async synthesize(input) {
+    const adapter = await loadPiElevenLabsVoiceAdapter(input.cwd);
+    if (!adapter.capabilities.tts || !adapter.synthesize) {
+      throw new Error("pi-elevenlabs adapter does not support TTS");
+    }
+    const available = await adapter.isAvailable();
+    if (!available) {
+      throw new Error("pi-elevenlabs adapter is not available");
     }
     const prepared = await this.prepareSpeechText({
       text: input.text,
@@ -835,6 +1026,7 @@ const xaiVoiceProvider: TelegramVoiceProvider = {
 const TELEGRAM_VOICE_PROVIDERS: Record<string, TelegramVoiceProvider> = {
   [xaiVoiceProvider.id]: xaiVoiceProvider,
   [piXaiVoiceProvider.id]: piXaiVoiceProvider,
+  [piElevenLabsVoiceProvider.id]: piElevenLabsVoiceProvider,
 };
 
 export function getTelegramVoiceProvider(
@@ -849,18 +1041,20 @@ export function normalizeTelegramVoiceSettings(
   defaults: Pick<
     ResolvedTelegramVoiceSettings,
     "defaultVoiceId" | "defaultLanguage" | "sttLanguage"
-  > & { enabled?: boolean } = {},
+  > & { enabled?: boolean; canTranscribe?: boolean; canSynthesize?: boolean } = {},
 ): ResolvedTelegramVoiceSettings {
   const enabled = configVoice?.enabled ?? defaults.enabled ?? true;
+  const canTranscribe = defaults.canTranscribe ?? true;
+  const canSynthesize = defaults.canSynthesize ?? true;
   return {
     enabled,
     provider:
       configVoice?.provider?.trim().toLowerCase() ||
       DEFAULT_TELEGRAM_VOICE_PROVIDER,
     providerOptions: getRecordValue(configVoice?.providerOptions),
-    autoTranscribeIncoming: configVoice?.autoTranscribeIncoming ?? enabled,
+    autoTranscribeIncoming: configVoice?.autoTranscribeIncoming ?? (enabled && canTranscribe),
     replyWithVoiceOnIncomingVoice:
-      configVoice?.replyWithVoiceOnIncomingVoice ?? enabled,
+      configVoice?.replyWithVoiceOnIncomingVoice ?? (enabled && canTranscribe && canSynthesize),
     alsoSendTextReply: configVoice?.alsoSendTextReply === true,
     defaultVoiceId: configVoice?.defaultVoiceId || defaults.defaultVoiceId,
     defaultLanguage: configVoice?.defaultLanguage || defaults.defaultLanguage,
@@ -883,12 +1077,14 @@ export function resolveTelegramVoiceSettings(
     defaultVoiceId?: string;
     defaultLanguage?: string;
     sttLanguage?: string;
+    canTranscribe?: boolean;
+    canSynthesize?: boolean;
   } = {};
   let providerAvailable = false;
   try {
     if (adapter) {
       providerDefaults = adapter.getDefaults(cwd) || {};
-      providerAvailable = true;
+      providerAvailable = providerDefaults.canSynthesize ?? true;
     }
   } catch {
     providerDefaults = {};

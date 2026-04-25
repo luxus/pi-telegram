@@ -91,6 +91,7 @@ Useful subcommands:
 - `/telegram-voice transcribe on`
 - `/telegram-voice provider xai`
 - `/telegram-voice provider pi-xai-voice`
+- `/telegram-voice provider pi-elevenlabs`
 - `/telegram-voice voice eve`
 - `/telegram-voice lang auto`
 - `/telegram-voice style rewrite-light`
@@ -133,7 +134,7 @@ Example voice config in `~/.pi/agent/telegram.json`:
 }
 ```
 
-`provider` and `speechPreparationPrompt` are provider-neutral bridge settings. The built-in `xai` adapter is available directly, and `pi-xai-voice` can be selected when the `pi-xai-voice` package is installed. For local development, set `PI_XAI_VOICE_ADAPTER=/path/to/pi-xai-voice/voice-adapter.ts` or keep `pi-xai-voice` as a sibling checkout. Both xAI-backed providers use the same constrained speech-tag allowlist, and tagged text is passed through to xAI TTS.
+`provider` and `speechPreparationPrompt` are provider-neutral bridge settings. The built-in `xai` adapter is available directly, `pi-xai-voice` can be selected when the `pi-xai-voice` package is installed, and `pi-elevenlabs` can be selected when the ElevenLabs adapter extension is installed. For local development, set `PI_XAI_VOICE_ADAPTER=/path/to/pi-xai-voice/voice-adapter.ts` or `PI_ELEVENLABS_ADAPTER=/path/to/pi-elevenlabs/voice-adapter.ts`; sibling checkouts are also detected. xAI-backed providers use the constrained xAI speech-tag allowlist, while ElevenLabs uses its own bracketed audio-tag allowlist.
 
 For xAI-backed adapters, speech tags are intentionally constrained to a fixed allowlist. The prompt explicitly tells the model to use only these tags and the voice layer strips unsupported invented tags before synthesis.
 

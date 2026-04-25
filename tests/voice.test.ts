@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ELEVENLABS_SPEECH_TAGS,
   XAI_ALLOWED_SPEECH_TAGS,
   buildSpeechPreparationPrompt,
   formatTelegramVoiceStatus,
@@ -126,6 +127,10 @@ test("Voice helpers parse commands", () => {
     action: "provider",
     provider: "pi-xai-voice",
   });
+  assert.deepEqual(parseTelegramVoiceCommand("provider pi-elevenlabs"), {
+    action: "provider",
+    provider: "pi-elevenlabs",
+  });
   assert.deepEqual(parseTelegramVoiceCommand("style rewrite-tags"), {
     action: "style",
     style: "rewrite-tags",
@@ -199,6 +204,39 @@ test("Voice helpers update config and format status", () => {
   assert.match(status, /provider: xai/);
   assert.match(status, /voice: ara/);
   assert.match(status, /prompt: default/);
+});
+
+test("Voice helpers disable transcription by default for TTS-only providers", () => {
+  const settings = normalizeTelegramVoiceSettings(
+    { provider: "pi-elevenlabs" },
+    {
+      enabled: true,
+      canTranscribe: false,
+      canSynthesize: true,
+      defaultVoiceId: "JBFqnCBsd6RMkjVDRZzb",
+    },
+  );
+  assert.equal(settings.enabled, true);
+  assert.equal(settings.autoTranscribeIncoming, false);
+  assert.equal(settings.replyWithVoiceOnIncomingVoice, false);
+});
+
+test("Voice helpers preserve ElevenLabs audio tags through provider preparation", async () => {
+  assert.equal(ELEVENLABS_SPEECH_TAGS.includes("[laughs]"), true);
+  const settings = normalizeTelegramVoiceSettings({
+    enabled: true,
+    provider: "pi-elevenlabs",
+    speechStyle: "rewrite-tags",
+  });
+  const prepared = await prepareTelegramSpeechText({
+    text: "Hello [pause] <whisper>world</whisper> [laugh]",
+    settings,
+    language: "de",
+  });
+  assert.match(prepared.speechText, /\[pause\]/);
+  assert.match(prepared.speechText, /\[whispers\] world/);
+  assert.match(prepared.speechText, /\[laughs\]/);
+  assert.doesNotMatch(prepared.speechText, /<whisper>/);
 });
 
 test("Voice helpers preserve xAI tags through pi-xai-voice provider preparation", async () => {
@@ -340,14 +378,14 @@ test("Voice helpers support stronger expressive tag mode", async () => {
     },
     {
       defaultVoiceId: "eve",
-      defaultLanguage: "de",
+      defaultLanguage: "en",
     },
   );
   const prepared = await prepareTelegramSpeechText({
-    text: "Warum können Geister so schlecht lügen? Weil man durch sie hindurchsieht.",
+    text: "Why did the ghost fail at lying? Because everyone could see right through it.",
     settings,
     inputModality: "voice",
-    language: "de",
+    language: "en",
   });
   assert.match(prepared.speechText, /\[(laugh|giggle|pause|long-pause)\]|<(slow|soft|emphasis|laugh-speak)>/);
 });
