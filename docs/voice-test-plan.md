@@ -19,7 +19,7 @@ Voice support is enabled by default when the configured provider is locally avai
 /telegram-voice provider xai
 # or, when pi-xai-voice is installed:
 /telegram-voice provider pi-xai-voice
-# or, when pi-elevenlabs is installed for TTS-only replies:
+# or, when pi-elevenlabs is installed for ElevenLabs STT/TTS:
 /telegram-voice provider pi-elevenlabs
 /telegram-voice voice eve
 /telegram-voice lang auto

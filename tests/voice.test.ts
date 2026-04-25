@@ -206,19 +206,21 @@ test("Voice helpers update config and format status", () => {
   assert.match(status, /prompt: default/);
 });
 
-test("Voice helpers disable transcription by default for TTS-only providers", () => {
+test("Voice helpers enable transcription and voice replies for STT plus TTS providers", () => {
   const settings = normalizeTelegramVoiceSettings(
     { provider: "pi-elevenlabs" },
     {
       enabled: true,
-      canTranscribe: false,
+      canTranscribe: true,
       canSynthesize: true,
       defaultVoiceId: "JBFqnCBsd6RMkjVDRZzb",
+      sttLanguage: "eng",
     },
   );
   assert.equal(settings.enabled, true);
-  assert.equal(settings.autoTranscribeIncoming, false);
-  assert.equal(settings.replyWithVoiceOnIncomingVoice, false);
+  assert.equal(settings.autoTranscribeIncoming, true);
+  assert.equal(settings.replyWithVoiceOnIncomingVoice, true);
+  assert.equal(settings.sttLanguage, "eng");
 });
 
 test("Voice helpers preserve ElevenLabs audio tags through provider preparation", async () => {

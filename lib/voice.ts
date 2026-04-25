@@ -824,6 +824,7 @@ function getElevenLabsVoiceDefaults(cwd: string): {
   apiKey?: string;
   defaultVoiceId?: string;
   defaultLanguage?: string;
+  sttLanguage?: string;
 } {
   const projectConfig = readJsonRecord(getProjectPiSettingsPath(cwd));
   const userConfig = readJsonRecord(USER_PI_SETTINGS_PATH);
@@ -837,6 +838,7 @@ function getElevenLabsVoiceDefaults(cwd: string): {
       getStringValue(voice.defaultVoice) ||
       "JBFqnCBsd6RMkjVDRZzb",
     defaultLanguage: getStringValue(voice.defaultLanguage),
+    sttLanguage: getStringValue(voice.sttLanguage) || getStringValue(getRecordValue(voice.stt).language),
   };
 }
 
@@ -915,15 +917,27 @@ const piElevenLabsVoiceProvider: TelegramVoiceProvider = {
     return {
       defaultVoiceId: defaults.defaultVoiceId,
       defaultLanguage: defaults.defaultLanguage,
-      canTranscribe: false,
+      sttLanguage: defaults.sttLanguage,
+      canTranscribe: Boolean(defaults.apiKey),
       canSynthesize: Boolean(defaults.apiKey),
     };
   },
   prepareSpeechText(input) {
     return prepareElevenLabsTaggedSpeech(input);
   },
-  async transcribe() {
-    throw new Error("pi-elevenlabs supports TTS only; configure an STT-capable provider for transcription.");
+  async transcribe(input) {
+    const adapter = await loadPiElevenLabsVoiceAdapter(input.cwd);
+    if (!adapter.capabilities.stt || !adapter.transcribe) {
+      throw new Error("pi-elevenlabs adapter does not support STT");
+    }
+    const available = await adapter.isAvailable();
+    if (!available) {
+      throw new Error("pi-elevenlabs adapter is not available");
+    }
+    return adapter.transcribe({
+      filePath: input.filePath,
+      language: input.language || input.settings.sttLanguage || input.settings.defaultLanguage,
+    });
   },
   async synthesize(input) {
     const adapter = await loadPiElevenLabsVoiceAdapter(input.cwd);
