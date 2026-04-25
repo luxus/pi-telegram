@@ -3,8 +3,7 @@
  * Builds usage, cost, and context summaries for the interactive Telegram status view
  */
 
-import type { Model } from "@mariozechner/pi-ai";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+export type TelegramStatusQueueLane = "control" | "priority" | "default";
 
 export interface TelegramUsageStats {
   totalInput: number;
@@ -12,6 +11,417 @@ export interface TelegramUsageStats {
   totalCacheRead: number;
   totalCacheWrite: number;
   totalCost: number;
+}
+
+interface TelegramUsageMessage {
+  role: string;
+  usage?: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: { total: number };
+  };
+}
+
+interface TelegramStatusSessionEntry {
+  type: string;
+  message?: TelegramUsageMessage;
+}
+
+interface TelegramContextUsage {
+  contextWindow?: number;
+  percent: number | null;
+}
+
+export interface TelegramStatusActiveModel {
+  contextWindow?: number;
+}
+
+export interface TelegramStatusContext {
+  sessionManager: { getEntries(): TelegramStatusSessionEntry[] };
+  getContextUsage(): TelegramContextUsage | undefined;
+  modelRegistry: {
+    isUsingOAuth(model: TelegramStatusActiveModel): boolean;
+  };
+}
+
+export type TelegramRuntimeEventDetailValue = string | number | boolean | null;
+
+const MAX_RECENT_TELEGRAM_RUNTIME_EVENTS = 10;
+
+export interface TelegramRuntimeEvent {
+  at: number;
+  category: string;
+  message: string;
+  details?: Record<string, TelegramRuntimeEventDetailValue>;
+}
+
+export interface TelegramRuntimeEventInput {
+  category: string;
+  error?: unknown;
+  message?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface TelegramRuntimeEventRecorder {
+  record: (
+    category: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
+  getEvents: () => TelegramRuntimeEvent[];
+  clear: () => void;
+}
+
+export interface TelegramRuntimeEventRecorderOptions {
+  getBotToken: () => string | undefined;
+  maxEvents?: number;
+  now?: () => number;
+}
+
+export interface TelegramBridgeStatusLineState {
+  botUsername?: string;
+  allowedUserId?: number;
+  pollingActive: boolean;
+  lastUpdateId?: number;
+  activeSourceMessageIds?: number[];
+  pendingDispatch: boolean;
+  compactionInProgress: boolean;
+  activeToolExecutions: number;
+  pendingModelSwitch: boolean;
+  queuedItems: Array<{ queueLane: TelegramStatusQueueLane }>;
+  recentRuntimeEvents: TelegramRuntimeEvent[];
+}
+
+export interface TelegramStatusBarTheme {
+  fg: (
+    token: "accent" | "error" | "muted" | "warning" | "success",
+    text: string,
+  ) => string;
+}
+
+export interface TelegramStatusBarState {
+  hasBotToken: boolean;
+  pollingActive: boolean;
+  paired: boolean;
+  compactionInProgress: boolean;
+  processing: boolean;
+  queuedStatus: string;
+  error?: string;
+}
+
+export interface TelegramStatusRuntimeContext {
+  ui: {
+    theme: TelegramStatusBarTheme;
+    setStatus: (key: string, text: string) => void;
+  };
+}
+
+export interface TelegramStatusRuntimeDeps<
+  TContext extends TelegramStatusRuntimeContext,
+> {
+  statusKey?: string;
+  getStatusBarState: (ctx: TContext, error?: string) => TelegramStatusBarState;
+  getBridgeStatusLineState: () => TelegramBridgeStatusLineState;
+}
+
+export interface TelegramBridgeStatusConfig {
+  botToken?: string;
+  botUsername?: string;
+  allowedUserId?: number;
+  lastUpdateId?: number;
+}
+
+export interface TelegramBridgeStatusRuntimeDeps<
+  TQueueItem extends { queueLane: TelegramStatusQueueLane },
+> {
+  statusKey?: string;
+  getConfig: () => TelegramBridgeStatusConfig;
+  isPollingActive: () => boolean;
+  getActiveSourceMessageIds: () => number[] | undefined;
+  hasActiveTurn: () => boolean;
+  hasDispatchPending: () => boolean;
+  isCompactionInProgress: () => boolean;
+  getActiveToolExecutions: () => number;
+  hasPendingModelSwitch: () => boolean;
+  getQueuedItems: () => TQueueItem[];
+  formatQueuedStatus: (items: TQueueItem[]) => string;
+  getRecentRuntimeEvents: () => TelegramRuntimeEvent[];
+}
+
+export interface TelegramStatusRuntime<
+  TContext extends TelegramStatusRuntimeContext,
+> {
+  updateStatus: (ctx: TContext, error?: string) => void;
+  getStatusLines: () => string[];
+}
+
+export function redactTelegramRuntimeMessage(
+  message: string,
+  botToken: string | undefined,
+): string {
+  if (!botToken) return message;
+  return message.split(botToken).join("<redacted-token>");
+}
+
+function normalizeTelegramRuntimeEventDetails(
+  details: Record<string, unknown> | undefined,
+  botToken: string | undefined,
+): Record<string, TelegramRuntimeEventDetailValue> | undefined {
+  if (!details) return undefined;
+  const normalized: Record<string, TelegramRuntimeEventDetailValue> = {};
+  for (const [key, value] of Object.entries(details)) {
+    if (value === undefined) continue;
+    if (typeof value === "string") {
+      normalized[key] = redactTelegramRuntimeMessage(value, botToken);
+      continue;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      normalized[key] = value;
+      continue;
+    }
+    if (value === null) {
+      normalized[key] = null;
+      continue;
+    }
+    normalized[key] = redactTelegramRuntimeMessage(String(value), botToken);
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function getTelegramRuntimeEventMessage(
+  input: TelegramRuntimeEventInput,
+): string {
+  if (input.message !== undefined) return input.message;
+  if (input.error instanceof Error) return input.error.message;
+  return String(input.error);
+}
+
+export function recordStructuredTelegramRuntimeEvent(
+  events: TelegramRuntimeEvent[],
+  input: TelegramRuntimeEventInput,
+  options: { botToken?: string; maxEvents: number; now?: number },
+): void {
+  const details = normalizeTelegramRuntimeEventDetails(
+    input.details,
+    options.botToken,
+  );
+  events.push({
+    at: options.now ?? Date.now(),
+    category: input.category,
+    message: redactTelegramRuntimeMessage(
+      getTelegramRuntimeEventMessage(input),
+      options.botToken,
+    ),
+    ...(details ? { details } : {}),
+  });
+  while (events.length > options.maxEvents) {
+    events.shift();
+  }
+}
+
+export function recordTelegramRuntimeEvent(
+  events: TelegramRuntimeEvent[],
+  category: string,
+  error: unknown,
+  options: { botToken?: string; maxEvents: number; now?: number },
+): void {
+  recordStructuredTelegramRuntimeEvent(events, { category, error }, options);
+}
+
+export function createTelegramRuntimeEventRecorder(
+  options: TelegramRuntimeEventRecorderOptions,
+): TelegramRuntimeEventRecorder {
+  const events: TelegramRuntimeEvent[] = [];
+  return {
+    record: (category, error, details) => {
+      recordStructuredTelegramRuntimeEvent(
+        events,
+        { category, error, details },
+        {
+          botToken: options.getBotToken(),
+          maxEvents: options.maxEvents ?? MAX_RECENT_TELEGRAM_RUNTIME_EVENTS,
+          now: options.now?.(),
+        },
+      );
+    },
+    getEvents: () => events,
+    clear: () => {
+      events.length = 0;
+    },
+  };
+}
+
+function formatTelegramRuntimeEventCategory(
+  event: TelegramRuntimeEvent,
+): string {
+  const method = event.details?.method;
+  return typeof method === "string"
+    ? `${event.category}:${method}`
+    : event.category;
+}
+
+function formatTelegramRuntimeEventDetails(
+  event: TelegramRuntimeEvent,
+): string {
+  if (!event.details) return "";
+  const details = Object.entries(event.details)
+    .filter(([key]) => key !== "method")
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`);
+  return details.length > 0 ? ` (${details.join(", ")})` : "";
+}
+
+function formatTelegramRuntimeEventSummary(
+  event: TelegramRuntimeEvent,
+): string {
+  return `${formatTelegramRuntimeEventCategory(event)}: ${event.message}${formatTelegramRuntimeEventDetails(event)}`;
+}
+
+function formatTelegramRuntimeEvent(event: TelegramRuntimeEvent): string {
+  return `${new Date(event.at).toISOString()} ${formatTelegramRuntimeEventSummary(event)}`;
+}
+
+export function buildTelegramRuntimeEventLines(
+  events: TelegramRuntimeEvent[],
+): string[] {
+  if (events.length === 0) return ["recent runtime events: none"];
+  return [
+    "recent runtime events:",
+    ...events
+      .slice()
+      .reverse()
+      .map((event) => `- ${formatTelegramRuntimeEvent(event)}`),
+  ];
+}
+
+export function createTelegramStatusHtmlBuilder<TContext>(deps: {
+  getActiveModel: (ctx: TContext) => TelegramStatusActiveModel | undefined;
+}): (ctx: TContext & TelegramStatusContext) => string {
+  return (ctx) => buildStatusHtml(ctx, deps.getActiveModel(ctx));
+}
+
+export function createTelegramStatusRuntime<
+  TContext extends TelegramStatusRuntimeContext,
+>(deps: TelegramStatusRuntimeDeps<TContext>): TelegramStatusRuntime<TContext> {
+  const statusKey = deps.statusKey ?? "telegram";
+  return {
+    updateStatus: (ctx, error) => {
+      ctx.ui.setStatus(
+        statusKey,
+        buildTelegramStatusBarText(
+          ctx.ui.theme,
+          deps.getStatusBarState(ctx, error),
+        ),
+      );
+    },
+    getStatusLines: () =>
+      buildTelegramBridgeStatusLines(deps.getBridgeStatusLineState()),
+  };
+}
+
+export function createTelegramBridgeStatusRuntime<
+  TContext extends TelegramStatusRuntimeContext,
+  TQueueItem extends { queueLane: TelegramStatusQueueLane },
+>(
+  deps: TelegramBridgeStatusRuntimeDeps<TQueueItem>,
+): TelegramStatusRuntime<TContext> {
+  return createTelegramStatusRuntime({
+    statusKey: deps.statusKey,
+    getStatusBarState: (_ctx, error) => {
+      const config = deps.getConfig();
+      const queuedItems = deps.getQueuedItems();
+      const compactionInProgress = deps.isCompactionInProgress();
+      return {
+        hasBotToken: !!config.botToken,
+        pollingActive: deps.isPollingActive(),
+        paired: !!config.allowedUserId,
+        compactionInProgress,
+        processing:
+          deps.hasActiveTurn() ||
+          deps.hasDispatchPending() ||
+          queuedItems.length > 0,
+        queuedStatus: deps.formatQueuedStatus(queuedItems),
+        error,
+      };
+    },
+    getBridgeStatusLineState: () => {
+      const config = deps.getConfig();
+      return {
+        botUsername: config.botUsername,
+        allowedUserId: config.allowedUserId,
+        pollingActive: deps.isPollingActive(),
+        lastUpdateId: config.lastUpdateId,
+        activeSourceMessageIds: deps.getActiveSourceMessageIds(),
+        pendingDispatch: deps.hasDispatchPending(),
+        compactionInProgress: deps.isCompactionInProgress(),
+        activeToolExecutions: deps.getActiveToolExecutions(),
+        pendingModelSwitch: deps.hasPendingModelSwitch(),
+        queuedItems: deps.getQueuedItems(),
+        recentRuntimeEvents: deps.getRecentRuntimeEvents(),
+      };
+    },
+  });
+}
+
+export function buildTelegramStatusBarText(
+  theme: TelegramStatusBarTheme,
+  state: TelegramStatusBarState,
+): string {
+  const label = theme.fg("accent", "telegram");
+  if (state.error) {
+    return `${label} ${theme.fg("error", "error")} ${theme.fg("muted", state.error)}`;
+  }
+  if (!state.hasBotToken)
+    return `${label} ${theme.fg("muted", "not configured")}`;
+  if (!state.pollingActive)
+    return `${label} ${theme.fg("muted", "disconnected")}`;
+  if (!state.paired)
+    return `${label} ${theme.fg("warning", "awaiting pairing")}`;
+  const queued = theme.fg("muted", state.queuedStatus);
+  if (state.compactionInProgress) {
+    return `${label} ${theme.fg("accent", "compacting")}${queued}`;
+  }
+  if (state.processing) {
+    return `${label} ${theme.fg("accent", "processing")}${queued}`;
+  }
+  return `${label} ${theme.fg("success", "connected")}`;
+}
+
+export function buildTelegramBridgeStatusLines(
+  state: TelegramBridgeStatusLineState,
+): string[] {
+  const controlQueueCount = state.queuedItems.filter(
+    (item) => item.queueLane === "control",
+  ).length;
+  const priorityQueueCount = state.queuedItems.filter(
+    (item) => item.queueLane === "priority",
+  ).length;
+  const defaultQueueCount = state.queuedItems.filter(
+    (item) => item.queueLane === "default",
+  ).length;
+  return [
+    "connection:",
+    `- bot: ${state.botUsername ? `@${state.botUsername}` : "not configured"}`,
+    `- allowed user: ${state.allowedUserId ?? "not paired"}`,
+    "",
+    "polling:",
+    `- state: ${state.pollingActive ? "running" : "stopped"}`,
+    `- last update id: ${state.lastUpdateId ?? "none"}`,
+    "",
+    "execution:",
+    `- active turn: ${state.activeSourceMessageIds?.join(",") || "no"}`,
+    `- pending dispatch: ${state.pendingDispatch ? "yes" : "no"}`,
+    `- compaction: ${state.compactionInProgress ? "running" : "idle"}`,
+    `- active tools: ${state.activeToolExecutions}`,
+    `- pending model switch: ${state.pendingModelSwitch ? "yes" : "no"}`,
+    "",
+    "queue:",
+    `- queued turns: ${state.queuedItems.length}`,
+    `- lanes: control=${controlQueueCount}, priority=${priorityQueueCount}, default=${defaultQueueCount}`,
+    "",
+    ...buildTelegramRuntimeEventLines(state.recentRuntimeEvents),
+  ];
 }
 
 function escapeHtml(text: string): string {
@@ -29,7 +439,7 @@ function formatTokens(count: number): string {
   return `${Math.round(count / 1000000)}M`;
 }
 
-export function collectUsageStats(ctx: ExtensionContext): TelegramUsageStats {
+function collectUsageStats(ctx: TelegramStatusContext): TelegramUsageStats {
   const stats: TelegramUsageStats = {
     totalInput: 0,
     totalOutput: 0,
@@ -38,14 +448,19 @@ export function collectUsageStats(ctx: ExtensionContext): TelegramUsageStats {
     totalCost: 0,
   };
   for (const entry of ctx.sessionManager.getEntries()) {
-    if (entry.type !== "message" || entry.message.role !== "assistant") {
+    const usage = entry.message?.usage;
+    if (
+      entry.type !== "message" ||
+      entry.message?.role !== "assistant" ||
+      !usage
+    ) {
       continue;
     }
-    stats.totalInput += entry.message.usage.input;
-    stats.totalOutput += entry.message.usage.output;
-    stats.totalCacheRead += entry.message.usage.cacheRead;
-    stats.totalCacheWrite += entry.message.usage.cacheWrite;
-    stats.totalCost += entry.message.usage.cost.total;
+    stats.totalInput += usage.input;
+    stats.totalOutput += usage.output;
+    stats.totalCacheRead += usage.cacheRead;
+    stats.totalCacheWrite += usage.cacheWrite;
+    stats.totalCost += usage.cost.total;
   }
   return stats;
 }
@@ -74,8 +489,8 @@ function buildCostSummary(
 }
 
 function buildContextSummary(
-  ctx: ExtensionContext,
-  activeModel: Model<any> | undefined,
+  ctx: TelegramStatusContext,
+  activeModel: TelegramStatusActiveModel | undefined,
 ): string {
   const usage = ctx.getContextUsage();
   if (!usage) return "unknown";
@@ -85,8 +500,8 @@ function buildContextSummary(
 }
 
 export function buildStatusHtml(
-  ctx: ExtensionContext,
-  activeModel: Model<any> | undefined,
+  ctx: TelegramStatusContext,
+  activeModel: TelegramStatusActiveModel | undefined,
 ): string {
   const stats = collectUsageStats(ctx);
   const usesSubscription = activeModel

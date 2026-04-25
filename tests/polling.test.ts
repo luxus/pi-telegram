@@ -7,13 +7,24 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  TELEGRAM_ALLOWED_UPDATES,
   buildTelegramInitialSyncRequest,
   buildTelegramLongPollRequest,
+  createTelegramPollingActivityReader,
+  createTelegramPollingController,
+  createTelegramPollingControllerRuntime,
+  createTelegramPollingControllerState,
+  createTelegramPollLoopRunner,
   getLatestTelegramUpdateId,
+  isTelegramPollingControllerActive,
   runTelegramPollLoop,
+  shouldStartTelegramPolling,
   shouldStopTelegramPolling,
+  startTelegramPollingRuntime,
+  stopTelegramPollingRuntime,
+  TELEGRAM_ALLOWED_UPDATES,
 } from "../lib/polling.ts";
+
+const TEST_CONTEXT = "ctx";
 
 test("Polling helpers build the initial sync request", () => {
   assert.deepEqual(buildTelegramInitialSyncRequest(), {
@@ -46,6 +57,159 @@ test("Polling helpers extract the latest update id", () => {
   );
 });
 
+test("Polling helpers start only when a bot token exists and polling is idle", () => {
+  assert.equal(
+    shouldStartTelegramPolling({
+      hasBotToken: true,
+      hasPollingPromise: false,
+    }),
+    true,
+  );
+  assert.equal(
+    shouldStartTelegramPolling({
+      hasBotToken: false,
+      hasPollingPromise: false,
+    }),
+    false,
+  );
+  assert.equal(
+    shouldStartTelegramPolling({
+      hasBotToken: true,
+      hasPollingPromise: true,
+    }),
+    false,
+  );
+});
+
+test("Polling runtime starts and stops polling through state ports", async () => {
+  const events: string[] = [];
+  let pollingPromise: Promise<void> | undefined;
+  let pollingController: AbortController | undefined;
+  let finishPollLoop: (() => void) | undefined;
+  const deps = {
+    hasBotToken: () => true,
+    getPollingPromise: () => pollingPromise,
+    setPollingPromise: (promise: Promise<void> | undefined) => {
+      pollingPromise = promise;
+      events.push(`promise:${promise ? "set" : "clear"}`);
+    },
+    getPollingController: () => pollingController,
+    setPollingController: (controller: AbortController | undefined) => {
+      pollingController = controller;
+      events.push(`controller:${controller ? "set" : "clear"}`);
+    },
+    stopTypingLoop: () => {
+      events.push("typing:stop");
+    },
+    runPollLoop: async (_ctx: string, signal: AbortSignal) => {
+      events.push(`run:${signal.aborted}`);
+      await new Promise<void>((resolve) => {
+        finishPollLoop = resolve;
+      });
+    },
+    updateStatus: (ctx: string) => {
+      events.push(`status:${ctx}`);
+    },
+  };
+  startTelegramPollingRuntime("ctx", deps);
+  assert.equal(!!pollingPromise, true);
+  assert.equal(!!pollingController, true);
+  const stopPromise = stopTelegramPollingRuntime(deps);
+  assert.equal(pollingController, undefined);
+  finishPollLoop?.();
+  await stopPromise;
+  assert.deepEqual(events, [
+    "controller:set",
+    "run:false",
+    "promise:set",
+    "status:ctx",
+    "typing:stop",
+    "controller:clear",
+    "promise:clear",
+    "controller:clear",
+    "status:ctx",
+    "promise:clear",
+  ]);
+});
+
+test("Polling controller owns polling promise and abort-controller state", async () => {
+  const events: string[] = [];
+  let finishPollLoop: (() => void) | undefined;
+  const state = createTelegramPollingControllerState();
+  const isPollingActive = createTelegramPollingActivityReader(state);
+  const controller = createTelegramPollingController({
+    state,
+    hasBotToken: () => true,
+    stopTypingLoop: () => {
+      events.push("typing:stop");
+    },
+    runPollLoop: async (_ctx: string, signal: AbortSignal) => {
+      events.push(`run:${signal.aborted}`);
+      await new Promise<void>((resolve) => {
+        finishPollLoop = resolve;
+      });
+    },
+    updateStatus: (ctx: string) => {
+      events.push(`status:${ctx}`);
+    },
+  });
+  controller.start("ctx");
+  assert.equal(controller.isActive(), true);
+  assert.equal(isTelegramPollingControllerActive(state), true);
+  assert.equal(isPollingActive(), true);
+  controller.start("ctx");
+  const stopPromise = controller.stop();
+  finishPollLoop?.();
+  await stopPromise;
+  assert.equal(controller.isActive(), false);
+  assert.equal(isTelegramPollingControllerActive(state), false);
+  assert.equal(isPollingActive(), false);
+  assert.deepEqual(events, [
+    "run:false",
+    "status:ctx",
+    "typing:stop",
+    "status:ctx",
+  ]);
+});
+
+test("Polling controller runtime binds loop runner and controller state", async () => {
+  const events: string[] = [];
+  const state = createTelegramPollingControllerState();
+  const controller = createTelegramPollingControllerRuntime({
+    state,
+    getConfig: () => ({ botToken: "123:abc" }),
+    hasBotToken: () => true,
+    deleteWebhook: async () => {
+      events.push("deleteWebhook");
+    },
+    getUpdates: async () => {
+      throw new DOMException("stop", "AbortError");
+    },
+    persistConfig: async () => {
+      events.push("persist");
+    },
+    handleUpdate: async () => {
+      events.push("handle");
+    },
+    stopTypingLoop: () => {
+      events.push("typing:stop");
+    },
+    updateStatus: (_ctx: string, message?: string) => {
+      events.push(`status:${message ?? "ok"}`);
+    },
+  });
+  controller.start("ctx");
+  assert.equal(controller.isActive(), true);
+  await controller.stop();
+  assert.equal(controller.isActive(), false);
+  assert.deepEqual(events, [
+    "deleteWebhook",
+    "status:ok",
+    "typing:stop",
+    "status:ok",
+  ]);
+});
+
 test("Polling helpers stop only for abort conditions", () => {
   assert.equal(shouldStopTelegramPolling(true, new Error("ignored")), true);
   assert.equal(
@@ -53,6 +217,40 @@ test("Polling helpers stop only for abort conditions", () => {
     true,
   );
   assert.equal(shouldStopTelegramPolling(false, new Error("network")), false);
+});
+
+test("Poll loop runner binds config, status, and transport ports", async () => {
+  const config: { botToken: string; lastUpdateId?: number } = {
+    botToken: "123:abc",
+    lastUpdateId: 5,
+  };
+  const events: string[] = [];
+  let calls = 0;
+  const runPollLoop = createTelegramPollLoopRunner({
+    getConfig: () => config,
+    deleteWebhook: async () => {
+      events.push("deleteWebhook");
+    },
+    getUpdates: async () => {
+      calls += 1;
+      if (calls === 1) return [{ update_id: 6 }];
+      throw new DOMException("stop", "AbortError");
+    },
+    persistConfig: async () => {
+      events.push(`persist:${config.lastUpdateId}`);
+    },
+    handleUpdate: async (update, ctx: string) => {
+      events.push(`handle:${ctx}:${update.update_id}`);
+    },
+    updateStatus: (ctx, message) => {
+      events.push(`status:${ctx}:${message ?? "ok"}`);
+    },
+    sleep: async () => {
+      events.push("sleep");
+    },
+  });
+  await runPollLoop("ctx", new AbortController().signal);
+  assert.deepEqual(events, ["deleteWebhook", "handle:ctx:6", "persist:6"]);
 });
 
 test("Poll loop initializes lastUpdateId and processes updates", async () => {
@@ -64,7 +262,7 @@ test("Poll loop initializes lastUpdateId and processes updates", async () => {
   let persistCount = 0;
   const signal = new AbortController().signal;
   await runTelegramPollLoop({
-    ctx: {} as never,
+    ctx: TEST_CONTEXT,
     signal,
     config,
     deleteWebhook: async () => {},
@@ -99,7 +297,7 @@ test("Poll loop persists long-poll offsets only after handling updates", async (
   const persisted: number[] = [];
   let calls = 0;
   await runTelegramPollLoop({
-    ctx: {} as never,
+    ctx: TEST_CONTEXT,
     signal: new AbortController().signal,
     config,
     deleteWebhook: async () => {},
@@ -128,9 +326,10 @@ test("Poll loop skips repeatedly failing updates after the configured threshold"
   const config = { botToken: "123:abc", lastUpdateId: 5 };
   const persisted: number[] = [];
   const statusMessages: string[] = [];
+  const runtimeEvents: string[] = [];
   let calls = 0;
   await runTelegramPollLoop({
-    ctx: {} as never,
+    ctx: TEST_CONTEXT,
     signal: new AbortController().signal,
     config,
     maxUpdateFailures: 2,
@@ -155,6 +354,12 @@ test("Poll loop skips repeatedly failing updates after the configured threshold"
     sleep: async (ms) => {
       statusMessages.push(`sleep:${ms}`);
     },
+    recordRuntimeEvent: (category, error, details) => {
+      const message = error instanceof Error ? error.message : String(error);
+      runtimeEvents.push(
+        `${category}:${message}:${details?.phase}:${details?.failureCount}`,
+      );
+    },
   });
   assert.equal(config.lastUpdateId, 6);
   assert.deepEqual(persisted, [6]);
@@ -164,14 +369,19 @@ test("Poll loop skips repeatedly failing updates after the configured threshold"
     "reset",
     "skipping Telegram update 6 after 2 failures: handler failed",
   ]);
+  assert.deepEqual(runtimeEvents, [
+    "polling:handler failed:handleUpdate:1",
+    "polling:handler failed:handleUpdate:2",
+  ]);
 });
 
 test("Poll loop reports retryable errors and sleeps before retrying", async () => {
   const config = { botToken: "123:abc", lastUpdateId: 1 };
   const statusMessages: string[] = [];
+  const runtimeEvents: string[] = [];
   let calls = 0;
   await runTelegramPollLoop({
-    ctx: {} as never,
+    ctx: TEST_CONTEXT,
     signal: new AbortController().signal,
     config,
     deleteWebhook: async () => {},
@@ -193,10 +403,15 @@ test("Poll loop reports retryable errors and sleeps before retrying", async () =
     sleep: async (ms) => {
       statusMessages.push(`sleep:${ms}`);
     },
+    recordRuntimeEvent: (category, error, details) => {
+      const message = error instanceof Error ? error.message : String(error);
+      runtimeEvents.push(`${category}:${message}:${details?.phase}`);
+    },
   });
   assert.deepEqual(statusMessages, [
     "error:network down",
     "sleep:3000",
     "reset",
   ]);
+  assert.deepEqual(runtimeEvents, ["polling:network down:loop"]);
 });

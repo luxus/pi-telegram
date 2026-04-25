@@ -3,10 +3,75 @@
  * Owns rendered-message delivery, reply transport wiring, and plain or markdown final replies
  */
 
-import type { TelegramRenderedChunk, TelegramRenderMode } from "./rendering.ts";
+import type { TelegramReplyParameters, TelegramSentMessage } from "./api.ts";
+import {
+  renderTelegramMessage,
+  type TelegramRenderedChunk,
+  type TelegramRenderMode,
+} from "./rendering.ts";
 
-export interface TelegramSentMessageLike {
-  message_id: number;
+export function buildTelegramReplyParameters(
+  messageId: number | undefined,
+): TelegramReplyParameters | undefined {
+  if (messageId === undefined) return undefined;
+  return { message_id: messageId, allow_sending_without_reply: true };
+}
+
+export function buildTelegramMultipartReplyParameters(
+  messageId: number | undefined,
+): string | undefined {
+  const parameters = buildTelegramReplyParameters(messageId);
+  return parameters ? JSON.stringify(parameters) : undefined;
+}
+
+function getAgentMessageField(message: unknown, field: string): unknown {
+  if (typeof message !== "object" || message === null || !(field in message)) {
+    return undefined;
+  }
+  return Reflect.get(message, field);
+}
+
+export function isAssistantAgentMessage(message: unknown): boolean {
+  return getAgentMessageField(message, "role") === "assistant";
+}
+
+function extractAgentTextContent(content: unknown): string {
+  const blocks = Array.isArray(content) ? content : [];
+  return blocks
+    .filter(
+      (block): block is { type: string; text?: string } =>
+        typeof block === "object" && block !== null && "type" in block,
+    )
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => block.text as string)
+    .join("")
+    .trim();
+}
+
+export function getAgentMessageText(message: unknown): string {
+  return extractAgentTextContent(getAgentMessageField(message, "content"));
+}
+
+export function extractLatestAssistantMessageText(
+  messages: readonly unknown[],
+): {
+  text?: string;
+  stopReason?: string;
+  errorMessage?: string;
+} {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (!message || !isAssistantAgentMessage(message)) continue;
+    const rawStopReason = getAgentMessageField(message, "stopReason");
+    const rawErrorMessage = getAgentMessageField(message, "errorMessage");
+    const stopReason =
+      typeof rawStopReason === "string" ? rawStopReason : undefined;
+    const errorMessage =
+      typeof rawErrorMessage === "string" ? rawErrorMessage : undefined;
+    const text = getAgentMessageText(message);
+    return { text: text || undefined, stopReason, errorMessage };
+  }
+  return {};
 }
 
 export interface TelegramReplyDeliveryDeps<TReplyMarkup> {
@@ -15,21 +80,22 @@ export interface TelegramReplyDeliveryDeps<TReplyMarkup> {
     text: string;
     parse_mode?: "HTML";
     reply_markup?: TReplyMarkup;
-  }) => Promise<TelegramSentMessageLike>;
+    reply_parameters?: TelegramReplyParameters;
+  }) => Promise<TelegramSentMessage>;
   editMessage: (body: {
     chat_id: number;
     message_id: number;
     text: string;
     parse_mode?: "HTML";
     reply_markup?: TReplyMarkup;
-  }) => Promise<void>;
+  }) => Promise<unknown>;
 }
 
 export interface TelegramReplyTransport<TReplyMarkup> {
   sendRenderedChunks: (
     chatId: number,
     chunks: TelegramRenderedChunk[],
-    options?: { replyMarkup?: TReplyMarkup },
+    options?: { replyMarkup?: TReplyMarkup; replyToMessageId?: number },
   ) => Promise<number | undefined>;
   editRenderedMessage: (
     chatId: number,
@@ -62,16 +128,21 @@ export async function sendTelegramRenderedChunks<TReplyMarkup>(
   chatId: number,
   chunks: TelegramRenderedChunk[],
   deps: TelegramReplyDeliveryDeps<TReplyMarkup>,
-  options?: { replyMarkup?: TReplyMarkup },
+  options?: { replyMarkup?: TReplyMarkup; replyToMessageId?: number },
 ): Promise<number | undefined> {
   let lastMessageId: number | undefined;
   for (const [index, chunk] of chunks.entries()) {
+    const replyParameters =
+      index === 0
+        ? buildTelegramReplyParameters(options?.replyToMessageId)
+        : undefined;
     const sent = await deps.sendMessage({
       chat_id: chatId,
       text: chunk.text,
       parse_mode: chunk.parseMode,
       reply_markup:
         index === chunks.length - 1 ? options?.replyMarkup : undefined,
+      ...(replyParameters ? { reply_parameters: replyParameters } : {}),
     });
     lastMessageId = sent.message_id;
   }
@@ -96,7 +167,9 @@ export async function editTelegramRenderedMessage<TReplyMarkup>(
       remainingChunks.length === 0 ? options?.replyMarkup : undefined,
   });
   if (remainingChunks.length > 0) {
-    return sendTelegramRenderedChunks(chatId, remainingChunks, deps, options);
+    return sendTelegramRenderedChunks(chatId, remainingChunks, deps, {
+      replyMarkup: options?.replyMarkup,
+    });
   }
   return messageId;
 }
@@ -131,4 +204,121 @@ export async function sendTelegramMarkdownReply(
     return sendTelegramPlainReply(markdown, deps);
   }
   return deps.sendRenderedChunks(chunks);
+}
+
+export interface TelegramRenderedMessageRuntimeDeps<TReplyMarkup> {
+  renderTelegramMessage: (
+    text: string,
+    options?: { mode?: TelegramRenderMode },
+  ) => TelegramRenderedChunk[];
+  replyTransport: TelegramReplyTransport<TReplyMarkup>;
+}
+
+export interface TelegramRenderedMessageRuntime<TReplyMarkup> {
+  sendTextReply: (
+    chatId: number,
+    replyToMessageId: number,
+    text: string,
+    options?: { parseMode?: "HTML" },
+  ) => Promise<number | undefined>;
+  sendMarkdownReply: (
+    chatId: number,
+    replyToMessageId: number,
+    markdown: string,
+  ) => Promise<number | undefined>;
+  editInteractiveMessage: (
+    chatId: number,
+    messageId: number,
+    text: string,
+    mode: TelegramRenderMode,
+    replyMarkup: TReplyMarkup,
+  ) => Promise<void>;
+  sendInteractiveMessage: (
+    chatId: number,
+    text: string,
+    mode: TelegramRenderMode,
+    replyMarkup: TReplyMarkup,
+  ) => Promise<number | undefined>;
+}
+
+export interface TelegramRenderedMessageDeliveryRuntime<
+  TReplyMarkup,
+> extends TelegramRenderedMessageRuntime<TReplyMarkup> {
+  replyTransport: TelegramReplyTransport<TReplyMarkup>;
+}
+
+export interface TelegramRenderedMessageDeliveryRuntimeDeps<
+  TReplyMarkup,
+> extends TelegramReplyDeliveryDeps<TReplyMarkup> {
+  renderTelegramMessage?: (
+    text: string,
+    options?: { mode?: TelegramRenderMode },
+  ) => TelegramRenderedChunk[];
+}
+
+export function createTelegramRenderedMessageDeliveryRuntime<TReplyMarkup>(
+  deps: TelegramRenderedMessageDeliveryRuntimeDeps<TReplyMarkup>,
+): TelegramRenderedMessageDeliveryRuntime<TReplyMarkup> {
+  const replyTransport = buildTelegramReplyTransport({
+    sendMessage: deps.sendMessage,
+    editMessage: deps.editMessage,
+  });
+  return {
+    replyTransport,
+    ...createTelegramRenderedMessageRuntime({
+      renderTelegramMessage:
+        deps.renderTelegramMessage ?? renderTelegramMessage,
+      replyTransport,
+    }),
+  };
+}
+
+export function createTelegramRenderedMessageRuntime<TReplyMarkup>(
+  deps: TelegramRenderedMessageRuntimeDeps<TReplyMarkup>,
+): TelegramRenderedMessageRuntime<TReplyMarkup> {
+  return {
+    sendTextReply: async (chatId, replyToMessageId, text, options) => {
+      return sendTelegramPlainReply(
+        text,
+        {
+          renderTelegramMessage: deps.renderTelegramMessage,
+          sendRenderedChunks: (chunks) =>
+            deps.replyTransport.sendRenderedChunks(chatId, chunks, {
+              replyToMessageId,
+            }),
+        },
+        options,
+      );
+    },
+    sendMarkdownReply: async (chatId, replyToMessageId, markdown) => {
+      return sendTelegramMarkdownReply(markdown, {
+        renderTelegramMessage: deps.renderTelegramMessage,
+        sendRenderedChunks: (chunks) =>
+          deps.replyTransport.sendRenderedChunks(chatId, chunks, {
+            replyToMessageId,
+          }),
+      });
+    },
+    editInteractiveMessage: async (
+      chatId,
+      messageId,
+      text,
+      mode,
+      replyMarkup,
+    ) => {
+      await deps.replyTransport.editRenderedMessage(
+        chatId,
+        messageId,
+        deps.renderTelegramMessage(text, { mode }),
+        { replyMarkup },
+      );
+    },
+    sendInteractiveMessage: async (chatId, text, mode, replyMarkup) => {
+      return deps.replyTransport.sendRenderedChunks(
+        chatId,
+        deps.renderTelegramMessage(text, { mode }),
+        { replyMarkup },
+      );
+    },
+  };
 }

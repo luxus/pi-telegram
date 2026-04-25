@@ -3,59 +3,47 @@
  * Normalizes inbound Telegram messages into reusable file, text, id, history, and media-group metadata
  */
 
-export interface TelegramPhotoSizeLike {
+const TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS = 1200;
+
+export interface TelegramPhotoSize {
   file_id: string;
   file_size?: number;
 }
 
-export interface TelegramDocumentLike {
+export interface TelegramDocument {
   file_id: string;
   file_name?: string;
   mime_type?: string;
 }
 
-export interface TelegramVideoLike {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-}
+export type TelegramVideo = TelegramDocument;
+export type TelegramAudio = TelegramDocument;
+export type TelegramAnimation = TelegramDocument;
 
-export interface TelegramAudioLike {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-}
-
-export interface TelegramVoiceLike {
+export interface TelegramVoice {
   file_id: string;
   mime_type?: string;
 }
 
-export interface TelegramAnimationLike {
-  file_id: string;
-  file_name?: string;
-  mime_type?: string;
-}
-
-export interface TelegramStickerLike {
+export interface TelegramSticker {
   file_id: string;
 }
 
-export interface TelegramMessageLike {
+export interface TelegramMediaMessage {
   message_id: number;
   text?: string;
   caption?: string;
   media_group_id?: string;
-  photo?: TelegramPhotoSizeLike[];
-  document?: TelegramDocumentLike;
-  video?: TelegramVideoLike;
-  audio?: TelegramAudioLike;
-  voice?: TelegramVoiceLike;
-  animation?: TelegramAnimationLike;
-  sticker?: TelegramStickerLike;
+  photo?: TelegramPhotoSize[];
+  document?: TelegramDocument;
+  video?: TelegramVideo;
+  audio?: TelegramAudio;
+  voice?: TelegramVoice;
+  animation?: TelegramAnimation;
+  sticker?: TelegramSticker;
 }
 
-export interface TelegramMediaGroupMessageLike {
+export interface TelegramMediaGroupMessage {
   message_id: number;
   chat: { id: number };
   media_group_id?: string;
@@ -66,6 +54,41 @@ export interface TelegramMediaGroupState<TMessage> {
   flushTimer?: ReturnType<typeof setTimeout>;
 }
 
+export interface TelegramMediaGroupController<
+  TMessage extends TelegramMediaGroupMessage,
+> {
+  queueMessage: (options: {
+    message: TMessage;
+    dispatchMessages: (messages: TMessage[]) => void;
+  }) => boolean;
+  removeMessages: (messageIds: number[]) => number;
+  clear: () => void;
+}
+
+export interface TelegramMediaGroupDispatchRuntimeDeps<
+  TMessage extends TelegramMediaGroupMessage,
+  TContext,
+> {
+  mediaGroups: TelegramMediaGroupController<TMessage>;
+  dispatchMessages: (messages: TMessage[], ctx: TContext) => Promise<void>;
+}
+
+export interface TelegramMediaGroupDispatchRuntime<
+  TMessage extends TelegramMediaGroupMessage,
+  TContext,
+> {
+  handleMessage: (message: TMessage, ctx: TContext) => Promise<void>;
+}
+
+export interface TelegramMediaGroupControllerOptions {
+  debounceMs?: number;
+  setTimer?: (
+    callback: () => void,
+    ms: number,
+  ) => ReturnType<typeof setTimeout>;
+  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+}
+
 export interface TelegramFileInfo {
   file_id: string;
   fileName: string;
@@ -73,8 +96,22 @@ export interface TelegramFileInfo {
   isImage: boolean;
 }
 
-export interface DownloadedTelegramFileLike {
+export interface DownloadedTelegramFile {
   path: string;
+  fileName?: string;
+  isImage?: boolean;
+  mimeType?: string;
+}
+
+export interface DownloadedTelegramMessageFile {
+  path: string;
+  fileName: string;
+  isImage: boolean;
+  mimeType?: string;
+}
+
+export interface DownloadTelegramMessageFilesDeps {
+  downloadFile: (fileId: string, fileName: string) => Promise<string>;
 }
 
 export function guessExtensionFromMime(
@@ -106,43 +143,43 @@ export function guessMediaType(path: string): string | undefined {
   return undefined;
 }
 
-export function isImageMimeType(mimeType: string | undefined): boolean {
+function isImageMimeType(mimeType: string | undefined): boolean {
   return mimeType?.toLowerCase().startsWith("image/") ?? false;
 }
 
 export function extractTelegramMessageText(
-  message: TelegramMessageLike,
+  message: TelegramMediaMessage,
 ): string {
   return (message.text || message.caption || "").trim();
 }
 
 export function extractTelegramMessagesText(
-  messages: TelegramMessageLike[],
+  messages: TelegramMediaMessage[],
 ): string {
   return messages.map(extractTelegramMessageText).filter(Boolean).join("\n\n");
 }
 
 export function extractFirstTelegramMessageText(
-  messages: TelegramMessageLike[],
+  messages: TelegramMediaMessage[],
 ): string {
   return messages.map(extractTelegramMessageText).find(Boolean) ?? "";
 }
 
 export function collectTelegramMessageIds(
-  messages: TelegramMessageLike[],
+  messages: TelegramMediaMessage[],
 ): number[] {
   return [...new Set(messages.map((message) => message.message_id))];
 }
 
 export function getTelegramMediaGroupKey(
-  message: TelegramMediaGroupMessageLike,
+  message: TelegramMediaGroupMessage,
 ): string | undefined {
   if (!message.media_group_id) return undefined;
   return `${message.chat.id}:${message.media_group_id}`;
 }
 
 export function removePendingTelegramMediaGroupMessages<
-  TMessage extends TelegramMediaGroupMessageLike,
+  TMessage extends TelegramMediaGroupMessage,
 >(
   groups: Map<string, TelegramMediaGroupState<TMessage>>,
   messageIds: number[],
@@ -167,7 +204,7 @@ export function removePendingTelegramMediaGroupMessages<
 }
 
 export function queueTelegramMediaGroupMessage<
-  TMessage extends TelegramMediaGroupMessageLike,
+  TMessage extends TelegramMediaGroupMessage,
 >(options: {
   message: TMessage;
   groups: Map<string, TelegramMediaGroupState<TMessage>>;
@@ -191,9 +228,62 @@ export function queueTelegramMediaGroupMessage<
   return true;
 }
 
+export function createTelegramMediaGroupController<
+  TMessage extends TelegramMediaGroupMessage,
+>(
+  options: TelegramMediaGroupControllerOptions = {},
+): TelegramMediaGroupController<TMessage> {
+  const groups = new Map<string, TelegramMediaGroupState<TMessage>>();
+  const debounceMs = options.debounceMs ?? TELEGRAM_MEDIA_GROUP_DEBOUNCE_MS;
+  const setTimer =
+    options.setTimer ??
+    ((callback: () => void, ms: number): ReturnType<typeof setTimeout> =>
+      setTimeout(callback, ms));
+  const clearTimer = options.clearTimer ?? clearTimeout;
+  return {
+    queueMessage: ({ message, dispatchMessages }) =>
+      queueTelegramMediaGroupMessage({
+        message,
+        groups,
+        debounceMs,
+        setTimer,
+        clearTimer,
+        dispatchMessages,
+      }),
+    removeMessages: (messageIds) =>
+      removePendingTelegramMediaGroupMessages(groups, messageIds, clearTimer),
+    clear: () => {
+      for (const state of groups.values()) {
+        if (state.flushTimer) clearTimer(state.flushTimer);
+      }
+      groups.clear();
+    },
+  };
+}
+
+export function createTelegramMediaGroupDispatchRuntime<
+  TMessage extends TelegramMediaGroupMessage,
+  TContext,
+>(
+  deps: TelegramMediaGroupDispatchRuntimeDeps<TMessage, TContext>,
+): TelegramMediaGroupDispatchRuntime<TMessage, TContext> {
+  return {
+    handleMessage: async (message, ctx) => {
+      const queuedMediaGroup = deps.mediaGroups.queueMessage({
+        message,
+        dispatchMessages: (messages) => {
+          void deps.dispatchMessages(messages, ctx);
+        },
+      });
+      if (queuedMediaGroup) return;
+      await deps.dispatchMessages([message], ctx);
+    },
+  };
+}
+
 export function formatTelegramHistoryText(
   rawText: string,
-  files: DownloadedTelegramFileLike[],
+  files: DownloadedTelegramFile[],
 ): string {
   let summary = rawText.length > 0 ? rawText : "(no text)";
   if (files.length > 0) {
@@ -205,8 +295,24 @@ export function formatTelegramHistoryText(
   return summary;
 }
 
+export async function downloadTelegramMessageFiles(
+  messages: TelegramMediaMessage[],
+  deps: DownloadTelegramMessageFilesDeps,
+): Promise<DownloadedTelegramMessageFile[]> {
+  const downloaded: DownloadedTelegramMessageFile[] = [];
+  for (const file of collectTelegramFileInfos(messages)) {
+    downloaded.push({
+      path: await deps.downloadFile(file.file_id, file.fileName),
+      fileName: file.fileName,
+      isImage: file.isImage,
+      mimeType: file.mimeType,
+    });
+  }
+  return downloaded;
+}
+
 export function collectTelegramFileInfos(
-  messages: TelegramMessageLike[],
+  messages: TelegramMediaMessage[],
 ): TelegramFileInfo[] {
   const files: TelegramFileInfo[] = [];
   for (const message of messages) {

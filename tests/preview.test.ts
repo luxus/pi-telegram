@@ -14,11 +14,21 @@ import {
   type TelegramRenderMode,
 } from "../lib/rendering.ts";
 import {
+  allocateTelegramDraftId,
   buildTelegramPreviewFinalText,
   clearTelegramPreview,
+  createTelegramAssistantMessagePreviewHooks,
+  createTelegramAssistantPreviewRuntime,
+  createTelegramPreviewController,
+  createTelegramPreviewControllerRuntime,
+  createTelegramPreviewMessageTransport,
+  createTelegramPreviewRenderedChunkTransport,
+  createTelegramPreviewRuntimeState,
   finalizeTelegramMarkdownPreview,
   finalizeTelegramPreview,
   flushTelegramPreview,
+  handleTelegramAssistantMessagePreviewStart,
+  handleTelegramAssistantMessagePreviewUpdate,
   shouldUseTelegramDraftPreview,
 } from "../lib/preview.ts";
 
@@ -250,6 +260,21 @@ test("Preview snapshots omit unstable tails when long-message limits leave no ro
   });
 });
 
+test("Preview helpers create state and allocate draft ids", () => {
+  assert.deepEqual(createTelegramPreviewRuntimeState("unknown"), {
+    mode: "draft",
+    pendingText: "",
+    lastSentText: "",
+  });
+  assert.equal(
+    createTelegramPreviewRuntimeState("unsupported").mode,
+    "message",
+  );
+  assert.equal(allocateTelegramDraftId(0, 2), 1);
+  assert.equal(allocateTelegramDraftId(1, 2), 2);
+  assert.equal(allocateTelegramDraftId(2, 2), 1);
+});
+
 test("Preview helpers compute final text fallback without reusing rich HTML snapshots", () => {
   assert.equal(
     buildTelegramPreviewFinalText({
@@ -308,6 +333,298 @@ test("Preview helpers use drafts only for plain preview snapshots", () => {
     shouldUseTelegramDraftPreview({ draftSupport: "unsupported" }),
     false,
   );
+});
+
+test("Preview message transport adapts Bot API bodies and reply metadata", async () => {
+  const calls: unknown[] = [];
+  const transport = createTelegramPreviewMessageTransport({
+    sendMessage: async (body) => {
+      calls.push(body);
+      return { message_id: 3 };
+    },
+    editMessageText: async (body) => {
+      calls.push(body);
+      return "edited";
+    },
+    buildReplyParameters: (messageId) =>
+      messageId === undefined
+        ? undefined
+        : { message_id: messageId, allow_sending_without_reply: true },
+  });
+  assert.deepEqual(
+    await transport.sendMessage(7, "hello", { parseMode: "HTML" }, 9),
+    { message_id: 3 },
+  );
+  await transport.editMessageText(7, 3, "next", { parseMode: "HTML" });
+  assert.deepEqual(calls, [
+    {
+      chat_id: 7,
+      text: "hello",
+      parse_mode: "HTML",
+      reply_parameters: { message_id: 9, allow_sending_without_reply: true },
+    },
+    { chat_id: 7, message_id: 3, text: "next", parse_mode: "HTML" },
+  ]);
+  const defaultCalls: unknown[] = [];
+  const defaultTransport = createTelegramPreviewMessageTransport({
+    sendMessage: async (body) => {
+      defaultCalls.push(body);
+      return { message_id: 4 };
+    },
+    editMessageText: async () => undefined,
+  });
+  await defaultTransport.sendMessage(7, "default", undefined, 10);
+  assert.deepEqual(defaultCalls, [
+    {
+      chat_id: 7,
+      text: "default",
+      parse_mode: undefined,
+      reply_parameters: { message_id: 10, allow_sending_without_reply: true },
+    },
+  ]);
+});
+
+test("Preview rendered-chunk transport adapts reply context options", async () => {
+  const calls: unknown[] = [];
+  const transport = createTelegramPreviewRenderedChunkTransport({
+    sendRenderedChunks: async (chatId, chunks, options) => {
+      calls.push({ chatId, chunks, options });
+      return 77;
+    },
+    editRenderedMessage: async (chatId, messageId, chunks) => {
+      calls.push({ chatId, messageId, chunks });
+      return messageId;
+    },
+  });
+  const chunks = [{ text: "hello" }];
+  assert.equal(await transport.sendRenderedChunks(7, chunks, 9), 77);
+  assert.equal(await transport.editRenderedMessage(7, 77, chunks), 77);
+  assert.deepEqual(calls, [
+    { chatId: 7, chunks, options: { replyToMessageId: 9 } },
+    { chatId: 7, messageId: 77, chunks },
+  ]);
+});
+
+test("Assistant preview runtime binds controller and message hooks", async () => {
+  const events: string[] = [];
+  let activeTurn: { chatId: number } | undefined = { chatId: 7 };
+  const runtime = createTelegramAssistantPreviewRuntime<{
+    role: string;
+    text?: string;
+  }>({
+    getActiveTurn: () => activeTurn,
+    isAssistantMessage: (message) => message.role === "assistant",
+    getMessageText: (message) => message.text ?? "",
+    maxMessageLength: 100,
+    renderPreviewText: (markdown) => markdown,
+    sendDraft: async () => {
+      events.push("draft");
+    },
+    sendMessage: async () => ({ message_id: 22 }),
+    editMessageText: async () => {},
+    buildReplyParameters: () => undefined,
+    renderTelegramMessage: () => [{ text: "done" }],
+    sendRenderedChunks: async () => undefined,
+    editRenderedMessage: async () => undefined,
+  });
+  await runtime.onMessageStart({ message: { role: "assistant" } });
+  await runtime.onMessageUpdate({
+    message: { role: "assistant", text: "hello" },
+  });
+  assert.equal(runtime.getState()?.pendingText, "hello");
+  activeTurn = undefined;
+  await runtime.onMessageUpdate({
+    message: { role: "assistant", text: "ignored" },
+  });
+  assert.equal(runtime.getState()?.pendingText, "hello");
+  assert.deepEqual(events, []);
+});
+
+test("Preview controller runtime binds Bot API and rendered-chunk transports", async () => {
+  const calls: unknown[] = [];
+  const controller = createTelegramPreviewControllerRuntime({
+    getDefaultReplyToMessageId: () => 11,
+    maxMessageLength: 100,
+    renderPreviewText: (markdown) => markdown,
+    sendDraft: async () => {},
+    sendMessage: async (body) => {
+      calls.push(body);
+      return { message_id: 22 };
+    },
+    editMessageText: async (body) => {
+      calls.push(body);
+    },
+    buildReplyParameters: (messageId) =>
+      messageId === undefined
+        ? undefined
+        : { message_id: messageId, allow_sending_without_reply: true },
+    renderTelegramMessage: () => [{ text: "<b>done</b>", parseMode: "HTML" }],
+    sendRenderedChunks: async (chatId, chunks, options) => {
+      calls.push({ chatId, chunks, options });
+      return 33;
+    },
+    editRenderedMessage: async () => undefined,
+  });
+  controller.setState({
+    mode: "draft",
+    draftId: 1,
+    pendingText: "done",
+    lastSentText: "done",
+  });
+  assert.equal(await controller.finalizeMarkdown(7, "done"), true);
+  assert.deepEqual(calls, [
+    {
+      chatId: 7,
+      chunks: [{ text: "<b>done</b>", parseMode: "HTML" }],
+      options: { replyToMessageId: 11 },
+    },
+  ]);
+});
+
+test("Preview controller owns pending text mutation and state reset", () => {
+  const controller = createTelegramPreviewController({
+    maxMessageLength: 50,
+    renderPreviewText: (markdown) => markdown,
+    sendDraft: async () => {},
+    sendMessage: async () => ({ message_id: 1 }),
+    editMessageText: async () => {},
+    renderTelegramMessage: () => [],
+    sendRenderedChunks: async () => undefined,
+    editRenderedMessage: async () => undefined,
+  });
+  controller.setPendingText("ignored");
+  assert.equal(controller.getState(), undefined);
+  controller.setState(controller.createState());
+  controller.setPendingText("next markdown");
+  assert.equal(controller.getState()?.pendingText, "next markdown");
+  controller.resetState();
+  assert.equal(controller.getState()?.pendingText, "");
+});
+
+test("Preview runtime handles assistant message lifecycle hooks", async () => {
+  const events: string[] = [];
+  let activeTurn: { chatId: number } | undefined = { chatId: 7 };
+  let previewState:
+    | {
+        mode: "draft" | "message";
+        pendingText: string;
+        lastSentText: string;
+      }
+    | undefined = {
+    mode: "message",
+    pendingText: "previous markdown",
+    lastSentText: "",
+  };
+  const createPreviewState = () => ({
+    mode: "message" as const,
+    pendingText: "",
+    lastSentText: "",
+  });
+  await handleTelegramAssistantMessagePreviewStart(
+    { role: "assistant", text: "new" },
+    {
+      getActiveTurn: () => activeTurn,
+      isAssistantMessage: (message) => message.role === "assistant",
+      getState: () => previewState,
+      setState: (state) => {
+        previewState = state;
+        events.push(`set:${state?.pendingText ?? "none"}`);
+      },
+      createPreviewState,
+      finalizePreview: async (chatId) => {
+        events.push(`finalize:${chatId}`);
+        return true;
+      },
+      finalizeMarkdownPreview: async (chatId, markdown) => {
+        events.push(`markdown:${chatId}:${markdown}`);
+        return true;
+      },
+    },
+  );
+  await handleTelegramAssistantMessagePreviewUpdate(
+    { role: "assistant", text: "hello" },
+    {
+      getActiveTurn: () => activeTurn,
+      isAssistantMessage: (message) => message.role === "assistant",
+      getState: () => previewState,
+      setState: (state) => {
+        previewState = state;
+        events.push(`set:${state?.pendingText ?? "none"}`);
+      },
+      createPreviewState,
+      getMessageText: (message) => message.text,
+      schedulePreviewFlush: (chatId) => {
+        events.push(`flush:${chatId}`);
+      },
+    },
+  );
+  activeTurn = undefined;
+  await handleTelegramAssistantMessagePreviewUpdate(
+    { role: "assistant", text: "ignored" },
+    {
+      getActiveTurn: () => activeTurn,
+      isAssistantMessage: (message) => message.role === "assistant",
+      getState: () => previewState,
+      setState: (state) => {
+        previewState = state;
+      },
+      createPreviewState,
+      getMessageText: (message) => message.text,
+      schedulePreviewFlush: () => {
+        events.push("unexpected:flush");
+      },
+    },
+  );
+  assert.deepEqual(events, ["markdown:7:previous markdown", "set:", "flush:7"]);
+  assert.equal(previewState?.pendingText, "hello");
+});
+
+test("Preview hook runtime binds assistant message start and update deps", async () => {
+  const events: string[] = [];
+  let previewState:
+    | {
+        mode: "draft" | "message";
+        pendingText: string;
+        lastSentText: string;
+      }
+    | undefined = {
+    mode: "message",
+    pendingText: "previous markdown",
+    lastSentText: "",
+  };
+  const hooks = createTelegramAssistantMessagePreviewHooks({
+    getActiveTurn: () => ({ chatId: 7 }),
+    isAssistantMessage: (message: { role: string; text?: string }) =>
+      message.role === "assistant",
+    getState: () => previewState,
+    setState: (state) => {
+      previewState = state;
+      events.push(`set:${state?.pendingText ?? "none"}`);
+    },
+    createPreviewState: () => ({
+      mode: "message" as const,
+      pendingText: "",
+      lastSentText: "",
+    }),
+    finalizePreview: async (chatId) => {
+      events.push(`finalize:${chatId}`);
+      return true;
+    },
+    finalizeMarkdownPreview: async (chatId, markdown) => {
+      events.push(`markdown:${chatId}:${markdown}`);
+      return true;
+    },
+    getMessageText: (message) => message.text ?? "",
+    schedulePreviewFlush: (chatId) => {
+      events.push(`flush:${chatId}`);
+    },
+  });
+  await hooks.onMessageStart({ message: { role: "assistant" } });
+  await hooks.onMessageUpdate({
+    message: { role: "assistant", text: "next markdown" },
+  });
+  assert.deepEqual(events, ["markdown:7:previous markdown", "set:", "flush:7"]);
+  assert.equal(previewState?.pendingText, "next markdown");
 });
 
 test("Preview runtime prefers editable rich previews when stable blocks are available", async () => {
@@ -388,7 +705,7 @@ test("Preview runtime can still use and clear plain draft previews", async () =>
   assert.equal(harness.getState()?.lastSentStrategy, "plain");
   assert.equal(harness.getDraftSupport(), "supported");
   await clearTelegramPreview(7, harness.deps);
-  assert.deepEqual(harness.events, ["draft:7:10:hello", "draft:7:10:"]);
+  assert.deepEqual(harness.events, ["draft:7:10:hello"]);
   assert.equal(harness.getState(), undefined);
 });
 

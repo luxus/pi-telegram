@@ -1,3 +1,8 @@
+/**
+ * Regression tests for Telegram menu helpers
+ * Covers inline model/status/thinking menu state, callbacks, and transport payloads
+ */
+
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -9,98 +14,275 @@ import {
   buildTelegramModelCallbackPlan,
   buildTelegramModelMenuRenderPayload,
   buildTelegramModelMenuState,
+  buildTelegramModelMenuStateRuntime,
   buildTelegramStatusMenuRenderPayload,
   buildTelegramThinkingMenuRenderPayload,
   buildThinkingMenuReplyMarkup,
   buildThinkingMenuText,
+  createTelegramMenuActionRuntime,
+  createTelegramMenuActionRuntimeWithStateBuilder,
+  createTelegramMenuCallbackHandler,
+  createTelegramMenuCallbackHandlerForContext,
+  createTelegramModelMenuRuntime,
+  createTelegramModelMenuStateBuilder,
   formatScopedModelButtonText,
-  getCanonicalModelId,
+  getModelMenuItems,
+  getStoredTelegramModelMenuState,
   getTelegramModelMenuPage,
   getTelegramModelSelection,
-  getModelMenuItems,
+  handleStoredTelegramMenuCallback,
   handleTelegramMenuCallbackEntry,
+  handleTelegramMenuCallbackRuntime,
   handleTelegramModelMenuCallbackAction,
   handleTelegramStatusMenuCallbackAction,
   handleTelegramThinkingMenuCallbackAction,
-  isThinkingLevel,
   MODEL_MENU_TITLE,
-  modelsMatch,
+  openTelegramModelMenu,
+  openTelegramStatusMenu,
   parseTelegramMenuCallbackAction,
-  resolveScopedModelPatterns,
+  resolveCachedTelegramModelMenuInputs,
   sendTelegramModelMenuMessage,
   sendTelegramStatusMessage,
-  sortScopedModels,
+  storeTelegramModelMenuState,
   TELEGRAM_MODEL_PAGE_SIZE,
+  type TelegramModelMenuState,
   updateTelegramModelMenuMessage,
   updateTelegramStatusMessage,
   updateTelegramThinkingMenuMessage,
-  type TelegramModelMenuState,
 } from "../lib/menu.ts";
+import type { MenuModel } from "../lib/model.ts";
 
-test("Menu helpers match models, detect thinking levels, and expose constants", () => {
-  assert.equal(MODEL_MENU_TITLE, "<b>Choose a model:</b>");
-  assert.equal(TELEGRAM_MODEL_PAGE_SIZE, 6);
+function createMenuState<TModel extends MenuModel = MenuModel>(
+  messageId: number,
+  overrides: Partial<TelegramModelMenuState<TModel>> = {},
+): TelegramModelMenuState<TModel> {
+  return {
+    chatId: 1,
+    messageId,
+    page: 0,
+    scope: "scoped",
+    scopedModels: [],
+    allModels: [],
+    mode: "model",
+    ...overrides,
+  };
+}
+
+function createMenuModel(
+  provider: string,
+  id: string,
+  reasoning?: boolean,
+): MenuModel {
+  return reasoning === undefined ? { provider, id } : { provider, id, reasoning };
+}
+
+test("Menu helpers store, refresh, prune, and bound model menu state", () => {
+  const menus = new Map();
+  storeTelegramModelMenuState(menus, createMenuState(1), {
+    maxAgeMs: 100,
+    maxStoredMenus: 2,
+    now: 1000,
+  });
+  storeTelegramModelMenuState(menus, createMenuState(2), {
+    maxAgeMs: 100,
+    maxStoredMenus: 2,
+    now: 1010,
+  });
   assert.equal(
-    modelsMatch(
-      { provider: "openai", id: "gpt-5" },
-      { provider: "openai", id: "gpt-5" },
-    ),
-    true,
+    getStoredTelegramModelMenuState(menus, 1, {
+      maxAgeMs: 100,
+      maxStoredMenus: 2,
+      now: 1020,
+    })?.messageId,
+    1,
   );
+  storeTelegramModelMenuState(menus, createMenuState(3), {
+    maxAgeMs: 100,
+    maxStoredMenus: 2,
+    now: 1030,
+  });
+  assert.equal(menus.has(2), false);
+  assert.equal(menus.has(1), true);
+  assert.equal(menus.has(3), true);
   assert.equal(
-    modelsMatch(
-      { provider: "openai", id: "gpt-5" },
-      { provider: "anthropic", id: "gpt-5" },
-    ),
-    false,
+    getStoredTelegramModelMenuState(menus, 1, {
+      maxAgeMs: 10,
+      maxStoredMenus: 2,
+      now: 1050,
+    }),
+    undefined,
   );
-  assert.equal(
-    getCanonicalModelId({ provider: "openai", id: "gpt-5" }),
-    "openai/gpt-5",
-  );
-  assert.equal(isThinkingLevel("high"), true);
-  assert.equal(isThinkingLevel("impossible"), false);
 });
 
-test("Menu helpers resolve scoped model patterns and sort current models first", () => {
-  const models = [
-    { provider: "openai", id: "gpt-5", name: "GPT 5" },
-    { provider: "openai", id: "gpt-5-latest", name: "GPT 5 Latest" },
-    {
-      provider: "anthropic",
-      id: "claude-sonnet-20250101",
-      name: "Claude Sonnet",
+test("Menu helpers resolve and reuse cached model menu inputs", async () => {
+  const model = { provider: "test", id: "alpha" };
+  let reloadCount = 0;
+  const resolved = await resolveCachedTelegramModelMenuInputs(undefined, {
+    cacheTtlMs: 100,
+    now: 1000,
+    reloadSettings: async () => {
+      reloadCount += 1;
     },
-  ] as const;
-  const resolved = resolveScopedModelPatterns(
-    ["gpt-5:high", "anthropic/*:low"],
-    models as never,
+    refreshAvailableModels: () => [model],
+    getConfiguredScopedModelPatterns: () => ["configured"],
+    getCliScopedModelPatterns: () => ["cli"],
+  });
+  assert.deepEqual(resolved, {
+    expiresAt: 1100,
+    availableModels: [model],
+    configuredScopedModelPatterns: ["cli"],
+    cliScopedModelPatterns: ["cli"],
+  });
+  assert.equal(reloadCount, 1);
+  assert.equal(
+    await resolveCachedTelegramModelMenuInputs(resolved, {
+      cacheTtlMs: 100,
+      now: 1099,
+      reloadSettings: async () => {
+        reloadCount += 1;
+      },
+      refreshAvailableModels: () => [],
+      getConfiguredScopedModelPatterns: () => [],
+      getCliScopedModelPatterns: () => undefined,
+    }),
+    resolved,
   );
+  assert.equal(reloadCount, 1);
+});
+
+test("Menu runtime controller owns stored state and cached inputs", async () => {
+  let reloadCount = 0;
+  let refreshCount = 0;
+  const model = createMenuModel("openai", "gpt-5");
+  const runtime = createTelegramModelMenuRuntime({
+    maxAgeMs: 100,
+    maxStoredMenus: 2,
+  });
+  runtime.storeState(createMenuState(11));
+  assert.equal(runtime.getState(11)?.messageId, 11);
+  const firstState = await runtime.buildState({
+    chatId: 42,
+    activeModel: model,
+    ctx: {
+      modelRegistry: {
+        refresh: () => {
+          refreshCount += 1;
+        },
+        getAvailable: () => [model],
+      },
+    },
+    reloadSettings: async () => {
+      reloadCount += 1;
+    },
+    getConfiguredScopedModelPatterns: () => ["openai/gpt-5"],
+  });
+  const secondState = await runtime.buildState({
+    chatId: 42,
+    activeModel: model,
+    ctx: {
+      modelRegistry: {
+        refresh: () => {
+          refreshCount += 1;
+        },
+        getAvailable: () => [model],
+      },
+    },
+    reloadSettings: async () => {
+      reloadCount += 1;
+    },
+    getConfiguredScopedModelPatterns: () => ["openai/gpt-5"],
+  });
+  assert.equal(firstState.chatId, 42);
+  assert.equal(secondState.chatId, 42);
+  assert.equal(reloadCount, 1);
+  assert.equal(refreshCount, 1);
+  runtime.clear();
+  assert.equal(runtime.getState(11), undefined);
+});
+
+test("Menu state builder wires runtime to settings and model-registry ports", async () => {
+  let createdForCwd = "";
+  let reloadCount = 0;
+  let refreshCount = 0;
+  const model = createMenuModel("openai", "gpt-5");
+  const runtime = createTelegramModelMenuRuntime<typeof model>();
+  const getModelMenuState = createTelegramModelMenuStateBuilder({
+    runtime,
+    createSettingsManager: (cwd) => {
+      createdForCwd = cwd;
+      return {
+        reload: async () => {
+          reloadCount += 1;
+        },
+        getEnabledModels: () => ["openai/gpt-5"],
+      };
+    },
+    getActiveModel: () => model,
+  });
+  const state = await getModelMenuState(42, {
+    cwd: "/tmp/project",
+    modelRegistry: {
+      refresh: () => {
+        refreshCount += 1;
+      },
+      getAvailable: () => [model],
+    },
+  });
+  assert.equal(createdForCwd, "/tmp/project");
+  assert.equal(reloadCount, 1);
+  assert.equal(refreshCount, 1);
+  assert.equal(state.chatId, 42);
   assert.deepEqual(
-    resolved.map((entry) => ({
-      id: entry.model.id,
-      thinking: entry.thinkingLevel,
-    })),
-    [
-      { id: "gpt-5", thinking: "high" },
-      { id: "claude-sonnet-20250101", thinking: "low" },
-    ],
+    state.scopedModels.map((entry) => entry.model.id),
+    ["gpt-5"],
   );
-  const sorted = sortScopedModels(resolved, models[0] as never);
-  assert.equal(sorted[0]?.model.id, "gpt-5");
+});
+
+test("Menu runtime builds menu state from settings and model-registry ports", async () => {
+  let reloadCount = 0;
+  let refreshCount = 0;
+  const model = createMenuModel("openai", "gpt-5");
+  const result = await buildTelegramModelMenuStateRuntime({
+    chatId: 42,
+    activeModel: model,
+    cachedInputs: undefined,
+    cacheTtlMs: 5_000,
+    ctx: {
+      modelRegistry: {
+        refresh: () => {
+          refreshCount += 1;
+        },
+        getAvailable: () => [model],
+      },
+    },
+    reloadSettings: async () => {
+      reloadCount += 1;
+    },
+    getConfiguredScopedModelPatterns: () => ["configured"],
+    getCliScopedModelPatterns: () => ["openai/gpt-5"],
+  });
+  assert.equal(reloadCount, 1);
+  assert.equal(refreshCount, 1);
+  assert.equal(result.state.chatId, 42);
+  assert.deepEqual(
+    result.state.allModels.map((entry) => entry.model.id),
+    ["gpt-5"],
+  );
+  assert.deepEqual(result.cachedInputs.availableModels, [model]);
+});
+
+test("Menu helpers expose UI constants", () => {
+  assert.equal(MODEL_MENU_TITLE, "<b>Choose a model:</b>");
+  assert.equal(TELEGRAM_MODEL_PAGE_SIZE, 6);
 });
 
 test("Menu helpers build model menu state and parse callback actions", () => {
-  const modelA = { provider: "openai", id: "gpt-5", reasoning: true } as const;
-  const modelB = {
-    provider: "anthropic",
-    id: "claude-3",
-    reasoning: false,
-  } as const;
+  const modelA = createMenuModel("openai", "gpt-5", true);
+  const modelB = createMenuModel("anthropic", "claude-3", false);
   const state = buildTelegramModelMenuState({
     chatId: 1,
-    activeModel: modelA as never,
-    availableModels: [modelA, modelB] as never,
+    activeModel: modelA,
+    availableModels: [modelA, modelB],
     configuredScopedModelPatterns: ["missing-model"],
     cliScopedModelPatterns: ["missing-model"],
   });
@@ -126,16 +308,13 @@ test("Menu helpers build model menu state and parse callback actions", () => {
 });
 
 test("Menu helpers apply menu mutations and resolve model selections", () => {
-  const modelA = { provider: "openai", id: "gpt-5", reasoning: true } as const;
-  const state = {
-    chatId: 1,
-    messageId: 2,
-    page: 0,
-    scope: "all" as const,
-    scopedModels: [{ model: modelA, thinkingLevel: "high" as const }],
+  const modelA = createMenuModel("openai", "gpt-5", true);
+  const state = createMenuState(2, {
+    scope: "all",
+    scopedModels: [{ model: modelA, thinkingLevel: "high" }],
     allModels: [{ model: modelA }],
-    mode: "status" as const,
-  } as unknown as TelegramModelMenuState;
+    mode: "status",
+  });
   assert.equal(applyTelegramModelScopeSelection(state, "scoped"), "changed");
   assert.equal(state.scope, "scoped");
   assert.equal(applyTelegramModelScopeSelection(state, "scoped"), "unchanged");
@@ -152,49 +331,37 @@ test("Menu helpers apply menu mutations and resolve model selections", () => {
 });
 
 test("Menu helpers derive normalized menu pages without mutating state", () => {
-  const modelA = { provider: "openai", id: "gpt-5" } as const;
-  const modelB = { provider: "anthropic", id: "claude-3" } as const;
-  const state = {
-    chatId: 1,
-    messageId: 2,
+  const modelA = createMenuModel("openai", "gpt-5");
+  const modelB = createMenuModel("anthropic", "claude-3");
+  const state = createMenuState<MenuModel>(2, {
     page: 99,
-    scope: "all" as const,
-    scopedModels: [],
+    scope: "all",
     allModels: [{ model: modelA }, { model: modelB }],
-    mode: "model" as const,
-  } as unknown as TelegramModelMenuState;
+  });
   const menuPage = getTelegramModelMenuPage(state, 1);
   assert.equal(menuPage.page, 1);
   assert.equal(menuPage.pageCount, 2);
   assert.equal(menuPage.start, 1);
   assert.deepEqual(menuPage.items, [{ model: modelB }]);
   assert.equal(state.page, 99);
-  const markup = buildModelMenuReplyMarkup(state, modelA as never, 1);
+  const markup = buildModelMenuReplyMarkup(state, modelA, 1);
   assert.equal(markup.inline_keyboard[1]?.[1]?.text, "2/2");
   assert.equal(state.page, 99);
 });
 
 test("Menu helpers build model callback plans for paging, selection, and restart modes", () => {
-  const modelA = { provider: "openai", id: "gpt-5", reasoning: true } as const;
-  const modelB = {
-    provider: "anthropic",
-    id: "claude-3",
-    reasoning: false,
-  } as const;
-  const state = {
-    chatId: 1,
-    messageId: 2,
-    page: 0,
-    scope: "all" as const,
-    scopedModels: [{ model: modelA, thinkingLevel: "high" as const }],
+  const modelA = createMenuModel("openai", "gpt-5", true);
+  const modelB = createMenuModel("anthropic", "claude-3", false);
+  const state = createMenuState<MenuModel>(2, {
+    scope: "all",
+    scopedModels: [{ model: modelA, thinkingLevel: "high" }],
     allModels: [{ model: modelA }, { model: modelB }],
-    mode: "model" as const,
-  } as unknown as TelegramModelMenuState;
+  });
   assert.deepEqual(
     buildTelegramModelCallbackPlan({
       data: "model:page:1",
       state,
-      activeModel: modelA as never,
+      activeModel: modelA,
       currentThinkingLevel: "medium",
       isIdle: true,
       canRestartBusyRun: false,
@@ -206,7 +373,7 @@ test("Menu helpers build model callback plans for paging, selection, and restart
     buildTelegramModelCallbackPlan({
       data: "model:pick:0",
       state,
-      activeModel: modelA as never,
+      activeModel: modelA,
       currentThinkingLevel: "medium",
       isIdle: true,
       canRestartBusyRun: false,
@@ -223,7 +390,7 @@ test("Menu helpers build model callback plans for paging, selection, and restart
     buildTelegramModelCallbackPlan({
       data: "model:pick:1",
       state,
-      activeModel: modelA as never,
+      activeModel: modelA,
       currentThinkingLevel: "medium",
       isIdle: false,
       canRestartBusyRun: true,
@@ -241,7 +408,7 @@ test("Menu helpers build model callback plans for paging, selection, and restart
     buildTelegramModelCallbackPlan({
       data: "model:pick:1",
       state,
-      activeModel: modelA as never,
+      activeModel: modelA,
       currentThinkingLevel: "medium",
       isIdle: false,
       canRestartBusyRun: false,
@@ -249,6 +416,101 @@ test("Menu helpers build model callback plans for paging, selection, and restart
     }),
     { kind: "answer", text: "Pi is busy. Send /stop first." },
   );
+});
+
+test("Menu helpers open status and model menus through runtime ports", async () => {
+  const events: string[] = [];
+  const model = { provider: "test", id: "alpha", reasoning: true };
+  const statusState = createMenuState(0);
+  await openTelegramStatusMenu({
+    isIdle: () => true,
+    sendBusyMessage: async () => {
+      events.push("unexpected:busy-status");
+    },
+    getModelMenuState: async () => statusState,
+    buildStatusHtml: () => "status-html",
+    getActiveModel: () => model,
+    getThinkingLevel: () => "medium",
+    sendStatusMenu: async (state, html, activeModel, level) => {
+      events.push(`status:${state.chatId}:${html}:${activeModel?.id}:${level}`);
+      return 11;
+    },
+    storeModelMenuState: (state) => {
+      events.push(`store:${state.messageId}:${state.mode}`);
+    },
+  });
+  const modelState = createMenuState(0);
+  modelState.allModels = [{ model }];
+  await openTelegramModelMenu({
+    isIdle: () => false,
+    canOfferInFlightModelSwitch: () => true,
+    sendBusyMessage: async () => {
+      events.push("unexpected:busy-model");
+    },
+    sendNoModelsMessage: async () => {
+      events.push("unexpected:no-models");
+    },
+    getModelMenuState: async () => modelState,
+    getActiveModel: () => model,
+    sendModelMenu: async (state, activeModel) => {
+      events.push(`model:${state.chatId}:${activeModel?.id}`);
+      return 12;
+    },
+    storeModelMenuState: (state) => {
+      events.push(`store:${state.messageId}:${state.mode}`);
+    },
+  });
+  assert.deepEqual(events, [
+    "status:1:status-html:alpha:medium",
+    "store:11:status",
+    "model:1:alpha",
+    "store:12:model",
+  ]);
+});
+
+test("Menu helpers report open-menu busy and no-model paths", async () => {
+  const events: string[] = [];
+  await openTelegramStatusMenu({
+    isIdle: () => false,
+    sendBusyMessage: async () => {
+      events.push("busy-status");
+    },
+    getModelMenuState: async () => createMenuState(0),
+    buildStatusHtml: () => "ignored",
+    getActiveModel: () => undefined,
+    getThinkingLevel: () => "off",
+    sendStatusMenu: async () => 1,
+    storeModelMenuState: () => {},
+  });
+  await openTelegramModelMenu({
+    isIdle: () => true,
+    canOfferInFlightModelSwitch: () => false,
+    sendBusyMessage: async () => {
+      events.push("unexpected:busy-model");
+    },
+    sendNoModelsMessage: async () => {
+      events.push("no-models");
+    },
+    getModelMenuState: async () => createMenuState(0),
+    getActiveModel: () => undefined,
+    sendModelMenu: async () => 1,
+    storeModelMenuState: () => {},
+  });
+  await openTelegramModelMenu({
+    isIdle: () => false,
+    canOfferInFlightModelSwitch: () => false,
+    sendBusyMessage: async () => {
+      events.push("busy-model");
+    },
+    sendNoModelsMessage: async () => {
+      events.push("unexpected:no-models");
+    },
+    getModelMenuState: async () => createMenuState(0),
+    getActiveModel: () => undefined,
+    sendModelMenu: async () => 1,
+    storeModelMenuState: () => {},
+  });
+  assert.deepEqual(events, ["busy-status", "no-models", "busy-model"]);
 });
 
 test("Menu helpers route callback entry states before action handlers", async () => {
@@ -305,30 +567,337 @@ test("Menu helpers route callback entry states before action handlers", async ()
   ]);
 });
 
+test("Menu helpers route stored callback queries through matching action handlers", async () => {
+  const events: string[] = [];
+  const state = createMenuState(2);
+  await handleStoredTelegramMenuCallback(
+    { id: "callback-1", data: "status:model", message: { message_id: 2 } },
+    {
+      getStoredModelMenuState: (messageId) => {
+        events.push(`get:${messageId}`);
+        return state;
+      },
+      handleStatusAction: async (nextState) => {
+        events.push(`status:${nextState.messageId}`);
+        return true;
+      },
+      handleThinkingAction: async () => {
+        events.push("unexpected:thinking");
+        return false;
+      },
+      handleModelAction: async () => {
+        events.push("unexpected:model");
+        return false;
+      },
+      answerCallbackQuery: async (_id, text) => {
+        events.push(`answer:${text ?? ""}`);
+      },
+    },
+  );
+  await handleStoredTelegramMenuCallback(
+    { id: "callback-2", data: "status:model" },
+    {
+      getStoredModelMenuState: (messageId) => {
+        events.push(`get:${messageId ?? "none"}`);
+        return undefined;
+      },
+      handleStatusAction: async () => false,
+      handleThinkingAction: async () => false,
+      handleModelAction: async () => false,
+      answerCallbackQuery: async (_id, text) => {
+        events.push(`answer:${text ?? ""}`);
+      },
+    },
+  );
+  assert.deepEqual(events, [
+    "get:2",
+    "status:2",
+    "get:none",
+    "answer:Interactive message expired.",
+  ]);
+});
+
+test("Menu runtime routes stored callback queries through callback action ports", async () => {
+  const events: string[] = [];
+  const model = createMenuModel("openai", "gpt-5", true);
+  const state: TelegramModelMenuState<typeof model> = {
+    ...createMenuState<typeof model>(2),
+    allModels: [{ model, thinkingLevel: "high" }],
+    mode: "status",
+  };
+  let thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" =
+    "medium";
+  await handleTelegramMenuCallbackRuntime(
+    { id: "callback-1", data: "status:thinking", message: { message_id: 2 } },
+    { idle: true },
+    {
+      getStoredModelMenuState: (messageId) => {
+        events.push(`get:${messageId}`);
+        return state;
+      },
+      getActiveModel: () => model,
+      getThinkingLevel: () => thinkingLevel,
+      setThinkingLevel: (level) => {
+        thinkingLevel = level;
+        events.push(`thinking:${level}`);
+      },
+      updateStatus: () => {
+        events.push("status");
+      },
+      updateModelMenuMessage: async () => {
+        events.push("model-menu");
+      },
+      updateThinkingMenuMessage: async () => {
+        events.push("thinking-menu");
+      },
+      updateStatusMessage: async () => {
+        events.push("status-menu");
+      },
+      answerCallbackQuery: async (_id, text) => {
+        events.push(`answer:${text ?? ""}`);
+      },
+      isIdle: (ctx) => ctx.idle,
+      hasActiveTelegramTurn: () => true,
+      hasAbortHandler: () => true,
+      hasActiveToolExecutions: () => false,
+      setModel: async (nextModel) => {
+        events.push(`set-model:${nextModel.id}`);
+        return true;
+      },
+      setCurrentModel: (nextModel) => {
+        events.push(`current:${nextModel.id}`);
+      },
+      stagePendingModelSwitch: (selection) => {
+        events.push(`pending:${selection.model.id}`);
+      },
+      restartInterruptedTelegramTurn: (selection) => {
+        events.push(`restart:${selection.model.id}`);
+        return true;
+      },
+    },
+  );
+  await handleTelegramMenuCallbackRuntime(
+    { id: "callback-2", data: "thinking:set:high", message: { message_id: 2 } },
+    { idle: true },
+    {
+      getStoredModelMenuState: () => state,
+      getActiveModel: () => model,
+      getThinkingLevel: () => thinkingLevel,
+      setThinkingLevel: (level) => {
+        thinkingLevel = level;
+        events.push(`thinking:${level}`);
+      },
+      updateStatus: () => {
+        events.push("status");
+      },
+      updateModelMenuMessage: async () => {
+        events.push("unexpected:model-menu");
+      },
+      updateThinkingMenuMessage: async () => {
+        events.push("unexpected:thinking-menu");
+      },
+      updateStatusMessage: async () => {
+        events.push("status-menu");
+      },
+      answerCallbackQuery: async (_id, text) => {
+        events.push(`answer:${text ?? ""}`);
+      },
+      isIdle: (ctx) => ctx.idle,
+      hasActiveTelegramTurn: () => true,
+      hasAbortHandler: () => true,
+      hasActiveToolExecutions: () => false,
+      setModel: async () => true,
+      setCurrentModel: () => {},
+      stagePendingModelSwitch: () => {},
+      restartInterruptedTelegramTurn: () => true,
+    },
+  );
+  await handleTelegramMenuCallbackRuntime(
+    { id: "callback-3", data: "model:pick:0", message: { message_id: 2 } },
+    { idle: false },
+    {
+      getStoredModelMenuState: () => state,
+      getActiveModel: () => createMenuModel("anthropic", "claude-3", true),
+      getThinkingLevel: () => thinkingLevel,
+      setThinkingLevel: (level) => {
+        thinkingLevel = level;
+        events.push(`thinking:${level}`);
+      },
+      updateStatus: () => {
+        events.push("status");
+      },
+      updateModelMenuMessage: async () => {
+        events.push("unexpected:model-menu");
+      },
+      updateThinkingMenuMessage: async () => {
+        events.push("unexpected:thinking-menu");
+      },
+      updateStatusMessage: async () => {
+        events.push("status-menu");
+      },
+      answerCallbackQuery: async (_id, text) => {
+        events.push(`answer:${text ?? ""}`);
+      },
+      isIdle: (ctx) => ctx.idle,
+      hasActiveTelegramTurn: () => true,
+      hasAbortHandler: () => true,
+      hasActiveToolExecutions: () => false,
+      setModel: async (nextModel) => {
+        events.push(`set-model:${nextModel.id}`);
+        return true;
+      },
+      setCurrentModel: (nextModel) => {
+        events.push(`current:${nextModel.id}`);
+      },
+      stagePendingModelSwitch: (selection) => {
+        events.push(`pending:${selection.model.id}`);
+      },
+      restartInterruptedTelegramTurn: (selection) => {
+        events.push(`restart:${selection.model.id}`);
+        return true;
+      },
+    },
+  );
+  assert.deepEqual(events, [
+    "get:2",
+    "thinking-menu",
+    "answer:",
+    "thinking:high",
+    "status",
+    "status-menu",
+    "answer:Thinking: high",
+    "set-model:gpt-5",
+    "current:gpt-5",
+    "thinking:high",
+    "status",
+    "status-menu",
+    "restart:gpt-5",
+    "answer:Switching to gpt-5 and continuing…",
+  ]);
+});
+
+test("Menu callback handler captures runtime ports", async () => {
+  const events: string[] = [];
+  const state: TelegramModelMenuState = createMenuState(2);
+  const handleCallback = createTelegramMenuCallbackHandler<
+    { id: string; data?: string; message?: { message_id?: number } },
+    { idle: boolean }
+  >({
+    getStoredModelMenuState: () => state,
+    getActiveModel: () => createMenuModel("openai", "gpt-5"),
+    getThinkingLevel: () => "medium",
+    setThinkingLevel: (level) => {
+      events.push(`thinking:${level}`);
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+    updateModelMenuMessage: async () => {
+      events.push("model-menu");
+    },
+    updateThinkingMenuMessage: async () => {
+      events.push("thinking-menu");
+    },
+    updateStatusMessage: async () => {
+      events.push("status-menu");
+    },
+    answerCallbackQuery: async (_id, text) => {
+      events.push(`answer:${text ?? ""}`);
+    },
+    isIdle: (ctx) => ctx.idle,
+    hasActiveTelegramTurn: () => false,
+    hasAbortHandler: () => false,
+    hasActiveToolExecutions: () => false,
+    setModel: async () => true,
+    setCurrentModel: () => {},
+    stagePendingModelSwitch: () => {},
+    restartInterruptedTelegramTurn: () => false,
+  });
+  await handleCallback(
+    { id: "callback", data: "status:model", message: { message_id: 2 } },
+    { idle: true },
+  );
+  assert.deepEqual(events, ["model-menu", "answer:"]);
+});
+
+test("Menu callback adapter converts active tool count into runtime booleans", async () => {
+  const events: string[] = [];
+  let activeToolExecutions = 1;
+  const getActiveToolExecutions = () => activeToolExecutions;
+  const state: TelegramModelMenuState = {
+    ...createMenuState(2),
+    allModels: [
+      { model: createMenuModel("openai", "gpt-5", true) },
+      { model: createMenuModel("anthropic", "claude-3", false) },
+    ],
+  };
+  const handleCallback = createTelegramMenuCallbackHandlerForContext<
+    { id: string; data?: string; message?: { message_id?: number } },
+    { idle: boolean }
+  >({
+    getStoredModelMenuState: () => state,
+    getActiveModel: () => createMenuModel("openai", "gpt-5"),
+    getThinkingLevel: () => "medium",
+    setThinkingLevel: () => {},
+    updateStatus: () => {},
+    updateModelMenuMessage: async () => {
+      events.push("model-menu");
+    },
+    updateThinkingMenuMessage: async () => {},
+    updateStatusMessage: async () => {},
+    answerCallbackQuery: async (_id, text) => {
+      events.push(`answer:${text ?? ""}`);
+    },
+    isIdle: () => false,
+    hasActiveTelegramTurn: () => true,
+    hasAbortHandler: () => true,
+    getActiveToolExecutions,
+    setModel: async () => true,
+    setCurrentModel: (nextModel) => {
+      events.push(`current:${nextModel.id}`);
+    },
+    stagePendingModelSwitch: (selection) => {
+      events.push(`pending:${selection.model.id}`);
+    },
+    restartInterruptedTelegramTurn: () => {
+      events.push("restart");
+      return true;
+    },
+  });
+  await handleCallback(
+    { id: "callback", data: "model:pick:1", message: { message_id: 2 } },
+    { idle: false },
+  );
+  activeToolExecutions = 0;
+  await handleCallback(
+    { id: "callback", data: "model:pick:1", message: { message_id: 2 } },
+    { idle: false },
+  );
+  assert.deepEqual(events, [
+    "current:claude-3",
+    "pending:claude-3",
+    "answer:Switched to claude-3. Restarting after the current tool finishes…",
+    "current:claude-3",
+    "restart",
+    "answer:Switching to claude-3 and continuing…",
+  ]);
+});
+
 test("Menu helpers execute model callback actions across update, switch, and restart paths", async () => {
   const events: string[] = [];
-  const modelA = { provider: "openai", id: "gpt-5", reasoning: true } as const;
-  const modelB = {
-    provider: "anthropic",
-    id: "claude-3",
-    reasoning: false,
-  } as const;
-  const state = {
-    chatId: 1,
-    messageId: 2,
-    page: 0,
-    scope: "all" as const,
-    scopedModels: [],
+  const modelA = createMenuModel("openai", "gpt-5", true);
+  const modelB = createMenuModel("anthropic", "claude-3", false);
+  const state = createMenuState<MenuModel>(2, {
+    scope: "all",
     allModels: [{ model: modelA }, { model: modelB }],
-    mode: "model" as const,
-  } as unknown as TelegramModelMenuState;
+  });
   assert.equal(
     await handleTelegramModelMenuCallbackAction(
       "callback-1",
       {
         data: "model:page:1",
         state,
-        activeModel: modelA as never,
+        activeModel: modelA,
         currentThinkingLevel: "medium",
         isIdle: true,
         canRestartBusyRun: false,
@@ -368,7 +937,7 @@ test("Menu helpers execute model callback actions across update, switch, and res
       {
         data: "model:pick:1",
         state,
-        activeModel: modelA as never,
+        activeModel: modelA,
         currentThinkingLevel: "medium",
         isIdle: false,
         canRestartBusyRun: true,
@@ -408,7 +977,7 @@ test("Menu helpers execute model callback actions across update, switch, and res
       {
         data: "model:pick:1",
         state,
-        activeModel: modelA as never,
+        activeModel: modelA,
         currentThinkingLevel: "medium",
         isIdle: false,
         canRestartBusyRun: true,
@@ -459,21 +1028,13 @@ test("Menu helpers execute model callback actions across update, switch, and res
 
 test("Menu helpers handle status and thinking callback actions", async () => {
   const events: string[] = [];
-  const reasoningModel = {
-    provider: "openai",
-    id: "gpt-5",
-    reasoning: true,
-  } as const;
-  const plainModel = {
-    provider: "openai",
-    id: "gpt-4o",
-    reasoning: false,
-  } as const;
+  const reasoningModel = createMenuModel("openai", "gpt-5", true);
+  const plainModel = createMenuModel("openai", "gpt-4o", false);
   assert.equal(
     await handleTelegramStatusMenuCallbackAction(
       "callback-1",
       "status:model",
-      reasoningModel as never,
+      reasoningModel,
       {
         updateModelMenuMessage: async () => {
           events.push("status:model");
@@ -492,7 +1053,7 @@ test("Menu helpers handle status and thinking callback actions", async () => {
     await handleTelegramThinkingMenuCallbackAction(
       "callback-2",
       "thinking:set:high",
-      reasoningModel as never,
+      reasoningModel,
       {
         setThinkingLevel: (level) => {
           events.push(`set:${level}`);
@@ -512,7 +1073,7 @@ test("Menu helpers handle status and thinking callback actions", async () => {
     await handleTelegramStatusMenuCallbackAction(
       "callback-3",
       "status:thinking",
-      plainModel as never,
+      plainModel,
       {
         updateModelMenuMessage: async () => {
           events.push("unexpected:model");
@@ -536,27 +1097,20 @@ test("Menu helpers handle status and thinking callback actions", async () => {
 });
 
 test("Menu helpers build pure render payloads before transport", () => {
-  const modelA = { provider: "openai", id: "gpt-5", reasoning: true } as const;
-  const state = {
-    chatId: 1,
-    messageId: 2,
-    page: 0,
-    scope: "all" as const,
-    scopedModels: [],
+  const modelA = createMenuModel("openai", "gpt-5", true);
+  const state = createMenuState(2, {
+    scope: "all",
     allModels: [{ model: modelA }],
-    mode: "status" as const,
-  } as unknown as TelegramModelMenuState;
-  const modelPayload = buildTelegramModelMenuRenderPayload(
-    state,
-    modelA as never,
-  );
+    mode: "status",
+  });
+  const modelPayload = buildTelegramModelMenuRenderPayload(state, modelA);
   const thinkingPayload = buildTelegramThinkingMenuRenderPayload(
-    modelA as never,
+    modelA,
     "medium",
   );
   const statusPayload = buildTelegramStatusMenuRenderPayload(
     "<b>Status</b>",
-    modelA as never,
+    modelA,
     "medium",
   );
   assert.equal(modelPayload.nextMode, "model");
@@ -571,18 +1125,119 @@ test("Menu helpers build pure render payloads before transport", () => {
   assert.equal(state.mode, "status");
 });
 
+test("Menu action runtime opens and updates interactive menu messages", async () => {
+  const events: string[] = [];
+  const modelA = createMenuModel("openai", "gpt-5", true);
+  const state = createMenuState<typeof modelA>(2, {
+    scope: "all",
+    allModels: [{ model: modelA }],
+    mode: "status",
+  });
+  const runtime = createTelegramMenuActionRuntime<string, typeof modelA>({
+    getModelMenuState: async () => state,
+    getActiveModel: () => modelA,
+    getThinkingLevel: () => "medium",
+    buildStatusHtml: (ctx) => `<b>Status ${ctx}</b>`,
+    storeModelMenuState: (nextState) => {
+      events.push(`store:${nextState.messageId}`);
+    },
+    isIdle: () => true,
+    canOfferInFlightModelSwitch: () => false,
+    sendTextReply: async (_chatId, _replyToMessageId, text) => {
+      events.push(`text:${text}`);
+    },
+    editInteractiveMessage: async (chatId, messageId, text, mode) => {
+      events.push(`edit:${chatId}:${messageId}:${mode}:${text}`);
+    },
+    sendInteractiveMessage: async (chatId, text, mode) => {
+      events.push(`send:${chatId}:${mode}:${text}`);
+      return 99;
+    },
+  });
+  await runtime.updateModelMenuMessage(state, "ctx");
+  await runtime.updateThinkingMenuMessage(state, "ctx");
+  await runtime.updateStatusMessage(state, "ctx");
+  await runtime.sendStatusMessage(1, 2, "ctx");
+  await runtime.openModelMenu(1, 2, "ctx");
+  assert.equal(events[0], "edit:1:2:html:<b>Choose a model:</b>");
+  assert.match(events[1] ?? "", /^edit:1:2:plain:Choose a thinking level/);
+  assert.equal(events[2], "edit:1:2:html:<b>Status ctx</b>");
+  assert.equal(events[3], "send:1:html:<b>Status ctx</b>");
+  assert.equal(events[4], "store:99");
+  assert.equal(events[5], "send:1:html:<b>Choose a model:</b>");
+  assert.equal(events[6], "store:99");
+});
+
+test("Menu action runtime with state builder opens menus from settings runtime", async () => {
+  const events: string[] = [];
+  const modelA = createMenuModel("openai", "gpt-5");
+  const state = createMenuState<typeof modelA>(2, {
+    scope: "all",
+    allModels: [{ model: modelA }],
+  });
+  const runtime = createTelegramMenuActionRuntimeWithStateBuilder<
+    typeof modelA,
+    {
+      cwd: string;
+      modelRegistry: {
+        refresh: () => void;
+        getAvailable: () => [typeof modelA];
+      };
+    }
+  >({
+    runtime: {
+      storeState: () => {},
+      getState: () => undefined,
+      clear: () => {},
+      buildState: async (options) => {
+        await options.reloadSettings();
+        events.push(
+          `patterns:${options.getConfiguredScopedModelPatterns()?.length}`,
+        );
+        return state;
+      },
+    },
+    createSettingsManager: (cwd) => ({
+      reload: async () => {
+        events.push(`reload:${cwd}`);
+      },
+      getEnabledModels: () => ["openai/*"],
+    }),
+    getActiveModel: () => modelA,
+    getThinkingLevel: () => "medium",
+    buildStatusHtml: () => "status",
+    storeModelMenuState: (nextState) => {
+      events.push(`store:${nextState.messageId}`);
+    },
+    isIdle: () => true,
+    canOfferInFlightModelSwitch: () => false,
+    sendTextReply: async () => {},
+    editInteractiveMessage: async () => {},
+    sendInteractiveMessage: async (_chatId, text) => {
+      events.push(`send:${text}`);
+      return 99;
+    },
+  });
+  await runtime.openModelMenu(1, 2, {
+    cwd: "/repo",
+    modelRegistry: { refresh: () => {}, getAvailable: () => [modelA] },
+  });
+  assert.deepEqual(events, [
+    "reload:/repo",
+    "patterns:1",
+    "send:<b>Choose a model:</b>",
+    "store:99",
+  ]);
+});
+
 test("Menu helpers update and send interactive menu messages", async () => {
   const events: string[] = [];
-  const modelA = { provider: "openai", id: "gpt-5", reasoning: true } as const;
-  const state = {
-    chatId: 1,
-    messageId: 2,
-    page: 0,
-    scope: "all" as const,
-    scopedModels: [],
+  const modelA = createMenuModel("openai", "gpt-5", true);
+  const state = createMenuState(2, {
+    scope: "all",
     allModels: [{ model: modelA }],
-    mode: "status" as const,
-  } as unknown as TelegramModelMenuState;
+    mode: "status",
+  });
   const deps = {
     editInteractiveMessage: async (
       chatId: number,
@@ -601,32 +1256,23 @@ test("Menu helpers update and send interactive menu messages", async () => {
       return 99;
     },
   };
-  await updateTelegramModelMenuMessage(state, modelA as never, deps);
-  await updateTelegramThinkingMenuMessage(
-    state,
-    modelA as never,
-    "medium",
-    deps,
-  );
+  await updateTelegramModelMenuMessage(state, modelA, deps);
+  await updateTelegramThinkingMenuMessage(state, modelA, "medium", deps);
   await updateTelegramStatusMessage(
     state,
     "<b>Status</b>",
-    modelA as never,
+    modelA,
     "medium",
     deps,
   );
   const sentStatusId = await sendTelegramStatusMessage(
     state,
     "<b>Status</b>",
-    modelA as never,
+    modelA,
     "medium",
     deps,
   );
-  const sentModelId = await sendTelegramModelMenuMessage(
-    state,
-    modelA as never,
-    deps,
-  );
+  const sentModelId = await sendTelegramModelMenuMessage(state, modelA, deps);
   assert.equal(sentStatusId, 99);
   assert.equal(sentModelId, 99);
   assert.equal(events[0], "edit:1:2:html:<b>Choose a model:</b>");
@@ -637,40 +1283,31 @@ test("Menu helpers update and send interactive menu messages", async () => {
 });
 
 test("Menu helpers build model, thinking, and status UI payloads", () => {
-  const modelA = { provider: "openai", id: "gpt-5", reasoning: true } as const;
-  const modelB = {
-    provider: "anthropic",
-    id: "claude-3",
-    reasoning: false,
-  } as const;
-  const state = {
-    chatId: 1,
-    messageId: 2,
-    page: 0,
-    scope: "scoped" as const,
-    scopedModels: [{ model: modelA, thinkingLevel: "high" as const }],
+  const modelA = createMenuModel("openai", "gpt-5", true);
+  const modelB = createMenuModel("anthropic", "claude-3", false);
+  const state = createMenuState<MenuModel>(2, {
+    scopedModels: [{ model: modelA, thinkingLevel: "high" }],
     allModels: [{ model: modelB }],
-    mode: "model" as const,
-  } as unknown as TelegramModelMenuState;
+  });
   assert.deepEqual(getModelMenuItems(state), state.scopedModels);
   assert.match(
-    formatScopedModelButtonText(state.scopedModels[0], modelA as never),
+    formatScopedModelButtonText(state.scopedModels[0], modelA),
     /^✅ /,
   );
-  const modelMarkup = buildModelMenuReplyMarkup(state, modelA as never, 6);
+  const modelMarkup = buildModelMenuReplyMarkup(state, modelA, 6);
   assert.equal(
     modelMarkup.inline_keyboard[0]?.[0]?.callback_data,
     "model:pick:0",
   );
-  const thinkingText = buildThinkingMenuText(modelA as never, "medium");
+  const thinkingText = buildThinkingMenuText(modelA, "medium");
   assert.match(thinkingText, /Model: openai\/gpt-5/);
   const thinkingMarkup = buildThinkingMenuReplyMarkup("medium");
   assert.equal(
     thinkingMarkup.inline_keyboard.some((row) => row[0]?.text === "✅ medium"),
     true,
   );
-  const statusMarkup = buildStatusReplyMarkup(modelA as never, "medium");
+  const statusMarkup = buildStatusReplyMarkup(modelA, "medium");
   assert.equal(statusMarkup.inline_keyboard.length, 2);
-  const noReasoningMarkup = buildStatusReplyMarkup(modelB as never, "medium");
+  const noReasoningMarkup = buildStatusReplyMarkup(modelB, "medium");
   assert.equal(noReasoningMarkup.inline_keyboard.length, 1);
 });

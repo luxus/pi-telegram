@@ -3,28 +3,62 @@
  * Owns tool, command, and lifecycle-hook registration so index.ts can stay focused on runtime orchestration state and side effects
  */
 
+import { Type } from "@sinclair/typebox";
+
+import {
+  queueTelegramAttachments,
+  TELEGRAM_OUTBOUND_ATTACHMENT_MAX_BYTES,
+  type TelegramAttachmentQueueTargetView,
+} from "./attachments.ts";
 import type {
+  AgentEndEvent,
+  AgentStartEvent,
+  BeforeAgentStartEvent,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+  SessionShutdownEvent,
+  SessionStartEvent,
+} from "./pi.ts";
+import { TELEGRAM_PREFIX } from "./turns.ts";
 
-import { queueTelegramAttachments } from "./attachments.ts";
-import type { PendingTelegramTurn } from "./queue.ts";
+const MAX_ATTACHMENTS_PER_TURN = 10;
+
+const SYSTEM_PROMPT_SUFFIX = `
+
+Telegram bridge extension is active.
+- Messages forwarded from Telegram are prefixed with "[telegram]".
+- [telegram] messages may include local temp file paths for Telegram attachments. Read those files as needed.
+- Telegram is often read on narrow phone screens, so prefer narrow table columns when presenting tabular data; wide monospace tables can become unreadable.
+- If a [telegram] user asked for a file or generated artifact, use the telegram_attach tool with the local file path so the extension can send it with your next final reply.
+- Do not assume mentioning a local file path in plain text will send it to Telegram. Use telegram_attach.`;
 
 // --- Tool Registration ---
 
-export interface TelegramAttachmentToolRegistrationDeps {
-  maxAttachmentsPerTurn: number;
-  getActiveTurn: () => PendingTelegramTurn | undefined;
-  statPath: (path: string) => Promise<{ isFile(): boolean }>;
+export interface TelegramRuntimeEventRecorderPort {
+  recordRuntimeEvent?: (
+    category: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
+}
+
+export interface TelegramAttachmentToolRegistrationDeps
+  extends TelegramRuntimeEventRecorderPort {
+  maxAttachmentsPerTurn?: number;
+  maxAttachmentSizeBytes?: number;
+  getActiveTurn: () => TelegramAttachmentQueueTargetView | undefined;
+  statPath?: (path: string) => Promise<{ isFile(): boolean; size?: number }>;
 }
 
 export function registerTelegramAttachmentTool(
   pi: ExtensionAPI,
   deps: TelegramAttachmentToolRegistrationDeps,
 ): void {
+  const maxAttachmentsPerTurn =
+    deps.maxAttachmentsPerTurn ?? MAX_ATTACHMENTS_PER_TURN;
+  const maxAttachmentSizeBytes =
+    deps.maxAttachmentSizeBytes ?? TELEGRAM_OUTBOUND_ATTACHMENT_MAX_BYTES;
   pi.registerTool({
     name: "telegram_attach",
     label: "Telegram Attach",
@@ -37,16 +71,25 @@ export function registerTelegramAttachmentTool(
     parameters: Type.Object({
       paths: Type.Array(
         Type.String({ description: "Local file path to attach" }),
-        { minItems: 1, maxItems: deps.maxAttachmentsPerTurn },
+        { minItems: 1, maxItems: maxAttachmentsPerTurn },
       ),
     }),
     async execute(_toolCallId, params) {
-      return queueTelegramAttachments({
-        activeTurn: deps.getActiveTurn(),
-        paths: params.paths,
-        maxAttachmentsPerTurn: deps.maxAttachmentsPerTurn,
-        statPath: deps.statPath,
-      });
+      try {
+        return await queueTelegramAttachments({
+          activeTurn: deps.getActiveTurn(),
+          paths: params.paths,
+          maxAttachmentsPerTurn,
+          maxAttachmentSizeBytes,
+          statPath: deps.statPath,
+        });
+      } catch (error) {
+        deps.recordRuntimeEvent?.("attachment", error, {
+          phase: "queue",
+          count: params.paths.length,
+        });
+        throw error;
+      }
     },
   });
 }
@@ -58,7 +101,7 @@ export interface TelegramCommandRegistrationDeps {
   getStatusLines: () => string[];
   reloadConfig: () => Promise<void>;
   hasBotToken: () => boolean;
-  startPolling: (ctx: ExtensionCommandContext) => Promise<void>;
+  startPolling: (ctx: ExtensionCommandContext) => void | Promise<void>;
   stopPolling: () => Promise<void>;
   updateStatus: (ctx: ExtensionCommandContext) => void;
 }
@@ -76,7 +119,7 @@ export function registerTelegramCommands(
   pi.registerCommand("telegram-status", {
     description: "Show Telegram bridge status",
     handler: async (_args, ctx) => {
-      ctx.ui.notify(deps.getStatusLines().join(" | "), "info");
+      ctx.ui.notify(deps.getStatusLines().join("\n"), "info");
     },
   });
   pi.registerCommand("telegram-connect", {
@@ -102,18 +145,67 @@ export function registerTelegramCommands(
 
 // --- Lifecycle Hook Registration ---
 
+export function buildTelegramBridgeSystemPrompt(options: {
+  prompt: string;
+  systemPrompt: string;
+  telegramPrefix?: string;
+  systemPromptSuffix: string;
+}): { systemPrompt: string } {
+  const telegramPrefix = options.telegramPrefix ?? TELEGRAM_PREFIX;
+  const suffix = options.prompt.trimStart().startsWith(telegramPrefix)
+    ? `${options.systemPromptSuffix}\n- The current user message came from Telegram.`
+    : options.systemPromptSuffix;
+  return { systemPrompt: options.systemPrompt + suffix };
+}
+
+export function createTelegramBeforeAgentStartHook(
+  options: {
+    telegramPrefix?: string;
+    systemPromptSuffix?: string;
+  } = {},
+): (event: BeforeAgentStartEvent) => { systemPrompt: string } {
+  return (event) =>
+    buildTelegramBridgeSystemPrompt({
+      prompt: event.prompt,
+      systemPrompt: event.systemPrompt,
+      telegramPrefix: options.telegramPrefix,
+      systemPromptSuffix: options.systemPromptSuffix ?? SYSTEM_PROMPT_SUFFIX,
+    });
+}
+
+export interface TelegramBeforeAgentStartResult {
+  systemPrompt?: string;
+}
+
+type TelegramBeforeAgentStartReturn =
+  | Promise<TelegramBeforeAgentStartResult | undefined>
+  | TelegramBeforeAgentStartResult
+  | undefined;
+
+type TelegramLifecycleModel = ExtensionContext["model"];
+type TelegramLifecycleMessage = AgentEndEvent["messages"][number];
+
 export interface TelegramLifecycleRegistrationDeps {
-  onSessionStart: (event: unknown, ctx: ExtensionContext) => Promise<void>;
-  onSessionShutdown: (event: unknown, ctx: ExtensionContext) => Promise<void>;
-  onBeforeAgentStart: (
-    event: unknown,
+  onSessionStart: (
+    event: SessionStartEvent,
     ctx: ExtensionContext,
-  ) => Promise<unknown> | unknown;
+  ) => Promise<void>;
+  onSessionShutdown: (
+    event: SessionShutdownEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void>;
+  onBeforeAgentStart: (
+    event: BeforeAgentStartEvent,
+    ctx: ExtensionContext,
+  ) => TelegramBeforeAgentStartReturn;
   onModelSelect: (
-    event: unknown,
+    event: { model: TelegramLifecycleModel },
     ctx: ExtensionContext,
   ) => Promise<void> | void;
-  onAgentStart: (event: unknown, ctx: ExtensionContext) => Promise<void>;
+  onAgentStart: (
+    event: AgentStartEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void>;
   onToolExecutionStart: (
     event: unknown,
     ctx: ExtensionContext,
@@ -122,9 +214,15 @@ export interface TelegramLifecycleRegistrationDeps {
     event: unknown,
     ctx: ExtensionContext,
   ) => Promise<void> | void;
-  onMessageStart: (event: unknown, ctx: ExtensionContext) => Promise<void>;
-  onMessageUpdate: (event: unknown, ctx: ExtensionContext) => Promise<void>;
-  onAgentEnd: (event: unknown, ctx: ExtensionContext) => Promise<void>;
+  onMessageStart: (
+    event: { message: TelegramLifecycleMessage },
+    ctx: ExtensionContext,
+  ) => Promise<void>;
+  onMessageUpdate: (
+    event: { message: TelegramLifecycleMessage },
+    ctx: ExtensionContext,
+  ) => Promise<void>;
+  onAgentEnd: (event: AgentEndEvent, ctx: ExtensionContext) => Promise<void>;
 }
 
 export function registerTelegramLifecycleHooks(
@@ -137,8 +235,9 @@ export function registerTelegramLifecycleHooks(
   pi.on("session_shutdown", async (event, ctx) => {
     await deps.onSessionShutdown(event, ctx);
   });
-  pi.on("before_agent_start", (async (event: unknown, ctx: ExtensionContext) =>
-    deps.onBeforeAgentStart(event, ctx)) as never);
+  pi.on("before_agent_start", async (event, ctx) => {
+    return deps.onBeforeAgentStart(event, ctx);
+  });
   pi.on("model_select", async (event, ctx) => {
     await deps.onModelSelect(event, ctx);
   });

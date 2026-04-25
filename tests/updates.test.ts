@@ -11,15 +11,19 @@ import {
   buildTelegramUpdateExecutionPlanFromUpdate,
   buildTelegramUpdateFlowAction,
   collectTelegramReactionEmojis,
+  createTelegramPairedUpdateRuntime,
+  createTelegramUpdateRuntime,
   executeTelegramUpdate,
   executeTelegramUpdatePlan,
   extractDeletedTelegramMessageIds,
   getAuthorizedTelegramCallbackQuery,
+  handleAuthorizedTelegramReactionUpdate,
   getAuthorizedTelegramEditedMessage,
   getAuthorizedTelegramMessage,
-  getTelegramAuthorizationState,
   normalizeTelegramReactionEmoji,
 } from "../lib/updates.ts";
+
+const TEST_CONTEXT = "ctx";
 
 test("Update helpers normalize emoji reactions and collect emoji-only entries", () => {
   assert.equal(normalizeTelegramReactionEmoji("👍️"), "👍");
@@ -47,13 +51,49 @@ test("Update helpers extract deleted business-message ids only from Bot API shap
   assert.deepEqual(extractDeletedTelegramMessageIds({}), []);
 });
 
-test("Update routing classifies authorization state for pair, allow, and deny", () => {
-  assert.deepEqual(getTelegramAuthorizationState(10), {
-    kind: "pair",
-    userId: 10,
+test("Paired update runtime binds pairing ports into update routing", async () => {
+  const events: string[] = [];
+  let allowedUserId: number | undefined;
+  const runtime = createTelegramPairedUpdateRuntime({
+    getAllowedUserId: () => allowedUserId,
+    setAllowedUserId: (userId) => {
+      allowedUserId = userId;
+      events.push(`set:${userId}`);
+    },
+    persistConfig: async () => {
+      events.push("persist");
+    },
+    updateStatus: (ctx: string) => {
+      events.push(`status:${ctx}`);
+    },
+    removePendingMediaGroupMessages: () => {},
+    removeQueuedTelegramTurnsByMessageIds: () => 0,
+    clearQueuedTelegramTurnPriorityByMessageId: () => false,
+    prioritizeQueuedTelegramTurnByMessageId: () => false,
+    answerCallbackQuery: async () => {},
+    handleAuthorizedTelegramCallbackQuery: async () => {},
+    sendTextReply: async () => undefined,
+    handleAuthorizedTelegramMessage: async (message, ctx: string) => {
+      events.push(`message:${ctx}:${message.message_id ?? "none"}`);
+    },
+    handleAuthorizedTelegramEditedMessage: () => {},
   });
-  assert.deepEqual(getTelegramAuthorizationState(10, 10), { kind: "allow" });
-  assert.deepEqual(getTelegramAuthorizationState(10, 11), { kind: "deny" });
+  await runtime.handleUpdate(
+    {
+      message: {
+        chat: { id: 1, type: "private" },
+        from: { id: 42, is_bot: false },
+        message_id: 10,
+      },
+    },
+    "ctx",
+  );
+  assert.deepEqual(events, [
+    "set:42",
+    "persist",
+    "status:ctx",
+    "message:ctx:10",
+  ]);
 });
 
 test("Update routing extracts only private human callback queries", () => {
@@ -108,6 +148,9 @@ test("Update flow prioritizes deleted business-message handling over other updat
       message_reaction: {
         chat: { type: "private" },
         user: { id: 1, is_bot: false },
+        message_id: 1,
+        old_reaction: [],
+        new_reaction: [],
       },
     },
     1,
@@ -160,6 +203,9 @@ test("Update flow ignores unauthorized transport shapes and preserves reaction e
     message_reaction: {
       chat: { type: "private" },
       user: { id: 1, is_bot: false },
+      message_id: 1,
+      old_reaction: [],
+      new_reaction: [],
     },
   });
   assert.equal(reactionAction.kind, "reaction");
@@ -212,6 +258,9 @@ test("Update execution plan preserves deleted and reaction actions", () => {
   const reactionUpdate = {
     chat: { type: "private" },
     user: { id: 1, is_bot: false },
+    message_id: 1,
+    old_reaction: [],
+    new_reaction: [],
   };
   assert.deepEqual(
     buildTelegramUpdateExecutionPlan({
@@ -236,12 +285,144 @@ test("Update execution plan can be built directly from updates", () => {
   assert.equal(plan.kind === "callback" ? plan.shouldDeny : false, true);
 });
 
+test("Update runtime controller binds update and reaction ports", async () => {
+  const events: string[] = [];
+  const runtime = createTelegramUpdateRuntime({
+    getAllowedUserId: () => 42,
+    removePendingMediaGroupMessages: (messageIds) => {
+      events.push(`media:${messageIds.join(",")}`);
+    },
+    removeQueuedTelegramTurnsByMessageIds: (messageIds, ctx: string) => {
+      events.push(`remove:${ctx}:${messageIds.join(",")}`);
+      return messageIds.length;
+    },
+    clearQueuedTelegramTurnPriorityByMessageId: (messageId, ctx: string) => {
+      events.push(`clear:${ctx}:${messageId}`);
+      return true;
+    },
+    prioritizeQueuedTelegramTurnByMessageId: (messageId, ctx: string) => {
+      events.push(`priority:${ctx}:${messageId}`);
+      return true;
+    },
+    pairTelegramUserIfNeeded: async (userId, ctx: string) => {
+      events.push(`pair:${ctx}:${userId}`);
+      return true;
+    },
+    answerCallbackQuery: async (id, text) => {
+      events.push(`answer:${id}:${text ?? ""}`);
+    },
+    handleAuthorizedTelegramCallbackQuery: async () => {
+      events.push("callback");
+    },
+    sendTextReply: async (chatId, replyToMessageId, text) => {
+      events.push(`reply:${chatId}:${replyToMessageId}:${text}`);
+      return 1;
+    },
+    handleAuthorizedTelegramMessage: async (message, ctx: string) => {
+      events.push(`message:${ctx}:${message.message_id ?? "none"}`);
+    },
+    handleAuthorizedTelegramEditedMessage: async (message, ctx: string) => {
+      events.push(`edit:${ctx}:${message.message_id ?? "none"}`);
+    },
+  });
+  await runtime.handleAuthorizedReactionUpdate(
+    {
+      chat: { type: "private" },
+      message_id: 9,
+      user: { id: 42, is_bot: false },
+      old_reaction: [],
+      new_reaction: [{ type: "emoji", emoji: "👍" }],
+    },
+    "ctx",
+  );
+  await runtime.handleUpdate(
+    {
+      message: {
+        chat: { id: 1, type: "private" },
+        from: { id: 42, is_bot: false },
+        message_id: 10,
+      },
+    },
+    "ctx",
+  );
+  assert.deepEqual(events, ["priority:ctx:9", "message:ctx:10"]);
+});
+
+test("Update runtime handles authorized reaction priority and removal effects", async () => {
+  const events: string[] = [];
+  const deps = {
+    allowedUserId: 7,
+    ctx: TEST_CONTEXT,
+    removePendingMediaGroupMessages: (ids: number[]) => {
+      events.push(`media:${ids.join(",")}`);
+    },
+    removeQueuedTelegramTurnsByMessageIds: (ids: number[]) => {
+      events.push(`remove:${ids.join(",")}`);
+      return ids.length;
+    },
+    clearQueuedTelegramTurnPriorityByMessageId: (id: number) => {
+      events.push(`clear:${id}`);
+      return true;
+    },
+    prioritizeQueuedTelegramTurnByMessageId: (id: number) => {
+      events.push(`prioritize:${id}`);
+      return true;
+    },
+  };
+  await handleAuthorizedTelegramReactionUpdate(
+    {
+      chat: { type: "private" },
+      user: { id: 7, is_bot: false },
+      message_id: 10,
+      old_reaction: [],
+      new_reaction: [{ type: "emoji", emoji: "👍️" }],
+    },
+    deps,
+  );
+  await handleAuthorizedTelegramReactionUpdate(
+    {
+      chat: { type: "private" },
+      user: { id: 7, is_bot: false },
+      message_id: 11,
+      old_reaction: [{ type: "emoji", emoji: "👍" }],
+      new_reaction: [],
+    },
+    deps,
+  );
+  await handleAuthorizedTelegramReactionUpdate(
+    {
+      chat: { type: "private" },
+      user: { id: 7, is_bot: false },
+      message_id: 12,
+      old_reaction: [],
+      new_reaction: [{ type: "emoji", emoji: "👎" }],
+    },
+    deps,
+  );
+  await handleAuthorizedTelegramReactionUpdate(
+    {
+      chat: { type: "private" },
+      user: { id: 8, is_bot: false },
+      message_id: 13,
+      old_reaction: [],
+      new_reaction: [{ type: "emoji", emoji: "👍" }],
+    },
+    deps,
+  );
+  assert.deepEqual(events, [
+    "prioritize:10",
+    "clear:11",
+    "media:12",
+    "remove:12",
+  ]);
+});
+
 test("Update runtime executes delete and reaction plans through the right side effects", async () => {
   const events: string[] = [];
   await executeTelegramUpdatePlan(
     { kind: "deleted", messageIds: [1, 2] },
     {
-      ctx: {} as never,
+      ctx: TEST_CONTEXT,
       removePendingMediaGroupMessages: (ids) => {
         events.push(`media:${ids.join(",")}`);
       },
@@ -275,7 +456,7 @@ test("Update runtime can execute directly from raw updates", async () => {
     },
     undefined,
     {
-      ctx: {} as never,
+      ctx: TEST_CONTEXT,
       removePendingMediaGroupMessages: () => {},
       removeQueuedTelegramTurnsByMessageIds: () => 0,
       handleAuthorizedTelegramReactionUpdate: async () => {},
@@ -316,7 +497,7 @@ test("Update runtime routes edited messages without creating normal message turn
     },
     7,
     {
-      ctx: {} as never,
+      ctx: TEST_CONTEXT,
       removePendingMediaGroupMessages: () => {},
       removeQueuedTelegramTurnsByMessageIds: () => 0,
       handleAuthorizedTelegramReactionUpdate: async () => {},
@@ -349,7 +530,7 @@ test("Update runtime handles callback deny and message pair flows", async () => 
       shouldDeny: true,
     },
     {
-      ctx: {} as never,
+      ctx: TEST_CONTEXT,
       removePendingMediaGroupMessages: () => {},
       removeQueuedTelegramTurnsByMessageIds: () => 0,
       handleAuthorizedTelegramReactionUpdate: async () => {},
@@ -388,7 +569,7 @@ test("Update runtime handles callback deny and message pair flows", async () => 
       shouldDeny: false,
     },
     {
-      ctx: {} as never,
+      ctx: TEST_CONTEXT,
       removePendingMediaGroupMessages: () => {},
       removeQueuedTelegramTurnsByMessageIds: () => 0,
       handleAuthorizedTelegramReactionUpdate: async () => {},

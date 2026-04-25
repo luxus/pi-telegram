@@ -4,105 +4,91 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 
-import telegramExtension, { __telegramTestUtils } from "../index.ts";
 import {
+  appendTelegramQueueItem,
+  assertTelegramQueueItemAdmissionValid,
+  buildPendingTelegramControlItem,
+  buildTelegramAgentEndPlan,
   buildTelegramAgentStartPlan,
   buildTelegramSessionShutdownState,
   buildTelegramSessionStartState,
+  canDispatchTelegramTurnState,
+  clearTelegramQueuePromptPriority,
+  clearTelegramQueuePromptPriorityRuntime,
+  compareTelegramQueueItems,
+  createTelegramActiveTurnStore,
+  createTelegramAgentEndHook,
+  createTelegramAgentLifecycleHooks,
+  createTelegramAgentStartHook,
+  createTelegramControlItemBuilder,
+  createTelegramControlQueueController,
+  createTelegramDispatchReadinessChecker,
+  createTelegramPromptEnqueueController,
+  createTelegramQueueDispatchController,
+  createTelegramQueueDispatchRuntime,
+  createTelegramQueueMutationController,
+  createTelegramQueueStore,
+  createTelegramSessionLifecycleHooks,
+  createTelegramSessionLifecycleRuntime,
+  createTelegramSessionStateApplier,
+  createTelegramToolExecutionHooks,
+  enqueueTelegramPromptTurnRuntime,
   executeTelegramControlItemRuntime,
   executeTelegramQueueDispatchPlan,
   formatQueuedTelegramItemsStatus,
   getNextTelegramToolExecutionCount,
-  shouldStartTelegramPolling,
+  getTelegramQueueItemAdmissionMode,
+  getTelegramQueueLaneContract,
+  handleTelegramAgentEndRuntime,
+  handleTelegramAgentStartRuntime,
+  handleTelegramToolExecutionEndRuntime,
+  handleTelegramToolExecutionStartRuntime,
+  isTelegramQueueItemAdmissionValid,
+  type PendingTelegramControlItem,
+  type PendingTelegramTurn,
+  partitionTelegramQueueItemsForHistory,
+  planNextTelegramQueueAction,
+  planTelegramPromptEnqueue,
+  prioritizeTelegramQueuePrompt,
+  prioritizeTelegramQueuePromptRuntime,
+  removeTelegramQueueItemsByMessageIds,
+  removeTelegramQueueItemsByMessageIdsRuntime,
+  shouldDispatchAfterTelegramAgentEnd,
+  shutdownTelegramSessionRuntime,
+  startTelegramSessionRuntime,
+  TELEGRAM_QUEUE_LANE_CONTRACTS,
+  type TelegramQueueItem,
 } from "../lib/queue.ts";
 
-async function waitForCondition(
-  predicate: () => boolean,
-  timeoutMs = 2000,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error("Timed out waiting for condition");
+function createQueueTestModel() {
+  return { provider: "openai", id: "gpt-5" };
 }
 
-test("Control-lane items sort before priority and default prompt items", () => {
-  const queueItemType = undefined as
-    | Parameters<typeof __telegramTestUtils.compareTelegramQueueItems>[0]
-    | undefined;
-  const defaultPrompt: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
-    replyToMessageId: 1,
-    sourceMessageIds: [1],
-    queueOrder: 10,
-    queueLane: "default",
-    laneOrder: 10,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "default" }],
-    historyText: "default",
-    statusSummary: "default",
-  };
-  const priorityPrompt: typeof queueItemType = {
+function createQueueTestPromptTurn(
+  overrides: Partial<PendingTelegramTurn> = {},
+): PendingTelegramTurn {
+  return {
     kind: "prompt",
     chatId: 1,
     replyToMessageId: 2,
     sourceMessageIds: [2],
-    queueOrder: 11,
-    queueLane: "priority",
-    laneOrder: 0,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "priority" }],
-    historyText: "priority",
-    statusSummary: "priority",
-  };
-  const controlItem: typeof queueItemType = {
-    kind: "control",
-    controlType: "status",
-    chatId: 1,
-    replyToMessageId: 3,
-    queueOrder: 12,
-    queueLane: "control",
-    laneOrder: 0,
-    statusSummary: "control",
-    execute: async () => {},
-  };
-  const items = [defaultPrompt, controlItem, priorityPrompt].sort(
-    __telegramTestUtils.compareTelegramQueueItems,
-  );
-  assert.deepEqual(
-    items.map((item) => item?.statusSummary),
-    ["control", "priority", "default"],
-  );
-});
-
-test("Queue mutation helpers remove prompt items by Telegram message id", () => {
-  const queueItemType = undefined as
-    | Parameters<
-        typeof __telegramTestUtils.removeTelegramQueueItemsByMessageIds
-      >[0][number]
-    | undefined;
-  const promptItem: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
-    replyToMessageId: 1,
-    sourceMessageIds: [11, 12],
     queueOrder: 1,
     queueLane: "default",
     laneOrder: 1,
     queuedAttachments: [],
     content: [{ type: "text", text: "prompt" }],
-    historyText: "prompt history",
+    historyText: "prompt",
     statusSummary: "prompt",
+    ...overrides,
   };
-  const controlItem: typeof queueItemType = {
+}
+
+function createQueueTestControlItem<TContext = unknown>(
+  overrides: Partial<PendingTelegramControlItem<TContext>> = {},
+): PendingTelegramControlItem<TContext> {
+  return {
     kind: "control",
     controlType: "status",
     chatId: 1,
@@ -112,8 +98,223 @@ test("Queue mutation helpers remove prompt items by Telegram message id", () => 
     laneOrder: 0,
     statusSummary: "control",
     execute: async () => {},
+    ...overrides,
   };
-  const result = __telegramTestUtils.removeTelegramQueueItemsByMessageIds(
+}
+
+test("Queue store owns queued item state helpers", () => {
+  const item: PendingTelegramTurn = createQueueTestPromptTurn({
+    queueOrder: 3,
+    laneOrder: 3,
+    statusSummary: "hello",
+    content: [{ type: "text", text: "hello" }],
+    historyText: "",
+  });
+  const store = createTelegramQueueStore([item]);
+  assert.deepEqual(store.getQueuedItems(), [item]);
+  assert.equal(store.hasQueuedItems(), true);
+  store.setQueuedItems([]);
+  assert.deepEqual(store.getQueuedItems(), []);
+  assert.equal(store.hasQueuedItems(), false);
+});
+
+test("Active turn store owns active turn state helpers", () => {
+  const store = createTelegramActiveTurnStore();
+  const turn: PendingTelegramTurn = createQueueTestPromptTurn({
+    chatId: 7,
+    replyToMessageId: 8,
+    statusSummary: "hello",
+    sourceMessageIds: [8, 9],
+    content: [{ type: "text", text: "hello" }],
+    historyText: "",
+  });
+  assert.equal(store.has(), false);
+  assert.equal(store.get(), undefined);
+  store.set(turn);
+  turn.chatId = 99;
+  assert.equal(store.has(), true);
+  assert.equal(store.get()?.chatId, 7);
+  assert.equal(store.getChatId(), 7);
+  assert.equal(store.getReplyToMessageId(), 8);
+  assert.deepEqual(store.getSourceMessageIds(), [8, 9]);
+  store.clear();
+  assert.equal(store.has(), false);
+  assert.equal(store.getChatId(), undefined);
+});
+
+test("Control item builder creates control-lane queue items", () => {
+  const execute = async (): Promise<void> => {};
+  const createControlItem = createTelegramControlItemBuilder({
+    allocateItemOrder: () => 7,
+    allocateControlOrder: () => 8,
+  });
+  assert.deepEqual(
+    createControlItem({
+      chatId: 1,
+      replyToMessageId: 2,
+      controlType: "status",
+      statusSummary: "status",
+      execute,
+    }),
+    {
+      kind: "control",
+      controlType: "status",
+      chatId: 1,
+      replyToMessageId: 2,
+      queueOrder: 7,
+      queueLane: "control",
+      laneOrder: 8,
+      statusSummary: "status",
+      execute,
+    },
+  );
+  assert.deepEqual(
+    buildPendingTelegramControlItem({
+      chatId: 1,
+      replyToMessageId: 2,
+      controlType: "status",
+      queueOrder: 3,
+      laneOrder: 4,
+      statusSummary: "⚡ status",
+      execute,
+    }),
+    {
+      kind: "control",
+      chatId: 1,
+      replyToMessageId: 2,
+      controlType: "status",
+      queueOrder: 3,
+      queueLane: "control",
+      laneOrder: 4,
+      statusSummary: "⚡ status",
+      execute,
+    },
+  );
+});
+
+test("Queue lane contracts define admission modes and dispatch order", () => {
+  assert.deepEqual(
+    TELEGRAM_QUEUE_LANE_CONTRACTS.map((contract) => ({
+      lane: contract.lane,
+      admissionMode: contract.admissionMode,
+      dispatchRank: contract.dispatchRank,
+      allowedKinds: [...contract.allowedKinds],
+    })),
+    [
+      {
+        lane: "control",
+        admissionMode: "control-queue",
+        dispatchRank: 0,
+        allowedKinds: ["control", "prompt"],
+      },
+      {
+        lane: "priority",
+        admissionMode: "priority-queue",
+        dispatchRank: 1,
+        allowedKinds: ["prompt"],
+      },
+      {
+        lane: "default",
+        admissionMode: "default-queue",
+        dispatchRank: 2,
+        allowedKinds: ["prompt"],
+      },
+    ],
+  );
+  assert.equal(getTelegramQueueLaneContract("priority").dispatchRank, 1);
+  assert.equal(
+    getTelegramQueueItemAdmissionMode({ queueLane: "control" }),
+    "control-queue",
+  );
+  assert.equal(
+    isTelegramQueueItemAdmissionValid({ kind: "prompt", queueLane: "control" }),
+    true,
+  );
+  assert.equal(
+    isTelegramQueueItemAdmissionValid({
+      kind: "control",
+      queueLane: "default",
+    }),
+    false,
+  );
+  assert.throws(
+    () =>
+      assertTelegramQueueItemAdmissionValid({
+        kind: "control",
+        queueLane: "default",
+      }),
+    {
+      message:
+        "Invalid Telegram queue admission: control item cannot use default lane",
+    },
+  );
+});
+
+test("Queue planning rejects invalid queue admission", () => {
+  assert.throws(
+    () =>
+      planNextTelegramQueueAction(
+        [
+          {
+            kind: "control",
+            controlType: "status",
+            chatId: 1,
+            replyToMessageId: 1,
+            queueOrder: 1,
+            queueLane: "default",
+            laneOrder: 1,
+            statusSummary: "invalid",
+            execute: async () => {},
+          },
+        ],
+        true,
+      ),
+    {
+      message:
+        "Invalid Telegram queue admission: control item cannot use default lane",
+    },
+  );
+});
+
+test("Control-lane items sort before priority and default prompt items", () => {
+  const defaultPrompt: TelegramQueueItem = createQueueTestPromptTurn({
+    replyToMessageId: 1,
+    sourceMessageIds: [1],
+    queueOrder: 10,
+    laneOrder: 10,
+    content: [{ type: "text", text: "default" }],
+    historyText: "default",
+    statusSummary: "default",
+  });
+  const priorityPrompt: TelegramQueueItem = createQueueTestPromptTurn({
+    queueOrder: 11,
+    queueLane: "priority",
+    laneOrder: 0,
+    content: [{ type: "text", text: "priority" }],
+    historyText: "priority",
+    statusSummary: "priority",
+  });
+  const controlItem: TelegramQueueItem = createQueueTestControlItem({
+    replyToMessageId: 3,
+    queueOrder: 12,
+  });
+  const items = [defaultPrompt, controlItem, priorityPrompt].sort(
+    compareTelegramQueueItems,
+  );
+  assert.deepEqual(
+    items.map((item) => item?.statusSummary),
+    ["control", "priority", "default"],
+  );
+});
+
+test("Queue mutation helpers remove prompt items by Telegram message id", () => {
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
+    replyToMessageId: 1,
+    sourceMessageIds: [11, 12],
+    historyText: "prompt history",
+  });
+  const controlItem: TelegramQueueItem = createQueueTestControlItem();
+  const result = removeTelegramQueueItemsByMessageIds(
     [promptItem, controlItem],
     [12],
   );
@@ -124,93 +325,190 @@ test("Queue mutation helpers remove prompt items by Telegram message id", () => 
   );
 });
 
-test("Queue mutation helpers apply and clear prompt priority without touching control items", () => {
-  const queueItemType = undefined as
-    | Parameters<
-        typeof __telegramTestUtils.prioritizeTelegramQueuePrompt
-      >[0][number]
-    | undefined;
-  const promptItem: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
+test("Queue mutation controller binds queue accessors to runtime mutations", () => {
+  const events: string[] = [];
+  const promptItem: PendingTelegramTurn = createQueueTestPromptTurn({
     replyToMessageId: 1,
     sourceMessageIds: [11],
-    queueOrder: 4,
-    queueLane: "default",
-    laneOrder: 4,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "prompt" }],
+    queueOrder: 2,
+    laneOrder: 2,
     historyText: "prompt history",
-    statusSummary: "prompt",
-  };
-  const controlItem: typeof queueItemType = {
-    kind: "control",
-    controlType: "status",
+  });
+  const controlItem = buildPendingTelegramControlItem<string>({
     chatId: 1,
-    replyToMessageId: 2,
-    queueOrder: 5,
-    queueLane: "control",
+    replyToMessageId: 3,
+    controlType: "status",
+    queueOrder: 1,
     laneOrder: 0,
     statusSummary: "control",
     execute: async () => {},
+  });
+  let queuedItems: TelegramQueueItem<string>[] = [promptItem, controlItem];
+  let nextPriorityOrder = 7;
+  const controller = createTelegramQueueMutationController<string>({
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+    },
+    getNextPriorityReactionOrder: () => nextPriorityOrder,
+    incrementNextPriorityReactionOrder: () => {
+      nextPriorityOrder += 1;
+    },
+    updateStatus: (ctx) => {
+      events.push(ctx);
+    },
+  });
+  controller.reorder("a");
+  assert.deepEqual(
+    queuedItems.map((item) => item.statusSummary),
+    ["control", "prompt"],
+  );
+  controller.append(
+    {
+      ...promptItem,
+      replyToMessageId: 12,
+      sourceMessageIds: [12],
+      queueOrder: 2,
+      laneOrder: 2,
+      statusSummary: "appended",
+    },
+    "append",
+  );
+  assert.deepEqual(
+    queuedItems.map((item) => item.statusSummary),
+    ["control", "prompt", "appended"],
+  );
+  assert.equal(controller.prioritizeByMessageId(11, "b"), true);
+  assert.equal(nextPriorityOrder, 8);
+  assert.equal(controller.clearPriorityByMessageId(11, "c"), true);
+  assert.equal(controller.removeByMessageIds([11], "d"), 1);
+  assert.deepEqual(events, ["a", "append", "b", "c", "d"]);
+});
+
+test("Queue mutation runtime removes, sorts, and reprioritizes prompts", () => {
+  const events: string[] = [];
+  const promptItem: PendingTelegramTurn = createQueueTestPromptTurn({
+    replyToMessageId: 1,
+    sourceMessageIds: [11],
+  });
+  const priorityPrompt: PendingTelegramTurn = {
+    ...promptItem,
+    replyToMessageId: 2,
+    sourceMessageIds: [22],
+    queueOrder: 2,
+    queueLane: "priority",
+    laneOrder: 0,
+    statusSummary: "priority",
   };
-  const prioritized = __telegramTestUtils.prioritizeTelegramQueuePrompt(
+  const controlItem = buildPendingTelegramControlItem<string>({
+    chatId: 1,
+    replyToMessageId: 3,
+    controlType: "status",
+    queueOrder: 3,
+    laneOrder: 0,
+    statusSummary: "control",
+    execute: async () => {},
+  });
+  let queuedItems: TelegramQueueItem<string>[] = [
+    promptItem,
+    controlItem,
+    priorityPrompt,
+  ];
+  let nextPriorityOrder = 5;
+  const deps = {
+    ctx: "ctx",
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items: TelegramQueueItem<string>[]) => {
+      queuedItems = items;
+      events.push(`items:${items.map((item) => item.statusSummary).join(",")}`);
+    },
+    getNextPriorityReactionOrder: () => nextPriorityOrder,
+    incrementNextPriorityReactionOrder: () => {
+      nextPriorityOrder += 1;
+      events.push(`order:${nextPriorityOrder}`);
+    },
+    updateStatus: (ctx: string) => {
+      events.push(`status:${ctx}`);
+    },
+  };
+  assert.equal(clearTelegramQueuePromptPriorityRuntime<string>(22, deps), true);
+  assert.deepEqual(
+    queuedItems.map((item) => item.statusSummary),
+    ["control", "prompt", "priority"],
+  );
+  assert.equal(prioritizeTelegramQueuePromptRuntime<string>(11, deps), true);
+  assert.equal(nextPriorityOrder, 6);
+  assert.deepEqual(
+    queuedItems.map((item) => item.statusSummary),
+    ["control", "prompt", "priority"],
+  );
+  assert.equal(
+    removeTelegramQueueItemsByMessageIdsRuntime<string>([11], deps),
+    1,
+  );
+  assert.deepEqual(
+    queuedItems.map((item) => item.statusSummary),
+    ["control", "priority"],
+  );
+  assert.deepEqual(events, [
+    "items:prompt,control,priority",
+    "items:control,prompt,priority",
+    "status:ctx",
+    "items:control,prompt,priority",
+    "order:6",
+    "items:control,prompt,priority",
+    "status:ctx",
+    "items:control,priority",
+    "status:ctx",
+  ]);
+});
+
+test("Queue mutation helpers apply and clear prompt priority without touching control items", () => {
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
+    replyToMessageId: 1,
+    sourceMessageIds: [11],
+    queueOrder: 4,
+    laneOrder: 4,
+    historyText: "prompt history",
+  });
+  const controlItem: TelegramQueueItem = createQueueTestControlItem({
+    queueOrder: 5,
+  });
+  const prioritized = prioritizeTelegramQueuePrompt(
     [promptItem, controlItem],
     11,
     0,
   );
   assert.equal(prioritized.changed, true);
   assert.equal(prioritized.items[0]?.queueLane, "priority");
-  const cleared = __telegramTestUtils.clearTelegramQueuePromptPriority(
-    prioritized.items,
-    11,
-  );
+  const cleared = clearTelegramQueuePromptPriority(prioritized.items, 11);
   assert.equal(cleared.changed, true);
   assert.equal(cleared.items[0]?.queueLane, "default");
   assert.equal(cleared.items[1]?.queueLane, "control");
 });
 
 test("Queued status formatting marks priority prompts in the pi status bar", () => {
-  const queueItemType = undefined as
-    | Parameters<typeof formatQueuedTelegramItemsStatus>[0][number]
-    | undefined;
-  const priorityPrompt: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
+  const priorityPrompt: TelegramQueueItem = createQueueTestPromptTurn({
     replyToMessageId: 1,
     sourceMessageIds: [11],
     queueOrder: 4,
     queueLane: "priority",
     laneOrder: 0,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "prompt" }],
     historyText: "prompt history",
-    statusSummary: "prompt",
-  };
-  const defaultPrompt: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
-    replyToMessageId: 2,
+  });
+  const defaultPrompt: TelegramQueueItem = createQueueTestPromptTurn({
     sourceMessageIds: [12],
     queueOrder: 5,
-    queueLane: "default",
     laneOrder: 5,
-    queuedAttachments: [],
     content: [{ type: "text", text: "default" }],
     historyText: "default history",
     statusSummary: "default",
-  };
-  const controlItem: typeof queueItemType = {
-    kind: "control",
-    controlType: "status",
-    chatId: 1,
+  });
+  const controlItem: TelegramQueueItem = createQueueTestControlItem({
     replyToMessageId: 3,
     queueOrder: 6,
-    queueLane: "control",
-    laneOrder: 0,
     statusSummary: "⚡ status",
-    execute: async () => {},
-  };
+  });
   assert.equal(
     formatQueuedTelegramItemsStatus([
       controlItem,
@@ -221,37 +519,47 @@ test("Queued status formatting marks priority prompts in the pi status bar", () 
   );
 });
 
+test("Queue enqueue planning preserves queued prompts as history when requested", () => {
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
+    replyToMessageId: 1,
+    sourceMessageIds: [11],
+    historyText: "prompt history",
+  });
+  const controlItem: TelegramQueueItem = createQueueTestControlItem({
+    controlType: "model",
+  });
+  assert.deepEqual(planTelegramPromptEnqueue([promptItem], false), {
+    historyTurns: [],
+    remainingItems: [promptItem],
+  });
+  const plan = planTelegramPromptEnqueue([promptItem, controlItem], true);
+  assert.deepEqual(plan.historyTurns, [promptItem]);
+  assert.deepEqual(plan.remainingItems, [controlItem]);
+  assert.deepEqual(appendTelegramQueueItem(plan.remainingItems, promptItem), [
+    controlItem,
+    promptItem,
+  ]);
+  assert.throws(
+    () =>
+      appendTelegramQueueItem(plan.remainingItems, {
+        ...controlItem,
+        queueLane: "default",
+      }),
+    {
+      message:
+        "Invalid Telegram queue admission: control item cannot use default lane",
+    },
+  );
+});
+
 test("History partition keeps control items queued and extracts prompt items", () => {
-  const queueItemType = undefined as
-    | Parameters<
-        typeof __telegramTestUtils.partitionTelegramQueueItemsForHistory
-      >[0][number]
-    | undefined;
-  const promptItem: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
     replyToMessageId: 1,
     sourceMessageIds: [1],
-    queueOrder: 1,
-    queueLane: "default",
-    laneOrder: 1,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "prompt" }],
     historyText: "prompt history",
-    statusSummary: "prompt",
-  };
-  const controlItem: typeof queueItemType = {
-    kind: "control",
-    controlType: "status",
-    chatId: 1,
-    replyToMessageId: 2,
-    queueOrder: 2,
-    queueLane: "control",
-    laneOrder: 0,
-    statusSummary: "control",
-    execute: async () => {},
-  };
-  const result = __telegramTestUtils.partitionTelegramQueueItemsForHistory([
+  });
+  const controlItem: TelegramQueueItem = createQueueTestControlItem();
+  const result = partitionTelegramQueueItemsForHistory([
     promptItem,
     controlItem,
   ]);
@@ -266,39 +574,16 @@ test("History partition keeps control items queued and extracts prompt items", (
 });
 
 test("Dispatch planning returns the prompt item when dispatch is allowed", () => {
-  const queueItemType = undefined as
-    | Parameters<
-        typeof __telegramTestUtils.planNextTelegramQueueAction
-      >[0][number]
-    | undefined;
-  const controlItem: typeof queueItemType = {
-    kind: "control",
-    controlType: "status",
-    chatId: 1,
+  const controlItem: TelegramQueueItem = createQueueTestControlItem({
     replyToMessageId: 1,
     queueOrder: 1,
-    queueLane: "control",
-    laneOrder: 0,
-    statusSummary: "control",
-    execute: async () => {},
-  };
-  const promptItem: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
-    replyToMessageId: 2,
-    sourceMessageIds: [2],
+  });
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
     queueOrder: 2,
-    queueLane: "default",
     laneOrder: 2,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "prompt" }],
     historyText: "prompt history",
-    statusSummary: "prompt",
-  };
-  const result = __telegramTestUtils.planNextTelegramQueueAction(
-    [promptItem, controlItem],
-    true,
-  );
+  });
+  const result = planNextTelegramQueueAction([promptItem, controlItem], true);
   assert.equal(result.kind, "prompt");
   assert.equal(
     result.kind === "prompt" ? result.item.statusSummary : "",
@@ -311,39 +596,16 @@ test("Dispatch planning returns the prompt item when dispatch is allowed", () =>
 });
 
 test("Dispatch planning runs control items before normal prompts", () => {
-  const queueItemType = undefined as
-    | Parameters<
-        typeof __telegramTestUtils.planNextTelegramQueueAction
-      >[0][number]
-    | undefined;
-  const controlItem: typeof queueItemType = {
-    kind: "control",
-    controlType: "status",
-    chatId: 1,
+  const controlItem: TelegramQueueItem = createQueueTestControlItem({
     replyToMessageId: 1,
     queueOrder: 1,
-    queueLane: "control",
-    laneOrder: 0,
-    statusSummary: "control",
-    execute: async () => {},
-  };
-  const promptItem: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
-    replyToMessageId: 2,
-    sourceMessageIds: [2],
+  });
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
     queueOrder: 2,
-    queueLane: "default",
     laneOrder: 2,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "prompt" }],
     historyText: "prompt history",
-    statusSummary: "prompt",
-  };
-  const result = __telegramTestUtils.planNextTelegramQueueAction(
-    [controlItem, promptItem],
-    true,
-  );
+  });
+  const result = planNextTelegramQueueAction([controlItem, promptItem], true);
   assert.equal(result.kind, "control");
   assert.equal(
     result.kind === "control" ? result.item.statusSummary : "",
@@ -356,28 +618,12 @@ test("Dispatch planning runs control items before normal prompts", () => {
 });
 
 test("Dispatch planning returns none when dispatch is blocked", () => {
-  const queueItemType = undefined as
-    | Parameters<
-        typeof __telegramTestUtils.planNextTelegramQueueAction
-      >[0][number]
-    | undefined;
-  const promptItem: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
-    replyToMessageId: 2,
-    sourceMessageIds: [2],
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
     queueOrder: 2,
-    queueLane: "default",
     laneOrder: 2,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "prompt" }],
     historyText: "prompt history",
-    statusSummary: "prompt",
-  };
-  const result = __telegramTestUtils.planNextTelegramQueueAction(
-    [promptItem],
-    false,
-  );
+  });
+  const result = planNextTelegramQueueAction([promptItem], false);
   assert.equal(result.kind, "none");
   assert.deepEqual(
     result.remainingItems.map((item) => item.statusSummary),
@@ -386,41 +632,21 @@ test("Dispatch planning returns none when dispatch is blocked", () => {
 });
 
 test("Control-item dispatch sequencing hands off to the next prompt", () => {
-  const queueItemType = undefined as
-    | Parameters<
-        typeof __telegramTestUtils.planNextTelegramQueueAction
-      >[0][number]
-    | undefined;
-  const controlItem: typeof queueItemType = {
-    kind: "control",
-    controlType: "status",
-    chatId: 1,
+  const controlItem: TelegramQueueItem = createQueueTestControlItem({
     replyToMessageId: 1,
     queueOrder: 1,
-    queueLane: "control",
-    laneOrder: 0,
-    statusSummary: "control",
-    execute: async () => {},
-  };
-  const promptItem: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
-    replyToMessageId: 2,
-    sourceMessageIds: [2],
+  });
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
     queueOrder: 2,
-    queueLane: "default",
     laneOrder: 2,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "prompt" }],
     historyText: "prompt history",
-    statusSummary: "prompt",
-  };
-  const firstStep = __telegramTestUtils.planNextTelegramQueueAction(
+  });
+  const firstStep = planNextTelegramQueueAction(
     [controlItem, promptItem],
     true,
   );
   assert.equal(firstStep.kind, "control");
-  const secondStep = __telegramTestUtils.planNextTelegramQueueAction(
+  const secondStep = planNextTelegramQueueAction(
     firstStep.remainingItems,
     true,
   );
@@ -433,34 +659,21 @@ test("Control-item dispatch sequencing hands off to the next prompt", () => {
 
 test("Preserved abort leaves queued prompts waiting for explicit continuation", () => {
   assert.equal(
-    __telegramTestUtils.shouldDispatchAfterTelegramAgentEnd({
+    shouldDispatchAfterTelegramAgentEnd({
       hasTurn: true,
       stopReason: "aborted",
       preserveQueuedTurnsAsHistory: true,
     }),
     false,
   );
-  const queueItemType = undefined as
-    | Parameters<
-        typeof __telegramTestUtils.planNextTelegramQueueAction
-      >[0][number]
-    | undefined;
-  const promptItem: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
-    replyToMessageId: 2,
-    sourceMessageIds: [2],
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
     queueOrder: 2,
-    queueLane: "default",
     laneOrder: 2,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "prompt" }],
     historyText: "prompt history",
-    statusSummary: "prompt",
-  };
-  const blockedDispatch = __telegramTestUtils.planNextTelegramQueueAction(
+  });
+  const blockedDispatch = planNextTelegramQueueAction(
     [promptItem],
-    __telegramTestUtils.shouldDispatchAfterTelegramAgentEnd({
+    shouldDispatchAfterTelegramAgentEnd({
       hasTurn: true,
       stopReason: "aborted",
       preserveQueuedTurnsAsHistory: true,
@@ -475,14 +688,14 @@ test("Preserved abort leaves queued prompts waiting for explicit continuation", 
 
 test("Agent end dispatch policy resumes after success and error, but not preserved aborts", () => {
   assert.equal(
-    __telegramTestUtils.shouldDispatchAfterTelegramAgentEnd({
+    shouldDispatchAfterTelegramAgentEnd({
       hasTurn: false,
       preserveQueuedTurnsAsHistory: false,
     }),
     true,
   );
   assert.equal(
-    __telegramTestUtils.shouldDispatchAfterTelegramAgentEnd({
+    shouldDispatchAfterTelegramAgentEnd({
       hasTurn: true,
       stopReason: "error",
       preserveQueuedTurnsAsHistory: false,
@@ -490,7 +703,7 @@ test("Agent end dispatch policy resumes after success and error, but not preserv
     true,
   );
   assert.equal(
-    __telegramTestUtils.shouldDispatchAfterTelegramAgentEnd({
+    shouldDispatchAfterTelegramAgentEnd({
       hasTurn: true,
       stopReason: "aborted",
       preserveQueuedTurnsAsHistory: false,
@@ -498,7 +711,7 @@ test("Agent end dispatch policy resumes after success and error, but not preserv
     true,
   );
   assert.equal(
-    __telegramTestUtils.shouldDispatchAfterTelegramAgentEnd({
+    shouldDispatchAfterTelegramAgentEnd({
       hasTurn: true,
       stopReason: "aborted",
       preserveQueuedTurnsAsHistory: true,
@@ -507,8 +720,166 @@ test("Agent end dispatch policy resumes after success and error, but not preserv
   );
 });
 
+test("Agent end runtime resets state, finalizes replies, sends attachments, and dispatches", async () => {
+  const events: string[] = [];
+  const turn: PendingTelegramTurn = createQueueTestPromptTurn({
+    queuedAttachments: [{ path: "/tmp/demo.txt", fileName: "demo.txt" }],
+  });
+  await handleTelegramAgentEndRuntime({
+    turn,
+    assistant: { text: "final" },
+    preserveQueuedTurnsAsHistory: false,
+    resetRuntimeState: () => {
+      events.push("reset");
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+    dispatchNextQueuedTelegramTurn: () => {
+      events.push("dispatch");
+    },
+    clearPreview: async (chatId) => {
+      events.push(`clear:${chatId}`);
+    },
+    setPreviewPendingText: (text) => {
+      events.push(`preview:${text}`);
+    },
+    finalizeMarkdownPreview: async (_chatId, markdown) => {
+      events.push(`finalize:${markdown}`);
+      return false;
+    },
+    sendMarkdownReply: async (_chatId, _replyToMessageId, markdown) => {
+      events.push(`markdown:${markdown}`);
+    },
+    sendTextReply: async (_chatId, _replyToMessageId, text) => {
+      events.push(`text:${text}`);
+    },
+    sendQueuedAttachments: async (nextTurn) => {
+      events.push(`attachments:${nextTurn.queuedAttachments.length}`);
+    },
+  });
+  assert.deepEqual(events, [
+    "reset",
+    "status",
+    "preview:final",
+    "finalize:final",
+    "clear:1",
+    "markdown:final",
+    "attachments:1",
+    "dispatch",
+  ]);
+});
+
+test("Agent end hook binds assistant extraction and runtime ports", async () => {
+  const events: string[] = [];
+  const turn: PendingTelegramTurn = createQueueTestPromptTurn();
+  const hook = createTelegramAgentEndHook<
+    PendingTelegramTurn,
+    { id: string },
+    string
+  >({
+    getActiveTurn: () => turn,
+    extractAssistant: (messages) => {
+      events.push(`extract:${messages.join(",")}`);
+      return { text: "final" };
+    },
+    getPreserveQueuedTurnsAsHistory: () => false,
+    resetRuntimeState: () => {
+      events.push("reset");
+    },
+    updateStatus: (ctx) => {
+      events.push(`status:${ctx.id}`);
+    },
+    dispatchNextQueuedTelegramTurn: (ctx) => {
+      events.push(`dispatch:${ctx.id}`);
+    },
+    clearPreview: async (chatId) => {
+      events.push(`clear:${chatId}`);
+    },
+    setPreviewPendingText: (text) => {
+      events.push(`preview:${text}`);
+    },
+    finalizeMarkdownPreview: async (_chatId, markdown) => {
+      events.push(`finalize:${markdown}`);
+      return true;
+    },
+    sendMarkdownReply: async () => {
+      events.push("unexpected:markdown");
+    },
+    sendTextReply: async () => {
+      events.push("unexpected:text");
+    },
+    sendQueuedAttachments: async () => {
+      events.push("attachments");
+    },
+  });
+  await hook({ messages: ["a", "b"] }, { id: "ctx" });
+  assert.deepEqual(events, [
+    "extract:a,b",
+    "reset",
+    "status:ctx",
+    "preview:final",
+    "finalize:final",
+    "attachments",
+    "dispatch:ctx",
+  ]);
+});
+
+test("Agent end runtime reports errors and dispatches next turn", async () => {
+  const events: string[] = [];
+  await handleTelegramAgentEndRuntime({
+    turn: {
+      kind: "prompt",
+      chatId: 1,
+      replyToMessageId: 2,
+      sourceMessageIds: [2],
+      queueOrder: 1,
+      queueLane: "default",
+      laneOrder: 1,
+      queuedAttachments: [],
+      content: [{ type: "text", text: "prompt" }],
+      historyText: "prompt",
+      statusSummary: "prompt",
+    },
+    assistant: { stopReason: "error", errorMessage: "boom" },
+    preserveQueuedTurnsAsHistory: false,
+    resetRuntimeState: () => {
+      events.push("reset");
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+    dispatchNextQueuedTelegramTurn: () => {
+      events.push("dispatch");
+    },
+    clearPreview: async (chatId) => {
+      events.push(`clear:${chatId}`);
+    },
+    setPreviewPendingText: () => {
+      events.push("unexpected:preview");
+    },
+    finalizeMarkdownPreview: async () => true,
+    sendMarkdownReply: async () => {
+      events.push("unexpected:markdown");
+    },
+    sendTextReply: async (_chatId, _replyToMessageId, text) => {
+      events.push(`text:${text}`);
+    },
+    sendQueuedAttachments: async () => {
+      events.push("unexpected:attachments");
+    },
+  });
+  assert.deepEqual(events, [
+    "reset",
+    "status",
+    "clear:1",
+    "text:boom",
+    "dispatch",
+  ]);
+});
+
 test("Agent end plan classifies turn outcomes correctly", () => {
-  const noTurnPlan = __telegramTestUtils.buildTelegramAgentEndPlan({
+  const noTurnPlan = buildTelegramAgentEndPlan({
     hasTurn: false,
     preserveQueuedTurnsAsHistory: false,
     hasFinalText: false,
@@ -516,7 +887,7 @@ test("Agent end plan classifies turn outcomes correctly", () => {
   });
   assert.equal(noTurnPlan.kind, "no-turn");
   assert.equal(noTurnPlan.shouldDispatchNext, true);
-  const abortedPlan = __telegramTestUtils.buildTelegramAgentEndPlan({
+  const abortedPlan = buildTelegramAgentEndPlan({
     hasTurn: true,
     stopReason: "aborted",
     preserveQueuedTurnsAsHistory: true,
@@ -526,7 +897,7 @@ test("Agent end plan classifies turn outcomes correctly", () => {
   assert.equal(abortedPlan.kind, "aborted");
   assert.equal(abortedPlan.shouldClearPreview, true);
   assert.equal(abortedPlan.shouldDispatchNext, false);
-  const errorPlan = __telegramTestUtils.buildTelegramAgentEndPlan({
+  const errorPlan = buildTelegramAgentEndPlan({
     hasTurn: true,
     stopReason: "error",
     preserveQueuedTurnsAsHistory: false,
@@ -535,7 +906,7 @@ test("Agent end plan classifies turn outcomes correctly", () => {
   });
   assert.equal(errorPlan.kind, "error");
   assert.equal(errorPlan.shouldSendErrorMessage, true);
-  const attachmentPlan = __telegramTestUtils.buildTelegramAgentEndPlan({
+  const attachmentPlan = buildTelegramAgentEndPlan({
     hasTurn: true,
     preserveQueuedTurnsAsHistory: false,
     hasFinalText: false,
@@ -543,7 +914,7 @@ test("Agent end plan classifies turn outcomes correctly", () => {
   });
   assert.equal(attachmentPlan.kind, "attachments-only");
   assert.equal(attachmentPlan.shouldSendAttachmentNotice, true);
-  const textPlan = __telegramTestUtils.buildTelegramAgentEndPlan({
+  const textPlan = buildTelegramAgentEndPlan({
     hasTurn: true,
     preserveQueuedTurnsAsHistory: false,
     hasFinalText: true,
@@ -553,23 +924,227 @@ test("Agent end plan classifies turn outcomes correctly", () => {
   assert.equal(textPlan.shouldClearPreview, false);
 });
 
+test("Agent start runtime consumes dispatched prompts and initializes active preview", () => {
+  const events: string[] = [];
+  const prompt: PendingTelegramTurn = createQueueTestPromptTurn();
+  let queuedItems: TelegramQueueItem[] = [prompt];
+  let activeTurn: PendingTelegramTurn | undefined;
+  let dispatchPending = true;
+  handleTelegramAgentStartRuntime({
+    queuedItems,
+    hasPendingDispatch: dispatchPending,
+    hasActiveTurn: false,
+    resetToolExecutions: () => {
+      events.push("tools");
+    },
+    resetPendingModelSwitch: () => {
+      events.push("switch");
+    },
+    setQueuedItems: (items) => {
+      queuedItems = items;
+      events.push(`items:${items.length}`);
+    },
+    clearDispatchPending: () => {
+      dispatchPending = false;
+      events.push("dispatch:false");
+    },
+    setActiveTurn: (turn) => {
+      activeTurn = turn;
+      events.push(`turn:${turn.replyToMessageId}`);
+    },
+    createPreviewState: () => {
+      events.push("preview");
+    },
+    startTypingLoop: () => {
+      events.push("typing");
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+  });
+  assert.equal(dispatchPending, false);
+  assert.deepEqual(queuedItems, []);
+  assert.equal(activeTurn?.replyToMessageId, 2);
+  assert.deepEqual(events, [
+    "tools",
+    "switch",
+    "items:0",
+    "dispatch:false",
+    "turn:2",
+    "preview",
+    "typing",
+    "status",
+  ]);
+});
+
+test("Agent lifecycle hooks bind start, end, and tool lifecycle ports", async () => {
+  const events: string[] = [];
+  let activeToolExecutions = 0;
+  const turn: PendingTelegramTurn = createQueueTestPromptTurn({
+    chatId: 7,
+    replyToMessageId: 8,
+    sourceMessageIds: [8],
+    content: [],
+    historyText: "turn",
+    statusSummary: "turn",
+  });
+  let activeTurn: PendingTelegramTurn | undefined;
+  const hooks = createTelegramAgentLifecycleHooks<
+    PendingTelegramTurn,
+    string,
+    { role: string; content?: unknown[] }
+  >({
+    setAbortHandler: (ctx) => {
+      events.push(`abort:set:${ctx}`);
+    },
+    getQueuedItems: () => [turn],
+    hasPendingDispatch: () => true,
+    hasActiveTurn: () => !!activeTurn,
+    resetToolExecutions: () => {
+      activeToolExecutions = 0;
+      events.push("tools:reset");
+    },
+    resetPendingModelSwitch: () => {
+      events.push("switch:reset");
+    },
+    setQueuedItems: (items) => {
+      events.push(`queued:${items.length}`);
+    },
+    clearDispatchPending: () => {
+      events.push("dispatch:clear");
+    },
+    setActiveTurn: (nextTurn) => {
+      activeTurn = nextTurn;
+      events.push(`active:${nextTurn.chatId}`);
+    },
+    createPreviewState: () => {
+      events.push("preview:create");
+    },
+    startTypingLoop: (ctx) => {
+      events.push(`typing:${ctx}`);
+    },
+    updateStatus: (ctx) => {
+      events.push(`status:${ctx}`);
+    },
+    getActiveTurn: () => activeTurn,
+    extractAssistant: () => ({ text: "done" }),
+    getPreserveQueuedTurnsAsHistory: () => false,
+    resetRuntimeState: () => {
+      activeTurn = undefined;
+      events.push("runtime:reset");
+    },
+    dispatchNextQueuedTelegramTurn: (ctx) => {
+      events.push(`dispatch:${ctx}`);
+    },
+    clearPreview: async () => {
+      events.push("preview:clear");
+    },
+    setPreviewPendingText: (text) => {
+      events.push(`pending:${text}`);
+    },
+    finalizeMarkdownPreview: async () => false,
+    sendMarkdownReply: async (_chatId, _replyToMessageId, text) => {
+      events.push(`markdown:${text}`);
+    },
+    sendTextReply: async () => {},
+    sendQueuedAttachments: async () => {},
+    getActiveToolExecutions: () => activeToolExecutions,
+    setActiveToolExecutions: (count) => {
+      activeToolExecutions = count;
+      events.push(`tools:${count}`);
+    },
+    triggerPendingModelSwitchAbort: (ctx) => {
+      events.push(`switch:abort:${ctx}`);
+    },
+  });
+  await hooks.onAgentStart(undefined, "ctx");
+  hooks.onToolExecutionStart();
+  hooks.onToolExecutionEnd(undefined, "ctx");
+  await hooks.onAgentEnd({ messages: [] }, "ctx");
+  assert.deepEqual(events, [
+    "abort:set:ctx",
+    "tools:reset",
+    "switch:reset",
+    "queued:0",
+    "dispatch:clear",
+    "active:7",
+    "preview:create",
+    "typing:ctx",
+    "status:ctx",
+    "tools:1",
+    "tools:0",
+    "switch:abort:ctx",
+    "runtime:reset",
+    "status:ctx",
+    "pending:done",
+    "preview:clear",
+    "markdown:done",
+    "dispatch:ctx",
+  ]);
+});
+
+test("Agent start hook binds abort handler and runtime ports", async () => {
+  const events: string[] = [];
+  const prompt: PendingTelegramTurn = createQueueTestPromptTurn();
+  let queuedItems: TelegramQueueItem<{ abort: () => void }>[] = [prompt];
+  const hook = createTelegramAgentStartHook<
+    PendingTelegramTurn,
+    { abort: () => void }
+  >({
+    setAbortHandler: (ctx) => {
+      ctx.abort();
+      events.push("abort-handler");
+    },
+    getQueuedItems: () => queuedItems,
+    hasPendingDispatch: () => true,
+    hasActiveTurn: () => false,
+    resetToolExecutions: () => {
+      events.push("tools");
+    },
+    resetPendingModelSwitch: () => {
+      events.push("switch");
+    },
+    setQueuedItems: (items) => {
+      queuedItems = items;
+      events.push(`items:${items.length}`);
+    },
+    clearDispatchPending: () => {
+      events.push("dispatch:false");
+    },
+    setActiveTurn: (turn) => {
+      events.push(`turn:${turn.replyToMessageId}`);
+    },
+    createPreviewState: () => {
+      events.push("preview");
+    },
+    startTypingLoop: () => {
+      events.push("typing");
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+  });
+  await hook({}, { abort: () => events.push("abort") });
+  assert.deepEqual(events, [
+    "abort",
+    "abort-handler",
+    "tools",
+    "switch",
+    "items:0",
+    "dispatch:false",
+    "turn:2",
+    "preview",
+    "typing",
+    "status",
+  ]);
+});
+
 test("Agent start plan consumes a dispatched prompt and resets transient flags", () => {
-  const queueItemType = undefined as
-    | Parameters<typeof buildTelegramAgentStartPlan>[0]["queuedItems"][number]
-    | undefined;
-  const promptItem: typeof queueItemType = {
-    kind: "prompt",
-    chatId: 1,
-    replyToMessageId: 2,
-    sourceMessageIds: [2],
+  const promptItem: TelegramQueueItem = createQueueTestPromptTurn({
     queueOrder: 2,
-    queueLane: "default",
     laneOrder: 2,
-    queuedAttachments: [],
-    content: [{ type: "text", text: "prompt" }],
     historyText: "prompt history",
-    statusSummary: "prompt",
-  };
+  });
   const plan = buildTelegramAgentStartPlan({
     queuedItems: [promptItem],
     hasPendingDispatch: true,
@@ -580,6 +1155,52 @@ test("Agent start plan consumes a dispatched prompt and resets transient flags",
   assert.equal(plan.shouldResetPendingModelSwitch, true);
   assert.equal(plan.shouldResetToolExecutions, true);
   assert.deepEqual(plan.remainingItems, []);
+});
+
+test("Tool execution runtimes update counts and trigger delayed aborts", () => {
+  const events: string[] = [];
+  let count = 0;
+  handleTelegramToolExecutionStartRuntime({
+    hasActiveTurn: () => true,
+    getActiveToolExecutions: () => count,
+    setActiveToolExecutions: (nextCount) => {
+      count = nextCount;
+      events.push(`count:${nextCount}`);
+    },
+  });
+  handleTelegramToolExecutionEndRuntime({
+    hasActiveTurn: () => true,
+    getActiveToolExecutions: () => count,
+    setActiveToolExecutions: (nextCount) => {
+      count = nextCount;
+      events.push(`count:${nextCount}`);
+    },
+    triggerPendingModelSwitchAbort: () => {
+      events.push("abort");
+    },
+  });
+  assert.equal(count, 0);
+  assert.deepEqual(events, ["count:1", "count:0", "abort"]);
+});
+
+test("Tool execution hooks bind counter and pending model-switch abort ports", () => {
+  let count = 0;
+  const events: string[] = [];
+  const hooks = createTelegramToolExecutionHooks<{ id: string }>({
+    hasActiveTurn: () => true,
+    getActiveToolExecutions: () => count,
+    setActiveToolExecutions: (nextCount) => {
+      count = nextCount;
+      events.push(`count:${nextCount}`);
+    },
+    triggerPendingModelSwitchAbort: (ctx) => {
+      events.push(`abort:${ctx.id}`);
+    },
+  });
+  hooks.onToolExecutionStart();
+  hooks.onToolExecutionEnd({}, { id: "ctx" });
+  assert.equal(count, 0);
+  assert.deepEqual(events, ["count:1", "count:0", "abort:ctx"]);
 });
 
 test("Tool execution count helper respects active-turn presence", () => {
@@ -609,9 +1230,34 @@ test("Tool execution count helper respects active-turn presence", () => {
   );
 });
 
+test("Dispatch readiness checker binds live guard ports", () => {
+  let compactionInProgress = false;
+  let activeTurn = false;
+  let dispatchPending = false;
+  const canDispatch = createTelegramDispatchReadinessChecker<{
+    idle: boolean;
+    pending: boolean;
+  }>({
+    isCompactionInProgress: () => compactionInProgress,
+    hasActiveTurn: () => activeTurn,
+    hasDispatchPending: () => dispatchPending,
+    isIdle: (ctx) => ctx.idle,
+    hasPendingMessages: (ctx) => ctx.pending,
+  });
+  assert.equal(canDispatch({ idle: true, pending: false }), true);
+  dispatchPending = true;
+  assert.equal(canDispatch({ idle: true, pending: false }), false);
+  dispatchPending = false;
+  compactionInProgress = true;
+  assert.equal(canDispatch({ idle: true, pending: false }), false);
+  compactionInProgress = false;
+  activeTurn = true;
+  assert.equal(canDispatch({ idle: true, pending: false }), false);
+});
+
 test("Dispatch is allowed only when every guard is clear", () => {
   assert.equal(
-    __telegramTestUtils.canDispatchTelegramTurnState({
+    canDispatchTelegramTurnState({
       compactionInProgress: false,
       hasActiveTelegramTurn: false,
       hasPendingTelegramDispatch: false,
@@ -624,7 +1270,7 @@ test("Dispatch is allowed only when every guard is clear", () => {
 
 test("Dispatch is blocked during compaction", () => {
   assert.equal(
-    __telegramTestUtils.canDispatchTelegramTurnState({
+    canDispatchTelegramTurnState({
       compactionInProgress: true,
       hasActiveTelegramTurn: false,
       hasPendingTelegramDispatch: false,
@@ -637,7 +1283,7 @@ test("Dispatch is blocked during compaction", () => {
 
 test("Dispatch is blocked while a Telegram turn is active or pending", () => {
   assert.equal(
-    __telegramTestUtils.canDispatchTelegramTurnState({
+    canDispatchTelegramTurnState({
       compactionInProgress: false,
       hasActiveTelegramTurn: true,
       hasPendingTelegramDispatch: false,
@@ -647,7 +1293,7 @@ test("Dispatch is blocked while a Telegram turn is active or pending", () => {
     false,
   );
   assert.equal(
-    __telegramTestUtils.canDispatchTelegramTurnState({
+    canDispatchTelegramTurnState({
       compactionInProgress: false,
       hasActiveTelegramTurn: false,
       hasPendingTelegramDispatch: true,
@@ -660,7 +1306,7 @@ test("Dispatch is blocked while a Telegram turn is active or pending", () => {
 
 test("Dispatch is blocked when pi is busy or has pending messages", () => {
   assert.equal(
-    __telegramTestUtils.canDispatchTelegramTurnState({
+    canDispatchTelegramTurnState({
       compactionInProgress: false,
       hasActiveTelegramTurn: false,
       hasPendingTelegramDispatch: false,
@@ -670,7 +1316,7 @@ test("Dispatch is blocked when pi is busy or has pending messages", () => {
     false,
   );
   assert.equal(
-    __telegramTestUtils.canDispatchTelegramTurnState({
+    canDispatchTelegramTurnState({
       compactionInProgress: false,
       hasActiveTelegramTurn: false,
       hasPendingTelegramDispatch: false,
@@ -681,109 +1327,228 @@ test("Dispatch is blocked when pi is busy or has pending messages", () => {
   );
 });
 
-test("In-flight model switch is allowed only for active Telegram turns with abort support", () => {
-  assert.equal(
-    __telegramTestUtils.canRestartTelegramTurnForModelSwitch({
-      isIdle: false,
-      hasActiveTelegramTurn: true,
-      hasAbortHandler: true,
-    }),
-    true,
-  );
-  assert.equal(
-    __telegramTestUtils.canRestartTelegramTurnForModelSwitch({
-      isIdle: true,
-      hasActiveTelegramTurn: true,
-      hasAbortHandler: true,
-    }),
-    false,
-  );
-  assert.equal(
-    __telegramTestUtils.canRestartTelegramTurnForModelSwitch({
-      isIdle: false,
-      hasActiveTelegramTurn: false,
-      hasAbortHandler: true,
-    }),
-    false,
-  );
-  assert.equal(
-    __telegramTestUtils.canRestartTelegramTurnForModelSwitch({
-      isIdle: false,
-      hasActiveTelegramTurn: true,
-      hasAbortHandler: false,
-    }),
-    false,
-  );
-});
-
-test("Pending model switch abort waits until no tool executions remain", () => {
-  assert.equal(
-    __telegramTestUtils.shouldTriggerPendingTelegramModelSwitchAbort({
-      hasPendingModelSwitch: true,
-      hasActiveTelegramTurn: true,
-      hasAbortHandler: true,
-      activeToolExecutions: 0,
-    }),
-    true,
-  );
-  assert.equal(
-    __telegramTestUtils.shouldTriggerPendingTelegramModelSwitchAbort({
-      hasPendingModelSwitch: true,
-      hasActiveTelegramTurn: true,
-      hasAbortHandler: true,
-      activeToolExecutions: 1,
-    }),
-    false,
-  );
-  assert.equal(
-    __telegramTestUtils.shouldTriggerPendingTelegramModelSwitchAbort({
-      hasPendingModelSwitch: false,
-      hasActiveTelegramTurn: true,
-      hasAbortHandler: true,
-      activeToolExecutions: 0,
-    }),
-    false,
-  );
-});
-
-test("Model-switch continuation restart queues before abort when state is present", () => {
+test("Session state applier syncs start and shutdown state through live stores", () => {
   const events: string[] = [];
-  assert.equal(
-    __telegramTestUtils.restartTelegramModelSwitchContinuation({
-      activeTurn: { id: 1 },
-      abort: () => {
-        events.push("abort");
-      },
-      selection: { model: { provider: "openai", id: "gpt-5" } },
-      queueContinuation: (turn, selection) => {
-        events.push(`queue:${turn.id}:${selection.model.id}`);
-      },
-    }),
-    true,
-  );
-  assert.deepEqual(events, ["queue:1:gpt-5", "abort"]);
-  assert.equal(
-    __telegramTestUtils.restartTelegramModelSwitchContinuation({
-      activeTurn: undefined,
-      abort: () => {},
-      selection: { model: { provider: "openai", id: "gpt-5" } },
-      queueContinuation: () => {
-        events.push("unexpected");
-      },
-    }),
-    false,
-  );
+  const applier = createTelegramSessionStateApplier<string, { id: string }>({
+    setQueuedItems: (items) => {
+      events.push(`items:${items.join(",")}`);
+    },
+    setCurrentModel: (model) => {
+      events.push(`model:${model?.id ?? "none"}`);
+    },
+    setPendingModelSwitch: (selection) => {
+      events.push(`pending:${selection ?? "none"}`);
+    },
+    syncCounters: (state) => {
+      events.push(`counters:${state.nextQueuedTelegramItemOrder ?? "none"}`);
+    },
+    syncFlags: (state) => {
+      events.push(`flags:${state.telegramTurnDispatchPending}`);
+    },
+  });
+  applier.applyStartState({
+    currentTelegramModel: { id: "model" },
+    activeTelegramToolExecutions: 0,
+    pendingTelegramModelSwitch: undefined,
+    nextQueuedTelegramItemOrder: 3,
+    nextQueuedTelegramControlOrder: 4,
+    telegramTurnDispatchPending: false,
+    compactionInProgress: false,
+  });
+  applier.applyShutdownState({
+    queuedTelegramItems: ["a", "b"],
+    nextQueuedTelegramItemOrder: 5,
+    nextQueuedTelegramControlOrder: 6,
+    nextPriorityReactionOrder: 7,
+    currentTelegramModel: undefined,
+    activeTelegramToolExecutions: 0,
+    pendingTelegramModelSwitch: undefined,
+    telegramTurnDispatchPending: true,
+    compactionInProgress: false,
+    preserveQueuedTurnsAsHistory: false,
+  });
+  assert.deepEqual(events, [
+    "model:model",
+    "pending:none",
+    "counters:3",
+    "flags:false",
+    "items:a,b",
+    "counters:5",
+    "flags:true",
+    "model:none",
+    "pending:none",
+  ]);
 });
 
-test("Continuation prompt stays Telegram-scoped and resume-oriented", () => {
-  const text = __telegramTestUtils.buildTelegramModelSwitchContinuationText(
-    { provider: "openai", id: "gpt-5" },
-    "high",
+test("Session runtime helper runs shutdown side effects in order", async () => {
+  const events: string[] = [];
+  await shutdownTelegramSessionRuntime<string>({
+    applyState: (state) => {
+      events.push(`state:${state.queuedTelegramItems.length}`);
+    },
+    clearPendingMediaGroups: () => {
+      events.push("media");
+    },
+    clearModelMenuState: () => {
+      events.push("menus");
+    },
+    getActiveTurnChatId: () => 42,
+    clearPreview: async (chatId) => {
+      events.push(`preview:${chatId}`);
+    },
+    clearActiveTurn: () => {
+      events.push("turn");
+    },
+    clearAbort: () => {
+      events.push("abort");
+    },
+    stopPolling: async () => {
+      events.push("polling");
+    },
+  });
+  assert.deepEqual(events, [
+    "state:0",
+    "media",
+    "menus",
+    "preview:42",
+    "turn",
+    "abort",
+    "polling",
+  ]);
+});
+
+test("Control queue controller appends and dispatches control items", () => {
+  const events: string[] = [];
+  const execute = async (): Promise<void> => {};
+  const item = buildPendingTelegramControlItem({
+    chatId: 1,
+    replyToMessageId: 2,
+    queueOrder: 3,
+    laneOrder: 4,
+    controlType: "status",
+    statusSummary: "status",
+    execute,
+  });
+  const controller = createTelegramControlQueueController<string>({
+    appendControlItem: (nextItem, ctx) => {
+      events.push(`append:${nextItem.controlType}:${ctx}`);
+    },
+    dispatchNextQueuedTelegramTurn: (ctx) => {
+      events.push(`dispatch:${ctx}`);
+    },
+  });
+  controller.enqueue(item, "ctx");
+  assert.deepEqual(events, ["append:status:ctx", "dispatch:ctx"]);
+});
+
+test("Prompt enqueue controller binds runtime ports to context", async () => {
+  const events: string[] = [];
+  let items: TelegramQueueItem<string>[] = [];
+  const controller = createTelegramPromptEnqueueController<number, string>({
+    getQueuedItems: () => items,
+    setQueuedItems: (nextItems) => {
+      items = nextItems;
+      events.push(`items:${nextItems.length}`);
+    },
+    getPreserveQueuedTurnsAsHistory: () => false,
+    setPreserveQueuedTurnsAsHistory: (preserve) => {
+      events.push(`preserve:${preserve}`);
+    },
+    createTurn: async ([message]) => ({
+      kind: "prompt",
+      chatId: 1,
+      replyToMessageId: 2,
+      queueOrder: message ?? 0,
+      queueLane: "default",
+      laneOrder: message ?? 0,
+      statusSummary: `message ${message}`,
+      sourceMessageIds: [message ?? 0],
+      queuedAttachments: [],
+      content: [{ type: "text", text: String(message) }],
+      historyText: "",
+    }),
+    updateStatus: (ctx) => {
+      events.push(`status:${ctx}`);
+    },
+    dispatchNextQueuedTelegramTurn: (ctx) => {
+      events.push(`dispatch:${ctx}`);
+    },
+  });
+  await controller.enqueue([7], "ctx");
+  assert.deepEqual(events, [
+    "preserve:false",
+    "items:1",
+    "status:ctx",
+    "dispatch:ctx",
+  ]);
+});
+
+test("Prompt enqueue runtime preserves queued prompts as history", async () => {
+  const events: string[] = [];
+  const historyPrompt: PendingTelegramTurn = createQueueTestPromptTurn({
+    replyToMessageId: 1,
+    sourceMessageIds: [1],
+    queueLane: "default" as const,
+    content: [{ type: "text" as const, text: "history" }],
+    historyText: "history",
+    statusSummary: "history",
+  });
+  const controlItem = buildPendingTelegramControlItem({
+    chatId: 1,
+    replyToMessageId: 2,
+    controlType: "status",
+    queueOrder: 2,
+    laneOrder: 0,
+    statusSummary: "control",
+    execute: async () => {},
+  });
+  const newPrompt = {
+    ...historyPrompt,
+    replyToMessageId: 3,
+    sourceMessageIds: [3],
+    queueOrder: 3,
+    laneOrder: 3,
+    historyText: "new",
+    statusSummary: "new",
+  };
+  let queuedItems: TelegramQueueItem[] = [historyPrompt, controlItem];
+  let preserveHistory = true;
+  await enqueueTelegramPromptTurnRuntime(["message"], {
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+      events.push(`items:${items.map((item) => item.statusSummary).join(",")}`);
+    },
+    getPreserveQueuedTurnsAsHistory: () => preserveHistory,
+    setPreserveQueuedTurnsAsHistory: (preserve) => {
+      preserveHistory = preserve;
+      events.push(`preserve:${preserve}`);
+    },
+    createTurn: async (_messages, historyTurns) => {
+      events.push(
+        `history:${historyTurns.map((turn) => turn.historyText).join(",")}`,
+      );
+      return newPrompt;
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+    dispatchNextQueuedTelegramTurn: () => {
+      events.push("dispatch");
+    },
+  });
+  assert.equal(preserveHistory, false);
+  assert.deepEqual(
+    queuedItems.map((item) => item.statusSummary),
+    ["control", "new"],
   );
-  assert.match(text, /^\[telegram\]/);
-  assert.match(text, /Continue the interrupted previous Telegram request/);
-  assert.match(text, /openai\/gpt-5/);
-  assert.match(text, /thinking level \(high\)/);
+  assert.deepEqual(events, [
+    "preserve:false",
+    "history:history",
+    "items:control,new",
+    "status",
+    "dispatch",
+  ]);
 });
 
 test("Control runtime runs the control item and always settles", async () => {
@@ -803,7 +1568,7 @@ test("Control runtime runs the control item and always settles", async () => {
       },
     },
     {
-      ctx: {} as never,
+      ctx: {},
       sendTextReply: async () => {
         events.push("reply");
         return undefined;
@@ -833,17 +1598,25 @@ test("Control runtime reports failures before settling", async () => {
       },
     },
     {
-      ctx: {} as never,
+      ctx: {},
       sendTextReply: async (_chatId, _replyToMessageId, text) => {
         events.push(text);
         return undefined;
+      },
+      recordRuntimeEvent: (category, error, details) => {
+        const message = error instanceof Error ? error.message : String(error);
+        events.push(`${category}:${message}:${details?.controlType}`);
       },
       onSettled: () => {
         events.push("settled");
       },
     },
   );
-  assert.deepEqual(events, ["Telegram control action failed: boom", "settled"]);
+  assert.deepEqual(events, [
+    "control:boom:model",
+    "Telegram control action failed: boom",
+    "settled",
+  ]);
 });
 
 test("Dispatch runtime idles on none and executes control items directly", () => {
@@ -946,39 +1719,256 @@ test("Dispatch runtime reports prompt dispatch failures after starting", () => {
   assert.deepEqual(events, ["start:2", "error:boom"]);
 });
 
-test("Session runtime helper starts polling only when a bot token exists and polling is idle", () => {
-  assert.equal(
-    shouldStartTelegramPolling({
-      hasBotToken: true,
-      hasPollingPromise: false,
+test("Queue dispatch controller plans prompts and reports dispatch failures", () => {
+  const events: string[] = [];
+  let queuedItems: TelegramQueueItem<string>[] = [
+    {
+      kind: "prompt",
+      chatId: 2,
+      replyToMessageId: 3,
+      sourceMessageIds: [3],
+      queueOrder: 2,
+      queueLane: "default",
+      laneOrder: 2,
+      queuedAttachments: [],
+      content: [{ type: "text", text: "prompt" }],
+      historyText: "prompt",
+      statusSummary: "prompt",
+    },
+  ];
+  const controller = createTelegramQueueDispatchController<string>({
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+      events.push(`items:${items.length}`);
+    },
+    canDispatch: () => true,
+    updateStatus: (_ctx, error) => {
+      events.push(`status:${error ?? "ok"}`);
+    },
+    sendTextReply: async () => undefined,
+    onPromptDispatchStart: (_ctx, chatId) => {
+      events.push(`start:${chatId}`);
+    },
+    sendUserMessage: () => {
+      throw new Error("boom");
+    },
+    onPromptDispatchFailure: (_ctx, message) => {
+      events.push(`failure:${message}`);
+    },
+  });
+  controller.dispatchNext("ctx");
+  assert.deepEqual(events, ["items:1", "start:2", "failure:boom"]);
+  assert.equal(queuedItems.length, 1);
+});
+
+test("Queue dispatch runtime binds readiness guards to dispatch controller", () => {
+  const events: string[] = [];
+  let active = true;
+  let queuedItems: TelegramQueueItem<string>[] = [
+    {
+      kind: "prompt",
+      chatId: 2,
+      replyToMessageId: 3,
+      sourceMessageIds: [3],
+      queueOrder: 2,
+      queueLane: "default",
+      laneOrder: 2,
+      queuedAttachments: [],
+      content: [{ type: "text", text: "prompt" }],
+      historyText: "prompt",
+      statusSummary: "prompt",
+    },
+  ];
+  const controller = createTelegramQueueDispatchRuntime<string>({
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+      events.push(`items:${items.length}`);
+    },
+    isCompactionInProgress: () => false,
+    hasActiveTurn: () => active,
+    hasDispatchPending: () => false,
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    updateStatus: (_ctx, error) => {
+      events.push(`status:${error ?? "ok"}`);
+    },
+    sendTextReply: async () => undefined,
+    onPromptDispatchStart: (_ctx, chatId) => {
+      events.push(`start:${chatId}`);
+    },
+    sendUserMessage: () => {
+      events.push("send");
+    },
+    onPromptDispatchFailure: () => {
+      events.push("unexpected:failure");
+    },
+  });
+  controller.dispatchNext("ctx");
+  active = false;
+  controller.dispatchNext("ctx");
+  assert.deepEqual(events, ["status:ok", "items:1", "start:2", "send"]);
+});
+
+test("Queue dispatch controller executes control items and continues", async () => {
+  const events: string[] = [];
+  let queuedItems: TelegramQueueItem<string>[] = [
+    {
+      kind: "control",
+      controlType: "status",
+      chatId: 1,
+      replyToMessageId: 2,
+      queueOrder: 1,
+      queueLane: "control",
+      laneOrder: 1,
+      statusSummary: "control",
+      execute: async (ctx) => {
+        events.push(`control:${ctx}`);
+      },
+    },
+    {
+      kind: "prompt",
+      chatId: 3,
+      replyToMessageId: 4,
+      sourceMessageIds: [4],
+      queueOrder: 2,
+      queueLane: "default",
+      laneOrder: 2,
+      queuedAttachments: [],
+      content: [{ type: "text", text: "prompt" }],
+      historyText: "prompt",
+      statusSummary: "prompt",
+    },
+  ];
+  const controller = createTelegramQueueDispatchController<string>({
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+      events.push(`items:${items.length}`);
+    },
+    canDispatch: () => true,
+    updateStatus: (_ctx, error) => {
+      events.push(`status:${error ?? "ok"}`);
+    },
+    sendTextReply: async () => undefined,
+    onPromptDispatchStart: (_ctx, chatId) => {
+      events.push(`start:${chatId}`);
+    },
+    sendUserMessage: () => {
+      events.push("send");
+    },
+    onPromptDispatchFailure: () => {
+      events.push("unexpected:failure");
+    },
+  });
+  controller.dispatchNext("ctx");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, [
+    "items:1",
+    "status:ok",
+    "control:ctx",
+    "status:ok",
+    "items:1",
+    "start:3",
+    "send",
+  ]);
+});
+
+test("Queue dispatch controller blocks reentrant prompt dispatch while control is pending", async () => {
+  const events: string[] = [];
+  let releaseControl: () => void = () => {};
+  const controlSettled = new Promise<void>((resolve) => {
+    releaseControl = resolve;
+  });
+  let queuedItems: TelegramQueueItem<string>[] = [
+    createQueueTestControlItem<string>({
+      queueOrder: 1,
+      laneOrder: 1,
+      execute: async (ctx) => {
+        events.push(`control:start:${ctx}`);
+        await controlSettled;
+        events.push("control:end");
+      },
     }),
-    true,
-  );
-  assert.equal(
-    shouldStartTelegramPolling({
-      hasBotToken: false,
-      hasPollingPromise: false,
-    }),
-    false,
-  );
-  assert.equal(
-    shouldStartTelegramPolling({
-      hasBotToken: true,
-      hasPollingPromise: true,
-    }),
-    false,
-  );
+  ];
+  const prompt = createQueueTestPromptTurn({
+    chatId: 3,
+    replyToMessageId: 4,
+    sourceMessageIds: [4],
+    queueOrder: 2,
+    laneOrder: 2,
+  });
+  const controller = createTelegramQueueDispatchController<string>({
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+      events.push(`items:${items.length}`);
+    },
+    canDispatch: () => true,
+    updateStatus: (_ctx, error) => {
+      events.push(`status:${error ?? "ok"}`);
+    },
+    sendTextReply: async () => undefined,
+    onPromptDispatchStart: (_ctx, chatId) => {
+      events.push(`start:${chatId}`);
+    },
+    sendUserMessage: () => {
+      events.push("send");
+    },
+    onPromptDispatchFailure: () => {
+      events.push("unexpected:failure");
+    },
+  });
+  controller.dispatchNext("ctx");
+  queuedItems = [prompt];
+  controller.dispatchNext("ctx");
+  assert.equal(events.includes("send"), false);
+  releaseControl();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(events, [
+    "items:0",
+    "status:ok",
+    "control:start:ctx",
+    "status:ok",
+    "control:end",
+    "status:ok",
+    "items:1",
+    "start:3",
+    "send",
+  ]);
 });
 
 test("Session runtime helper resets session start state", () => {
-  const currentModel = { provider: "openai", id: "gpt-5" } as const;
-  const state = buildTelegramSessionStartState(currentModel as never);
+  const currentModel = createQueueTestModel();
+  const state = buildTelegramSessionStartState(currentModel);
   assert.equal(state.currentTelegramModel, currentModel);
   assert.equal(state.activeTelegramToolExecutions, 0);
   assert.equal(state.nextQueuedTelegramItemOrder, 0);
   assert.equal(state.nextQueuedTelegramControlOrder, 0);
   assert.equal(state.telegramTurnDispatchPending, false);
   assert.equal(state.compactionInProgress, false);
+});
+
+test("Session runtime helper runs start side effects in order", async () => {
+  const events: string[] = [];
+  const currentModel = createQueueTestModel();
+  await startTelegramSessionRuntime({
+    currentModel,
+    loadConfig: async () => {
+      events.push("load");
+    },
+    applyState: (state) => {
+      events.push(`state:${state.currentTelegramModel?.id}`);
+    },
+    prepareTempDir: async () => {
+      events.push("temp");
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+  });
+  assert.deepEqual(events, ["load", "state:gpt-5", "temp", "status"]);
 });
 
 test("Session runtime helper clears shutdown state", () => {
@@ -994,2252 +1984,137 @@ test("Session runtime helper clears shutdown state", () => {
   assert.equal(state.preserveQueuedTurnsAsHistory, false);
 });
 
-test("Extension runtime polls, pairs, and dispatches an inbound Telegram turn into pi", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
+test("Session lifecycle runtime binds state applier into lifecycle hooks", async () => {
+  const events: string[] = [];
+  const hooks = createTelegramSessionLifecycleRuntime<
     string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const sentMessages: Array<string | Array<{ type: string; text?: string }>> =
-    [];
-  let resolveDispatch:
-    | ((value: string | Array<{ type: string; text?: string }>) => void)
-    | undefined;
-  const dispatched = new Promise<
-    string | Array<{ type: string; text?: string }>
-  >((resolve) => {
-    resolveDispatch = resolve;
+    TelegramQueueItem<string>,
+    { provider: string; id: string }
+  >({
+    getCurrentModel: () => createQueueTestModel(),
+    loadConfig: async () => {
+      events.push("load");
+    },
+    setQueuedItems: (items) => {
+      events.push(`queued:${items.length}`);
+    },
+    setCurrentModel: (model) => {
+      events.push(`model:${model?.id ?? "none"}`);
+    },
+    setPendingModelSwitch: () => {
+      events.push("pending:clear");
+    },
+    syncCounters: () => {
+      events.push("counters");
+    },
+    syncFlags: () => {
+      events.push("flags");
+    },
+    prepareTempDir: async () => {
+      events.push("temp");
+    },
+    updateStatus: (ctx) => {
+      events.push(`status:${ctx}`);
+    },
+    clearPendingMediaGroups: () => {
+      events.push("media:clear");
+    },
+    clearModelMenuState: () => {
+      events.push("menu:clear");
+    },
+    getActiveTurnChatId: () => undefined,
+    clearPreview: async () => {
+      events.push("preview:clear");
+    },
+    clearActiveTurn: () => {
+      events.push("turn:clear");
+    },
+    clearAbort: () => {
+      events.push("abort:clear");
+    },
+    stopPolling: async () => {
+      events.push("polling:stop");
+    },
   });
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: (
-      content: string | Array<{ type: string; text?: string }>,
-    ) => {
-      sentMessages.push(content);
-      resolveDispatch?.(content);
-    },
-    getThinkingLevel: () => "medium",
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  const apiCalls: string[] = [];
-  globalThis.fetch = async (input) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    apiCalls.push(method);
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 42,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "hello from telegram",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendMessage") {
-      return {
-        json: async () => ({ ok: true, result: { message_id: 100 } }),
-      } as Response;
-    }
-    if (method === "sendChatAction") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify({ botToken: "123:abc", lastUpdateId: 0 }, null, "\t") +
-        "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const ctx = {
-      hasUI: true,
-      model: undefined,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      isIdle: () => true,
-      hasPendingMessages: () => false,
-      abort: () => {},
-    } as never;
-    await handlers.get("session_start")?.({}, ctx);
-    await commands.get("telegram-connect")?.handler("", ctx);
-    const dispatchedContent = await dispatched;
-    assert.equal(sentMessages.length, 1);
-    assert.equal(Array.isArray(dispatchedContent), true);
-    assert.equal(apiCalls.includes("sendMessage"), true);
-    assert.equal(apiCalls.includes("sendChatAction"), true);
-    const promptBlocks = dispatchedContent as Array<{
-      type: string;
-      text?: string;
-    }>;
-    assert.equal(promptBlocks[0]?.type, "text");
-    assert.match(
-      promptBlocks[0]?.text ?? "",
-      /^\[telegram\] hello from telegram$/,
-    );
-    await handlers.get("session_shutdown")?.({}, ctx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
+  await hooks.onSessionStart(undefined, "ctx");
+  await hooks.onSessionShutdown();
+  assert.deepEqual(events, [
+    "load",
+    "model:gpt-5",
+    "pending:clear",
+    "counters",
+    "flags",
+    "temp",
+    "status:ctx",
+    "queued:0",
+    "counters",
+    "flags",
+    "model:none",
+    "pending:clear",
+    "media:clear",
+    "menu:clear",
+    "turn:clear",
+    "abort:clear",
+    "polling:stop",
+  ]);
 });
 
-test("Extension runtime finalizes a drafted preview into the final Telegram reply on agent end", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
+test("Session lifecycle hooks bind start and shutdown runtime ports", async () => {
+  const events: string[] = [];
+  const hooks = createTelegramSessionLifecycleHooks<
+    { model?: { id: string } },
     string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  let resolveDispatch: (() => void) | undefined;
-  const dispatched = new Promise<void>((resolve) => {
-    resolveDispatch = resolve;
+    { id: string }
+  >({
+    getCurrentModel: (ctx) => ctx.model,
+    loadConfig: async () => {
+      events.push("load");
+    },
+    applySessionStartState: (state) => {
+      events.push(`start:${state.currentTelegramModel?.id}`);
+    },
+    prepareTempDir: async () => {
+      events.push("temp");
+    },
+    updateStatus: (ctx) => {
+      events.push(`status:${ctx.model?.id ?? "none"}`);
+    },
+    applySessionShutdownState: (state) => {
+      events.push(`shutdown:${state.queuedTelegramItems.length}`);
+    },
+    clearPendingMediaGroups: () => {
+      events.push("media");
+    },
+    clearModelMenuState: () => {
+      events.push("menu");
+    },
+    getActiveTurnChatId: () => 7,
+    clearPreview: async (chatId) => {
+      events.push(`preview:${chatId}`);
+    },
+    clearActiveTurn: () => {
+      events.push("turn");
+    },
+    clearAbort: () => {
+      events.push("abort");
+    },
+    stopPolling: async () => {
+      events.push("poll");
+    },
   });
-  const draftTexts: string[] = [];
-  const sentTexts: string[] = [];
-  const editedTexts: string[] = [];
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: () => {
-      resolveDispatch?.();
-    },
-    getThinkingLevel: () => "medium",
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    const body =
-      typeof init?.body === "string"
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : undefined;
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 7,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "please answer",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendMessageDraft") {
-      draftTexts.push(String(body?.text ?? ""));
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "sendMessage") {
-      sentTexts.push(String(body?.text ?? ""));
-      return {
-        json: async () => ({
-          ok: true,
-          result: { message_id: 100 + sentTexts.length },
-        }),
-      } as Response;
-    }
-    if (method === "sendChatAction") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "editMessageText") {
-      editedTexts.push(String(body?.text ?? ""));
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const ctx = {
-      hasUI: true,
-      model: undefined,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      isIdle: () => true,
-      hasPendingMessages: () => false,
-      abort: () => {},
-    } as never;
-    await handlers.get("session_start")?.({}, ctx);
-    await commands.get("telegram-connect")?.handler("", ctx);
-    await dispatched;
-    await handlers.get("agent_start")?.({}, ctx);
-    await handlers.get("message_update")?.(
-      {
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "Draft **preview**" }],
-        },
-      },
-      ctx,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 850));
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "Final **answer**" }],
-          },
-        ],
-      },
-      ctx,
-    );
-    assert.deepEqual(draftTexts, ["Draft preview", "Final answer", ""]);
-    assert.equal(sentTexts.length, 1);
-    assert.match(sentTexts[0] ?? "", /Final <b>answer<\/b>/);
-    assert.deepEqual(editedTexts, []);
-    await handlers.get("session_shutdown")?.({}, ctx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
-});
-
-test("Extension runtime carries queued follow-ups into history after an aborted turn", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
-    string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const sentMessages: Array<string | Array<{ type: string; text?: string }>> =
-    [];
-  let firstDispatchResolved = false;
-  let secondUpdatesResolve: ((value: Response) => void) | undefined;
-  let thirdUpdatesResolve: ((value: Response) => void) | undefined;
-  let fourthUpdatesResolve: ((value: Response) => void) | undefined;
-  const secondUpdates = new Promise<Response>((resolve) => {
-    secondUpdatesResolve = resolve;
-  });
-  const thirdUpdates = new Promise<Response>((resolve) => {
-    thirdUpdatesResolve = resolve;
-  });
-  const fourthUpdates = new Promise<Response>((resolve) => {
-    fourthUpdatesResolve = resolve;
-  });
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: (
-      content: string | Array<{ type: string; text?: string }>,
-    ) => {
-      sentMessages.push(content);
-      firstDispatchResolved = true;
-    },
-    getThinkingLevel: () => "medium",
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  const sendTexts: string[] = [];
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    const body =
-      typeof init?.body === "string"
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : undefined;
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 10,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "first request",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (getUpdatesCalls === 2) return secondUpdates;
-      if (getUpdatesCalls === 3) return thirdUpdates;
-      if (getUpdatesCalls === 4) return fourthUpdates;
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendMessage") {
-      sendTexts.push(String(body?.text ?? ""));
-      return {
-        json: async () => ({
-          ok: true,
-          result: { message_id: 100 + sendTexts.length },
-        }),
-      } as Response;
-    }
-    if (method === "sendChatAction") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const baseCtx = {
-      hasUI: true,
-      model: undefined,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      hasPendingMessages: () => false,
-    };
-    const idleCtx = {
-      ...baseCtx,
-      isIdle: () => true,
-      abort: () => {},
-    } as never;
-    let aborted = false;
-    const activeCtx = {
-      ...baseCtx,
-      isIdle: () => false,
-      abort: () => {
-        aborted = true;
-      },
-    } as never;
-    await handlers.get("session_start")?.({}, idleCtx);
-    await commands.get("telegram-connect")?.handler("", idleCtx);
-    await waitForCondition(() => firstDispatchResolved);
-    await handlers.get("agent_start")?.({}, activeCtx);
-    secondUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 2,
-            message: {
-              message_id: 11,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "follow up",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => getUpdatesCalls >= 3);
-    thirdUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 3,
-            message: {
-              message_id: 12,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "/stop",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => aborted);
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            stopReason: "aborted",
-            content: [{ type: "text", text: "" }],
-          },
-        ],
-      },
-      idleCtx,
-    );
-    const dispatchCountBeforeNextTurn = sentMessages.length;
-    fourthUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 4,
-            message: {
-              message_id: 13,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "new request",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(
-      () => sentMessages.length === dispatchCountBeforeNextTurn + 1,
-    );
-    const promptBlocks = sentMessages.at(-1) as Array<{
-      type: string;
-      text?: string;
-    }>;
-    const promptText = promptBlocks[0]?.text ?? "";
-    assert.match(promptText, /^\[telegram\]/);
-    assert.match(
-      promptText,
-      /Earlier Telegram messages arrived after an aborted turn/,
-    );
-    assert.match(promptText, /1\. follow up/);
-    assert.match(promptText, /Current Telegram message:\nnew request/);
-    assert.equal(sendTexts.includes("Aborted current turn."), true);
-    await handlers.get("session_shutdown")?.({}, idleCtx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
-});
-
-test("Extension runtime runs queued status control before the next queued prompt after agent end", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
-    string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const runtimeEvents: string[] = [];
-  let firstDispatchResolved = false;
-  let secondUpdatesResolve: ((value: Response) => void) | undefined;
-  let thirdUpdatesResolve: ((value: Response) => void) | undefined;
-  const secondUpdates = new Promise<Response>((resolve) => {
-    secondUpdatesResolve = resolve;
-  });
-  const thirdUpdates = new Promise<Response>((resolve) => {
-    thirdUpdatesResolve = resolve;
-  });
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: (
-      content: string | Array<{ type: string; text?: string }>,
-    ) => {
-      const promptBlocks = content as Array<{ type: string; text?: string }>;
-      runtimeEvents.push(`dispatch:${promptBlocks[0]?.text ?? ""}`);
-      firstDispatchResolved = true;
-    },
-    getThinkingLevel: () => "medium",
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    const body =
-      typeof init?.body === "string"
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : undefined;
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 20,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "first request",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (getUpdatesCalls === 2) return secondUpdates;
-      if (getUpdatesCalls === 3) return thirdUpdates;
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
-      return {
-        json: async () => ({
-          ok: true,
-          result: { message_id: 100 + runtimeEvents.length },
-        }),
-      } as Response;
-    }
-    if (method === "sendChatAction") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const baseCtx = {
-      hasUI: true,
-      cwd: process.cwd(),
-      model: undefined,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      sessionManager: {
-        getEntries: () => [],
-      },
-      modelRegistry: {
-        refresh: () => {},
-        getAvailable: () => [],
-        isUsingOAuth: () => false,
-      },
-      getContextUsage: () => undefined,
-      hasPendingMessages: () => false,
-      abort: () => {},
-    };
-    const idleCtx = {
-      ...baseCtx,
-      isIdle: () => true,
-    } as never;
-    const activeCtx = {
-      ...baseCtx,
-      isIdle: () => false,
-    } as never;
-    await handlers.get("session_start")?.({}, idleCtx);
-    await commands.get("telegram-connect")?.handler("", idleCtx);
-    await waitForCondition(() => firstDispatchResolved);
-    await handlers.get("agent_start")?.({}, activeCtx);
-    secondUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 2,
-            message: {
-              message_id: 21,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "/status",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => getUpdatesCalls >= 3);
-    thirdUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 3,
-            message: {
-              message_id: 22,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "follow up after status",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => runtimeEvents.length >= 1);
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "" }],
-          },
-        ],
-      },
-      idleCtx,
-    );
-    await waitForCondition(() => runtimeEvents.length >= 3);
-    assert.equal(runtimeEvents[0], "dispatch:[telegram] first request");
-    assert.match(runtimeEvents[1] ?? "", /^send:<b>Context:<\/b>/);
-    assert.equal(
-      runtimeEvents[2],
-      "dispatch:[telegram] follow up after status",
-    );
-    await handlers.get("session_shutdown")?.({}, idleCtx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
-});
-
-test("Extension runtime runs queued model control before the next queued prompt after agent end", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
-    string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const runtimeEvents: string[] = [];
-  const modelA = {
-    provider: "openai",
-    id: "gpt-a",
-    reasoning: true,
-  } as const;
-  const modelB = {
-    provider: "anthropic",
-    id: "claude-b",
-    reasoning: false,
-  } as const;
-  let firstDispatchResolved = false;
-  let secondUpdatesResolve: ((value: Response) => void) | undefined;
-  let thirdUpdatesResolve: ((value: Response) => void) | undefined;
-  const secondUpdates = new Promise<Response>((resolve) => {
-    secondUpdatesResolve = resolve;
-  });
-  const thirdUpdates = new Promise<Response>((resolve) => {
-    thirdUpdatesResolve = resolve;
-  });
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: (
-      content: string | Array<{ type: string; text?: string }>,
-    ) => {
-      const promptBlocks = content as Array<{ type: string; text?: string }>;
-      runtimeEvents.push(`dispatch:${promptBlocks[0]?.text ?? ""}`);
-      firstDispatchResolved = true;
-    },
-    getThinkingLevel: () => "medium",
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    const body =
-      typeof init?.body === "string"
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : undefined;
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 23,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "first request",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (getUpdatesCalls === 2) return secondUpdates;
-      if (getUpdatesCalls === 3) return thirdUpdates;
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
-      return {
-        json: async () => ({
-          ok: true,
-          result: { message_id: 100 + runtimeEvents.length },
-        }),
-      } as Response;
-    }
-    if (method === "sendChatAction") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const baseCtx = {
-      hasUI: true,
-      cwd: process.cwd(),
-      model: modelA,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      sessionManager: {
-        getEntries: () => [],
-      },
-      modelRegistry: {
-        refresh: () => {},
-        getAvailable: () => [modelA, modelB],
-        isUsingOAuth: () => false,
-      },
-      getContextUsage: () => undefined,
-      hasPendingMessages: () => false,
-      abort: () => {},
-    };
-    const idleCtx = {
-      ...baseCtx,
-      isIdle: () => true,
-    } as never;
-    const activeCtx = {
-      ...baseCtx,
-      isIdle: () => false,
-    } as never;
-    await handlers.get("session_start")?.({}, idleCtx);
-    await commands.get("telegram-connect")?.handler("", idleCtx);
-    await waitForCondition(() => firstDispatchResolved);
-    await handlers.get("agent_start")?.({}, activeCtx);
-    secondUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 2,
-            message: {
-              message_id: 24,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "/model",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => getUpdatesCalls >= 3);
-    thirdUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 3,
-            message: {
-              message_id: 25,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "follow up after model",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => runtimeEvents.length >= 1);
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "" }],
-          },
-        ],
-      },
-      idleCtx,
-    );
-    await waitForCondition(() => runtimeEvents.length >= 3);
-    assert.equal(runtimeEvents[0], "dispatch:[telegram] first request");
-    assert.equal(runtimeEvents[1], "send:<b>Choose a model:</b>");
-    assert.equal(runtimeEvents[2], "dispatch:[telegram] follow up after model");
-    await handlers.get("session_shutdown")?.({}, idleCtx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
-});
-
-test("Extension runtime keeps queued turns blocked until compaction completes", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
-    string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const runtimeEvents: string[] = [];
-  let compactHooks:
-    | {
-        onComplete: () => void;
-        onError: (error: unknown) => void;
-      }
-    | undefined;
-  let secondUpdatesResolve: ((value: Response) => void) | undefined;
-  const secondUpdates = new Promise<Response>((resolve) => {
-    secondUpdatesResolve = resolve;
-  });
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: (
-      content: string | Array<{ type: string; text?: string }>,
-    ) => {
-      const promptBlocks = content as Array<{ type: string; text?: string }>;
-      runtimeEvents.push(`dispatch:${promptBlocks[0]?.text ?? ""}`);
-    },
-    getThinkingLevel: () => "medium",
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    const body =
-      typeof init?.body === "string"
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : undefined;
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 30,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "/compact",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (getUpdatesCalls === 2) {
-        return secondUpdates;
-      }
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
-      return {
-        json: async () => ({
-          ok: true,
-          result: { message_id: 100 + runtimeEvents.length },
-        }),
-      } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const ctx = {
-      hasUI: true,
-      model: undefined,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      isIdle: () => true,
-      hasPendingMessages: () => false,
-      abort: () => {},
-      compact: (hooks: {
-        onComplete: () => void;
-        onError: (error: unknown) => void;
-      }) => {
-        compactHooks = hooks;
-        runtimeEvents.push("compact:start");
-      },
-    } as never;
-    await handlers.get("session_start")?.({}, ctx);
-    await commands.get("telegram-connect")?.handler("", ctx);
-    await waitForCondition(() => runtimeEvents.includes("compact:start"));
-    assert.equal(runtimeEvents.includes("send:Compaction started."), true);
-    secondUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 2,
-            message: {
-              message_id: 31,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "follow up after compaction",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => getUpdatesCalls >= 3);
-    assert.equal(
-      runtimeEvents.some(
-        (event) => event === "dispatch:[telegram] follow up after compaction",
-      ),
-      false,
-    );
-    compactHooks?.onComplete();
-    await waitForCondition(() =>
-      runtimeEvents.includes("dispatch:[telegram] follow up after compaction"),
-    );
-    await waitForCondition(() =>
-      runtimeEvents.includes("send:Compaction completed."),
-    );
-    await handlers.get("session_shutdown")?.({}, ctx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
-});
-
-test("Extension runtime coalesces media-group updates into one delayed dispatch", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
-    string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const runtimeEvents: string[] = [];
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: (
-      content: string | Array<{ type: string; text?: string }>,
-    ) => {
-      const promptBlocks = content as Array<{ type: string; text?: string }>;
-      runtimeEvents.push(`dispatch:${promptBlocks[0]?.text ?? ""}`);
-    },
-    getThinkingLevel: () => "medium",
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  globalThis.fetch = async (input) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 40,
-                  media_group_id: "album-1",
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  caption: "first caption",
-                },
-              },
-              {
-                _: "other",
-                update_id: 2,
-                message: {
-                  message_id: 41,
-                  media_group_id: "album-1",
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  caption: "second caption",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      throw new DOMException("stop", "AbortError");
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const ctx = {
-      hasUI: true,
-      model: undefined,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      isIdle: () => true,
-      hasPendingMessages: () => false,
-      abort: () => {},
-    } as never;
-    await handlers.get("session_start")?.({}, ctx);
-    await commands.get("telegram-connect")?.handler("", ctx);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    assert.equal(runtimeEvents.length, 0);
-    await waitForCondition(() => runtimeEvents.length === 1, 2500);
-    assert.equal(
-      runtimeEvents[0],
-      "dispatch:[telegram] first caption\n\nsecond caption",
-    );
-    await handlers.get("session_shutdown")?.({}, ctx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
-});
-
-test("Extension runtime applies reaction priority and removal before the next dispatch", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
-    string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const runtimeEvents: string[] = [];
-  let firstDispatchResolved = false;
-  let secondUpdatesResolve: ((value: Response) => void) | undefined;
-  let thirdUpdatesResolve: ((value: Response) => void) | undefined;
-  let fourthUpdatesResolve: ((value: Response) => void) | undefined;
-  let fifthUpdatesResolve: ((value: Response) => void) | undefined;
-  const secondUpdates = new Promise<Response>((resolve) => {
-    secondUpdatesResolve = resolve;
-  });
-  const thirdUpdates = new Promise<Response>((resolve) => {
-    thirdUpdatesResolve = resolve;
-  });
-  const fourthUpdates = new Promise<Response>((resolve) => {
-    fourthUpdatesResolve = resolve;
-  });
-  const fifthUpdates = new Promise<Response>((resolve) => {
-    fifthUpdatesResolve = resolve;
-  });
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: (
-      content: string | Array<{ type: string; text?: string }>,
-    ) => {
-      const promptBlocks = content as Array<{ type: string; text?: string }>;
-      runtimeEvents.push(`dispatch:${promptBlocks[0]?.text ?? ""}`);
-      firstDispatchResolved = true;
-    },
-    getThinkingLevel: () => "medium",
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  globalThis.fetch = async (input) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 30,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "first request",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (getUpdatesCalls === 2) return secondUpdates;
-      if (getUpdatesCalls === 3) return thirdUpdates;
-      if (getUpdatesCalls === 4) return fourthUpdates;
-      if (getUpdatesCalls === 5) return fifthUpdates;
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendChatAction") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const baseCtx = {
-      hasUI: true,
-      model: undefined,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      hasPendingMessages: () => false,
-      abort: () => {},
-    };
-    const idleCtx = {
-      ...baseCtx,
-      isIdle: () => true,
-    } as never;
-    const activeCtx = {
-      ...baseCtx,
-      isIdle: () => false,
-    } as never;
-    await handlers.get("session_start")?.({}, idleCtx);
-    await commands.get("telegram-connect")?.handler("", idleCtx);
-    await waitForCondition(() => firstDispatchResolved);
-    await handlers.get("agent_start")?.({}, activeCtx);
-    secondUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 2,
-            message: {
-              message_id: 31,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "older waiting",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => getUpdatesCalls >= 3);
-    thirdUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 3,
-            message: {
-              message_id: 32,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "newer waiting",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => getUpdatesCalls >= 4);
-    fourthUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 4,
-            message_reaction: {
-              chat: { id: 99, type: "private" },
-              message_id: 32,
-              user: { id: 77, is_bot: false, first_name: "Test" },
-              old_reaction: [],
-              new_reaction: [{ type: "emoji", emoji: "👍" }],
-              date: 1,
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => getUpdatesCalls >= 5);
-    fifthUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 5,
-            message_reaction: {
-              chat: { id: 99, type: "private" },
-              message_id: 31,
-              user: { id: 77, is_bot: false, first_name: "Test" },
-              old_reaction: [],
-              new_reaction: [{ type: "emoji", emoji: "👎" }],
-              date: 2,
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => getUpdatesCalls >= 6);
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "" }],
-          },
-        ],
-      },
-      idleCtx,
-    );
-    await waitForCondition(() => runtimeEvents.length === 2);
-    assert.equal(runtimeEvents[0], "dispatch:[telegram] first request");
-    assert.equal(runtimeEvents[1], "dispatch:[telegram] newer waiting");
-    await handlers.get("agent_start")?.({}, activeCtx);
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "" }],
-          },
-        ],
-      },
-      idleCtx,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.deepEqual(runtimeEvents, [
-      "dispatch:[telegram] first request",
-      "dispatch:[telegram] newer waiting",
-    ]);
-    await handlers.get("session_shutdown")?.({}, idleCtx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
-});
-
-test("Extension runtime applies idle model picks immediately and refreshes status", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const previousArgv = [...process.argv];
-  const handlers = new Map<
-    string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const runtimeEvents: string[] = [];
-  const statusEvents: string[] = [];
-  const modelA = {
-    provider: "openai",
-    id: "gpt-a",
-    reasoning: true,
-  } as const;
-  const modelB = {
-    provider: "anthropic",
-    id: "claude-b",
-    reasoning: true,
-  } as const;
-  const setModels: Array<string> = [];
-  const thinkingLevels: Array<string> = [];
-  let secondUpdatesResolve: ((value: Response) => void) | undefined;
-  const secondUpdates = new Promise<Response>((resolve) => {
-    secondUpdatesResolve = resolve;
-  });
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: () => {},
-    getThinkingLevel: () => thinkingLevels.at(-1) ?? "medium",
-    setModel: async (model: { provider: string; id: string }) => {
-      setModels.push(`${model.provider}/${model.id}`);
-      return true;
-    },
-    setThinkingLevel: (level: string) => {
-      thinkingLevels.push(level);
-    },
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  let nextMessageId = 100;
-  const callbackAnswers: string[] = [];
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    const body =
-      typeof init?.body === "string"
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : undefined;
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 60,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "/model",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (getUpdatesCalls === 2) return secondUpdates;
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
-      return {
-        json: async () => ({
-          ok: true,
-          result: { message_id: nextMessageId++ },
-        }),
-      } as Response;
-    }
-    if (method === "editMessageText") {
-      runtimeEvents.push(`edit:${String(body?.text ?? "")}`);
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "answerCallbackQuery") {
-      callbackAnswers.push(String(body?.text ?? ""));
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "sendChatAction") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    process.argv = [
-      previousArgv[0] ?? "node",
-      previousArgv[1] ?? "index.ts",
-      "--models=anthropic/claude-b:high",
-    ];
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const ctx = {
-      hasUI: true,
-      cwd: process.cwd(),
-      model: modelA,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: (_slot: string, text: string) => {
-          statusEvents.push(text);
-        },
-        notify: () => {},
-      },
-      sessionManager: {
-        getEntries: () => [],
-      },
-      modelRegistry: {
-        refresh: () => {},
-        getAvailable: () => [modelA, modelB],
-        isUsingOAuth: () => false,
-      },
-      getContextUsage: () => undefined,
-      hasPendingMessages: () => false,
-      isIdle: () => true,
-      abort: () => {},
-    } as never;
-    await handlers.get("session_start")?.({}, ctx);
-    await commands.get("telegram-connect")?.handler("", ctx);
-    await waitForCondition(() =>
-      runtimeEvents.some((event) => event === "send:<b>Choose a model:</b>"),
-    );
-    const statusCountBeforePick = statusEvents.length;
-    secondUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 2,
-            callback_query: {
-              id: "cb-idle-1",
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              data: "model:pick:0",
-              message: {
-                message_id: 100,
-                chat: { id: 99, type: "private" },
-              },
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => setModels.length === 1);
-    assert.deepEqual(setModels, ["anthropic/claude-b"]);
-    assert.deepEqual(thinkingLevels, ["high"]);
-    assert.equal(callbackAnswers.includes("Switched to claude-b"), true);
-    assert.equal(statusEvents.length > statusCountBeforePick, true);
-    assert.equal(
-      runtimeEvents.some((event) => event.startsWith("edit:<b>Context:")),
-      true,
-    );
-    await handlers.get("session_shutdown")?.({}, ctx);
-  } finally {
-    process.argv = previousArgv;
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
-});
-
-test("Extension runtime switches model in flight and dispatches a continuation turn after abort", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
-    string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const runtimeEvents: string[] = [];
-  const modelA = {
-    provider: "openai",
-    id: "gpt-a",
-    reasoning: true,
-  } as const;
-  const modelB = {
-    provider: "anthropic",
-    id: "claude-b",
-    reasoning: false,
-  } as const;
-  let idle = true;
-  let aborted = false;
-  const setModels: Array<string> = [];
-  let secondUpdatesResolve: ((value: Response) => void) | undefined;
-  let thirdUpdatesResolve: ((value: Response) => void) | undefined;
-  const secondUpdates = new Promise<Response>((resolve) => {
-    secondUpdatesResolve = resolve;
-  });
-  const thirdUpdates = new Promise<Response>((resolve) => {
-    thirdUpdatesResolve = resolve;
-  });
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: (
-      content: string | Array<{ type: string; text?: string }>,
-    ) => {
-      const promptBlocks = content as Array<{ type: string; text?: string }>;
-      runtimeEvents.push(`dispatch:${promptBlocks[0]?.text ?? ""}`);
-    },
-    getThinkingLevel: () => "medium",
-    setModel: async (model: { provider: string; id: string }) => {
-      setModels.push(`${model.provider}/${model.id}`);
-      return true;
-    },
-    setThinkingLevel: () => {},
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  let nextMessageId = 100;
-  const callbackAnswers: string[] = [];
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    const body =
-      typeof init?.body === "string"
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : undefined;
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 40,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "/model",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (getUpdatesCalls === 2) return secondUpdates;
-      if (getUpdatesCalls === 3) return thirdUpdates;
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
-      return {
-        json: async () => ({
-          ok: true,
-          result: { message_id: nextMessageId++ },
-        }),
-      } as Response;
-    }
-    if (method === "editMessageText") {
-      runtimeEvents.push(`edit:${String(body?.text ?? "")}`);
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "answerCallbackQuery") {
-      callbackAnswers.push(String(body?.text ?? ""));
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "sendChatAction") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const ctx = {
-      hasUI: true,
-      cwd: process.cwd(),
-      model: modelA,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      sessionManager: {
-        getEntries: () => [],
-      },
-      modelRegistry: {
-        refresh: () => {},
-        getAvailable: () => [modelA, modelB],
-        isUsingOAuth: () => false,
-      },
-      getContextUsage: () => undefined,
-      hasPendingMessages: () => false,
-      isIdle: () => idle,
-      abort: () => {
-        aborted = true;
-      },
-    } as never;
-    await handlers.get("session_start")?.({}, ctx);
-    await commands.get("telegram-connect")?.handler("", ctx);
-    await waitForCondition(() =>
-      runtimeEvents.some((event) => event === "send:<b>Choose a model:</b>"),
-    );
-    secondUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 2,
-            message: {
-              message_id: 41,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "first request",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() =>
-      runtimeEvents.some(
-        (event) => event === "dispatch:[telegram] first request",
-      ),
-    );
-    idle = false;
-    await handlers.get("agent_start")?.({}, ctx);
-    thirdUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 3,
-            callback_query: {
-              id: "cb-1",
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              data: "model:pick:1",
-              message: {
-                message_id: 100,
-                chat: { id: 99, type: "private" },
-              },
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() => aborted);
-    assert.deepEqual(setModels, ["anthropic/claude-b"]);
-    assert.equal(
-      callbackAnswers.includes("Switching to claude-b and continuing…"),
-      true,
-    );
-    idle = true;
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            stopReason: "aborted",
-            content: [{ type: "text", text: "" }],
-          },
-        ],
-      },
-      ctx,
-    );
-    await waitForCondition(() =>
-      runtimeEvents.some((event) =>
-        event.includes(
-          "Continue the interrupted previous Telegram request using the newly selected model (anthropic/claude-b)",
-        ),
-      ),
-    );
-    assert.equal(
-      runtimeEvents.includes("dispatch:[telegram] first request"),
-      true,
-    );
-    assert.equal(
-      runtimeEvents.some((event) =>
-        event.includes(
-          "dispatch:[telegram] Continue the interrupted previous Telegram request using the newly selected model (anthropic/claude-b)",
-        ),
-      ),
-      true,
-    );
-    await handlers.get("session_shutdown")?.({}, ctx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
-});
-
-test("Extension runtime delays model-switch abort until the active tool finishes", async () => {
-  const agentDir = join(homedir(), ".pi", "agent");
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const handlers = new Map<
-    string,
-    (event: unknown, ctx: unknown) => Promise<unknown>
-  >();
-  const commands = new Map<
-    string,
-    { handler: (args: string, ctx: unknown) => Promise<void> }
-  >();
-  const runtimeEvents: string[] = [];
-  const modelA = {
-    provider: "openai",
-    id: "gpt-a",
-    reasoning: true,
-  } as const;
-  const modelB = {
-    provider: "anthropic",
-    id: "claude-b",
-    reasoning: false,
-  } as const;
-  let idle = true;
-  let aborted = false;
-  const setModels: Array<string> = [];
-  let secondUpdatesResolve: ((value: Response) => void) | undefined;
-  let thirdUpdatesResolve: ((value: Response) => void) | undefined;
-  const secondUpdates = new Promise<Response>((resolve) => {
-    secondUpdatesResolve = resolve;
-  });
-  const thirdUpdates = new Promise<Response>((resolve) => {
-    thirdUpdatesResolve = resolve;
-  });
-  const pi = {
-    on: (
-      event: string,
-      handler: (event: unknown, ctx: unknown) => Promise<unknown>,
-    ) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (
-      name: string,
-      definition: { handler: (args: string, ctx: unknown) => Promise<void> },
-    ) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: (
-      content: string | Array<{ type: string; text?: string }>,
-    ) => {
-      const promptBlocks = content as Array<{ type: string; text?: string }>;
-      runtimeEvents.push(`dispatch:${promptBlocks[0]?.text ?? ""}`);
-    },
-    getThinkingLevel: () => "medium",
-    setModel: async (model: { provider: string; id: string }) => {
-      setModels.push(`${model.provider}/${model.id}`);
-      return true;
-    },
-    setThinkingLevel: () => {},
-  } as never;
-  const originalFetch = globalThis.fetch;
-  let getUpdatesCalls = 0;
-  let nextMessageId = 100;
-  const callbackAnswers: string[] = [];
-  globalThis.fetch = async (input, init) => {
-    const url = typeof input === "string" ? input : input.toString();
-    const method = url.split("/").at(-1) ?? "";
-    const body =
-      typeof init?.body === "string"
-        ? (JSON.parse(init.body) as Record<string, unknown>)
-        : undefined;
-    if (method === "deleteWebhook") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "getUpdates") {
-      getUpdatesCalls += 1;
-      if (getUpdatesCalls === 1) {
-        return {
-          json: async () => ({
-            ok: true,
-            result: [
-              {
-                _: "other",
-                update_id: 1,
-                message: {
-                  message_id: 50,
-                  chat: { id: 99, type: "private" },
-                  from: { id: 77, is_bot: false, first_name: "Test" },
-                  text: "/model",
-                },
-              },
-            ],
-          }),
-        } as Response;
-      }
-      if (getUpdatesCalls === 2) return secondUpdates;
-      if (getUpdatesCalls === 3) return thirdUpdates;
-      throw new DOMException("stop", "AbortError");
-    }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
-      return {
-        json: async () => ({
-          ok: true,
-          result: { message_id: nextMessageId++ },
-        }),
-      } as Response;
-    }
-    if (method === "editMessageText") {
-      runtimeEvents.push(`edit:${String(body?.text ?? "")}`);
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "answerCallbackQuery") {
-      callbackAnswers.push(String(body?.text ?? ""));
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    if (method === "sendChatAction") {
-      return { json: async () => ({ ok: true, result: true }) } as Response;
-    }
-    throw new Error(`Unexpected Telegram API method: ${method}`);
-  };
-  try {
-    await mkdir(agentDir, { recursive: true });
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 },
-        null,
-        "\t",
-      ) + "\n",
-      "utf8",
-    );
-    telegramExtension(pi);
-    const ctx = {
-      hasUI: true,
-      cwd: process.cwd(),
-      model: modelA,
-      signal: undefined,
-      ui: {
-        theme: {
-          fg: (_token: string, text: string) => text,
-        },
-        setStatus: () => {},
-        notify: () => {},
-      },
-      sessionManager: {
-        getEntries: () => [],
-      },
-      modelRegistry: {
-        refresh: () => {},
-        getAvailable: () => [modelA, modelB],
-        isUsingOAuth: () => false,
-      },
-      getContextUsage: () => undefined,
-      hasPendingMessages: () => false,
-      isIdle: () => idle,
-      abort: () => {
-        aborted = true;
-      },
-    } as never;
-    await handlers.get("session_start")?.({}, ctx);
-    await commands.get("telegram-connect")?.handler("", ctx);
-    await waitForCondition(() =>
-      runtimeEvents.some((event) => event === "send:<b>Choose a model:</b>"),
-    );
-    secondUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 2,
-            message: {
-              message_id: 51,
-              chat: { id: 99, type: "private" },
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              text: "first request",
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() =>
-      runtimeEvents.some(
-        (event) => event === "dispatch:[telegram] first request",
-      ),
-    );
-    idle = false;
-    await handlers.get("agent_start")?.({}, ctx);
-    await handlers.get("tool_execution_start")?.({}, ctx);
-    thirdUpdatesResolve?.({
-      json: async () => ({
-        ok: true,
-        result: [
-          {
-            _: "other",
-            update_id: 3,
-            callback_query: {
-              id: "cb-2",
-              from: { id: 77, is_bot: false, first_name: "Test" },
-              data: "model:pick:1",
-              message: {
-                message_id: 100,
-                chat: { id: 99, type: "private" },
-              },
-            },
-          },
-        ],
-      }),
-    } as Response);
-    await waitForCondition(() =>
-      callbackAnswers.includes(
-        "Switched to claude-b. Restarting after the current tool finishes…",
-      ),
-    );
-    assert.deepEqual(setModels, ["anthropic/claude-b"]);
-    assert.equal(aborted, false);
-    await handlers.get("tool_execution_end")?.({}, ctx);
-    await waitForCondition(() => aborted);
-    idle = true;
-    await handlers.get("agent_end")?.(
-      {
-        messages: [
-          {
-            role: "assistant",
-            stopReason: "aborted",
-            content: [{ type: "text", text: "" }],
-          },
-        ],
-      },
-      ctx,
-    );
-    await waitForCondition(() =>
-      runtimeEvents.some((event) =>
-        event.includes(
-          "dispatch:[telegram] Continue the interrupted previous Telegram request using the newly selected model (anthropic/claude-b)",
-        ),
-      ),
-    );
-    await handlers.get("session_shutdown")?.({}, ctx);
-  } finally {
-    globalThis.fetch = originalFetch;
-    if (previousConfig === undefined) {
-      await rm(configPath, { force: true });
-    } else {
-      await writeFile(configPath, previousConfig, "utf8");
-    }
-  }
+  await hooks.onSessionStart({}, { model: { id: "gpt-5" } });
+  await hooks.onSessionShutdown();
+  assert.deepEqual(events, [
+    "load",
+    "start:gpt-5",
+    "temp",
+    "status:gpt-5",
+    "shutdown:0",
+    "media",
+    "menu",
+    "preview:7",
+    "turn",
+    "abort",
+    "poll",
+  ]);
 });

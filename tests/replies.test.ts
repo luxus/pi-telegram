@@ -8,11 +8,39 @@ import test from "node:test";
 
 import {
   buildTelegramReplyTransport,
+  createTelegramRenderedMessageDeliveryRuntime,
+  createTelegramRenderedMessageRuntime,
   editTelegramRenderedMessage,
+  extractLatestAssistantMessageText,
+  getAgentMessageText,
+  isAssistantAgentMessage,
   sendTelegramMarkdownReply,
   sendTelegramPlainReply,
   sendTelegramRenderedChunks,
 } from "../lib/replies.ts";
+
+test("Reply helpers extract assistant message text and metadata", () => {
+  const messages = [
+    { role: "user", content: [{ type: "text", text: "question" }] },
+    {
+      role: "assistant",
+      stopReason: "error",
+      errorMessage: "boom",
+      content: [
+        { type: "text", text: " hello " },
+        { type: "image", source: "ignored" },
+        { type: "text", text: "world " },
+      ],
+    },
+  ];
+  assert.equal(isAssistantAgentMessage(messages[1]), true);
+  assert.equal(getAgentMessageText(messages[1]), "hello world");
+  assert.deepEqual(extractLatestAssistantMessageText(messages), {
+    text: "hello world",
+    stopReason: "error",
+    errorMessage: "boom",
+  });
+});
 
 test("Reply transport forwards send and edit operations through delivery helpers", async () => {
   const events: string[] = [];
@@ -62,6 +90,27 @@ test("Reply delivery sends chunks and applies reply markup only to the last chun
   ]);
 });
 
+test("Reply delivery applies reply parameters only to the first chunk", async () => {
+  const sentBodies: Array<Record<string, unknown>> = [];
+  await sendTelegramRenderedChunks(
+    7,
+    [{ text: "one" }, { text: "two" }],
+    {
+      sendMessage: async (body) => {
+        sentBodies.push(body);
+        return { message_id: sentBodies.length };
+      },
+      editMessage: async () => {},
+    },
+    { replyToMessageId: 42 },
+  );
+  assert.deepEqual(sentBodies[0]?.reply_parameters, {
+    message_id: 42,
+    allow_sending_without_reply: true,
+  });
+  assert.equal("reply_parameters" in (sentBodies[1] ?? {}), false);
+});
+
 test("Reply delivery edits the first chunk and sends remaining chunks separately", async () => {
   const editedBodies: Array<Record<string, unknown>> = [];
   const sentBodies: Array<Record<string, unknown>> = [];
@@ -104,6 +153,77 @@ test("Reply delivery edits the first chunk and sends remaining chunks separately
       },
     },
   ]);
+  assert.equal("reply_parameters" in (sentBodies[0] ?? {}), false);
+});
+
+test("Reply runtime bundles text, markdown, and interactive rendered-message delivery", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const edited: Array<Record<string, unknown>> = [];
+  const runtime = createTelegramRenderedMessageRuntime({
+    renderTelegramMessage: (text, options) => [
+      { text: `${options?.mode ?? "plain"}:${text}` },
+    ],
+    replyTransport: buildTelegramReplyTransport({
+      sendMessage: async (body) => {
+        sent.push(body);
+        return { message_id: sent.length };
+      },
+      editMessage: async (body) => {
+        edited.push(body);
+      },
+    }),
+  });
+  assert.equal(await runtime.sendTextReply(7, 42, "hello"), 1);
+  assert.equal(await runtime.sendMarkdownReply(7, 43, "**hello**"), 2);
+  assert.equal(
+    await runtime.sendInteractiveMessage(7, "menu", "html", {
+      inline_keyboard: [],
+    }),
+    3,
+  );
+  await runtime.editInteractiveMessage(7, 9, "menu", "html", {
+    inline_keyboard: [],
+  });
+  assert.deepEqual(
+    sent.map((body) => body.text),
+    ["plain:hello", "markdown:**hello**", "html:menu"],
+  );
+  assert.deepEqual(sent[0]?.reply_parameters, {
+    message_id: 42,
+    allow_sending_without_reply: true,
+  });
+  assert.deepEqual(sent[1]?.reply_parameters, {
+    message_id: 43,
+    allow_sending_without_reply: true,
+  });
+  assert.deepEqual(sent[2]?.reply_markup, { inline_keyboard: [] });
+  assert.deepEqual(
+    edited.map((body) => body.text),
+    ["html:menu"],
+  );
+});
+
+test("Reply delivery runtime exposes transport and rendered-message helpers", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const runtime = createTelegramRenderedMessageDeliveryRuntime({
+    renderTelegramMessage: (text, options) => [
+      { text: `${options?.mode ?? "plain"}:${text}` },
+    ],
+    sendMessage: async (body) => {
+      sent.push(body);
+      return { message_id: sent.length };
+    },
+    editMessage: async () => {},
+  });
+  assert.equal(await runtime.sendTextReply(7, 42, "hello"), 1);
+  assert.equal(
+    await runtime.replyTransport.sendRenderedChunks(7, [{ text: "raw" }]),
+    2,
+  );
+  assert.deepEqual(
+    sent.map((body) => body.text),
+    ["plain:hello", "raw"],
+  );
 });
 
 test("Reply runtime sends plain replies using the requested parse mode", async () => {

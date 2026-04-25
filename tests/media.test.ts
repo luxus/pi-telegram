@@ -9,6 +9,9 @@ import test from "node:test";
 import {
   collectTelegramFileInfos,
   collectTelegramMessageIds,
+  createTelegramMediaGroupController,
+  createTelegramMediaGroupDispatchRuntime,
+  downloadTelegramMessageFiles,
   extractFirstTelegramMessageText,
   extractTelegramMessagesText,
   formatTelegramHistoryText,
@@ -18,6 +21,16 @@ import {
   removePendingTelegramMediaGroupMessages,
   type TelegramMediaGroupState,
 } from "../lib/media.ts";
+
+type TestTimer = ReturnType<typeof setTimeout>;
+
+function createTestTimer(id: number): TestTimer {
+  return id as unknown as TestTimer;
+}
+
+function getTestTimerId(timer: TestTimer): number {
+  return timer as unknown as number;
+}
 
 test("Media helpers collect file infos across Telegram message variants", () => {
   const files = collectTelegramFileInfos([
@@ -57,6 +70,32 @@ test("Media helpers collect file infos across Telegram message variants", () => 
   );
 });
 
+test("Media helpers download collected file infos", async () => {
+  const downloaded = await downloadTelegramMessageFiles(
+    [
+      {
+        message_id: 3,
+        document: {
+          file_id: "doc-id",
+          file_name: "report.pdf",
+          mime_type: "application/pdf",
+        },
+      },
+    ],
+    {
+      downloadFile: async (fileId, fileName) => `/tmp/${fileId}-${fileName}`,
+    },
+  );
+  assert.deepEqual(downloaded, [
+    {
+      path: "/tmp/doc-id-report.pdf",
+      fileName: "report.pdf",
+      isImage: false,
+      mimeType: "application/pdf",
+    },
+  ]);
+});
+
 test("Media helpers extract text, ids, and history summaries", () => {
   const messages = [
     { message_id: 1, text: "first" },
@@ -75,7 +114,7 @@ test("Media helpers extract text, ids, and history summaries", () => {
   );
 });
 
-test("Media helpers infer outgoing image media types from file paths", () => {
+test("Media helpers infer image media types from file paths", () => {
   assert.equal(guessMediaType("/tmp/demo.png"), "image/png");
   assert.equal(guessMediaType("/tmp/demo.txt"), undefined);
 });
@@ -108,12 +147,12 @@ test("Media helpers replace debounce timers and dispatch grouped messages", () =
   const callbacks: Array<() => void> = [];
   const dispatched: number[][] = [];
   let nextTimer = 1;
-  const setTimer = (callback: () => void): ReturnType<typeof setTimeout> => {
+  const setTimer = (callback: () => void): TestTimer => {
     callbacks.push(callback);
-    return nextTimer++ as unknown as ReturnType<typeof setTimeout>;
+    return createTestTimer(nextTimer++);
   };
-  const clearTimer = (timer: ReturnType<typeof setTimeout>): void => {
-    cleared.push(timer as unknown as number);
+  const clearTimer = (timer: TestTimer): void => {
+    cleared.push(getTestTimerId(timer));
   };
   assert.equal(
     queueTelegramMediaGroupMessage({
@@ -142,6 +181,91 @@ test("Media helpers replace debounce timers and dispatch grouped messages", () =
   assert.equal(groups.size, 0);
 });
 
+test("Media group controller owns timers, removal, and cleanup", () => {
+  const cleared: number[] = [];
+  const callbacks: Array<() => void> = [];
+  const dispatched: number[][] = [];
+  let nextTimer = 1;
+  const controller = createTelegramMediaGroupController<{
+    message_id: number;
+    chat: { id: number };
+    media_group_id?: string;
+  }>({
+    debounceMs: 100,
+    setTimer: (callback) => {
+      callbacks.push(callback);
+      return createTestTimer(nextTimer++);
+    },
+    clearTimer: (timer) => {
+      cleared.push(getTestTimerId(timer));
+    },
+  });
+  assert.equal(
+    controller.queueMessage({
+      message: { message_id: 1, chat: { id: 7 }, media_group_id: "album" },
+      dispatchMessages: (messages) =>
+        dispatched.push(messages.map((message) => message.message_id)),
+    }),
+    true,
+  );
+  controller.queueMessage({
+    message: { message_id: 2, chat: { id: 7 }, media_group_id: "album" },
+    dispatchMessages: (messages) =>
+      dispatched.push(messages.map((message) => message.message_id)),
+  });
+  assert.deepEqual(cleared, [1]);
+  assert.equal(controller.removeMessages([2]), 1);
+  assert.deepEqual(cleared, [1, 2]);
+  callbacks.at(-1)?.();
+  assert.equal(dispatched.length, 0);
+  controller.queueMessage({
+    message: { message_id: 3, chat: { id: 7 }, media_group_id: "album" },
+    dispatchMessages: (messages) =>
+      dispatched.push(messages.map((message) => message.message_id)),
+  });
+  controller.clear();
+  assert.deepEqual(cleared, [1, 2, 3]);
+});
+
+test("Media group dispatch runtime handles immediate and grouped messages", async () => {
+  const callbacks: Array<() => void> = [];
+  const dispatched: Array<{ ids: number[]; ctx: string }> = [];
+  const controller = createTelegramMediaGroupController<{
+    message_id: number;
+    chat: { id: number };
+    media_group_id?: string;
+  }>({
+    setTimer: (callback) => {
+      callbacks.push(callback);
+      return createTestTimer(callbacks.length);
+    },
+    clearTimer: () => {},
+  });
+  const runtime = createTelegramMediaGroupDispatchRuntime({
+    mediaGroups: controller,
+    dispatchMessages: async (messages, ctx: string) => {
+      dispatched.push({
+        ids: messages.map((message) => message.message_id),
+        ctx,
+      });
+    },
+  });
+  await runtime.handleMessage({ message_id: 1, chat: { id: 7 } }, "ctx-a");
+  await runtime.handleMessage(
+    { message_id: 2, chat: { id: 7 }, media_group_id: "album" },
+    "ctx-b",
+  );
+  await runtime.handleMessage(
+    { message_id: 3, chat: { id: 7 }, media_group_id: "album" },
+    "ctx-b",
+  );
+  callbacks.at(-1)?.();
+  assert.deepEqual(dispatched, [
+    { ids: [1], ctx: "ctx-a" },
+    { ids: [2, 3], ctx: "ctx-b" },
+  ]);
+});
+
 test("Media helpers remove pending groups by message id", () => {
   const groups = new Map<
     string,
@@ -152,12 +276,12 @@ test("Media helpers remove pending groups by message id", () => {
       { message_id: 1, chat: { id: 7 } },
       { message_id: 2, chat: { id: 7 } },
     ],
-    flushTimer: 10 as unknown as ReturnType<typeof setTimeout>,
+    flushTimer: createTestTimer(10),
   });
   const cleared: number[] = [];
   assert.equal(
     removePendingTelegramMediaGroupMessages(groups, [2], (timer) => {
-      cleared.push(timer as unknown as number);
+      cleared.push(getTestTimerId(timer));
     }),
     1,
   );

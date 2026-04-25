@@ -4,13 +4,20 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
   buildTelegramPromptTurn,
+  buildTelegramPromptTurnRuntime,
   buildTelegramTurnPrompt,
+  createTelegramPromptTurnRuntimeBuilder,
+  createTelegramQueuedPromptEditRuntime,
   formatTelegramTurnStatusSummary,
   truncateTelegramQueueSummary,
+  updateQueuedTelegramPromptTurnText,
   updateTelegramPromptTurnText,
 } from "../lib/turns.ts";
 
@@ -99,6 +106,147 @@ test("Turn helpers update queued prompt text for edited Telegram messages", () =
   assert.notEqual(updated, turn);
 });
 
+test("Turn runtime builder extracts text, downloads files, and allocates order", async () => {
+  let nextOrder = 3;
+  const downloaded: string[] = [];
+  const buildTurn = createTelegramPromptTurnRuntimeBuilder({
+    allocateQueueOrder: () => nextOrder++,
+    downloadFile: async (fileId, fileName) => {
+      downloaded.push(`${fileId}:${fileName}`);
+      return `/tmp/${fileName}`;
+    },
+  });
+  const turn = await buildTurn([
+    {
+      message_id: 11,
+      chat: { id: 5 },
+      caption: "see file",
+      document: { file_id: "doc-1", file_name: "report.txt" },
+    },
+  ]);
+  assert.equal(turn.queueOrder, 3);
+  assert.equal(turn.statusSummary, "see file");
+  assert.deepEqual(downloaded, ["doc-1:report.txt"]);
+  assert.match(
+    (turn.content[0] as { type: "text"; text: string }).text,
+    /Telegram attachments were saved locally:\n- \/tmp\/report\.txt/,
+  );
+});
+
+test("Turn runtime helper reads image payloads from local files", async () => {
+  const tempDir = await mkdtemp(join(tmpdir(), "pi-telegram-turn-runtime-"));
+  const imagePath = join(tempDir, "image.png");
+  await writeFile(imagePath, Buffer.from("demo-image"));
+  const turn = await buildTelegramPromptTurnRuntime({
+    telegramPrefix: "[telegram]",
+    messages: [{ message_id: 11, chat: { id: 5 } }],
+    queueOrder: 1,
+    rawText: "see image",
+    files: [
+      {
+        path: imagePath,
+        fileName: "image.png",
+        isImage: true,
+        mimeType: "image/png",
+      },
+    ],
+    inferImageMimeType: () => undefined,
+  });
+  assert.deepEqual(turn.content[1], {
+    type: "image",
+    data: Buffer.from("demo-image").toString("base64"),
+    mimeType: "image/png",
+  });
+});
+
+test("Turn helpers update matching queued prompt items only", () => {
+  const prompt = {
+    kind: "prompt" as const,
+    chatId: 99,
+    replyToMessageId: 10,
+    sourceMessageIds: [10],
+    queueOrder: 1,
+    queueLane: "default" as const,
+    laneOrder: 1,
+    queuedAttachments: [],
+    content: [{ type: "text" as const, text: "[telegram] old" }],
+    historyText: "old",
+    statusSummary: "old",
+  };
+  const control = {
+    kind: "control" as const,
+    controlType: "status" as const,
+    chatId: 99,
+    replyToMessageId: 11,
+    queueOrder: 2,
+    queueLane: "control" as const,
+    laneOrder: 2,
+    statusSummary: "status",
+    execute: async () => {},
+  };
+  const result = updateQueuedTelegramPromptTurnText({
+    items: [control, prompt],
+    sourceMessageId: 10,
+    telegramPrefix: "[telegram]",
+    rawText: "edited",
+  });
+  assert.equal(result.changed, true);
+  assert.equal(result.items[0], control);
+  assert.equal(
+    ((result.items[1] as typeof prompt).content[0] as { text: string }).text,
+    "[telegram] edited",
+  );
+  const unchanged = updateQueuedTelegramPromptTurnText({
+    items: [control, prompt],
+    sourceMessageId: 12,
+    telegramPrefix: "[telegram]",
+    rawText: "ignored",
+  });
+  assert.equal(unchanged.changed, false);
+  assert.deepEqual(unchanged.items, [control, prompt]);
+});
+
+test("Turn edit runtime binds queued prompt updates to status", () => {
+  const events: string[] = [];
+  let items = [
+    {
+      kind: "prompt" as const,
+      chatId: 99,
+      replyToMessageId: 10,
+      sourceMessageIds: [10],
+      queueOrder: 1,
+      queueLane: "default" as const,
+      laneOrder: 1,
+      queuedAttachments: [],
+      content: [{ type: "text" as const, text: "[telegram] old" }],
+      historyText: "old",
+      statusSummary: "old",
+    },
+  ];
+  const runtime = createTelegramQueuedPromptEditRuntime<
+    { message_id: number; text?: string },
+    string
+  >({
+    getQueuedItems: () => items,
+    setQueuedItems: (nextItems) => {
+      items = nextItems as typeof items;
+      events.push(`items:${nextItems.length}`);
+    },
+    updateStatus: (ctx) => {
+      events.push(`status:${ctx}`);
+    },
+  });
+  assert.equal(
+    runtime.updateFromEditedMessage({ message_id: 10, text: "edited" }, "ctx"),
+    true,
+  );
+  assert.equal(
+    (items[0]?.content[0] as { text: string }).text,
+    "[telegram] edited",
+  );
+  assert.deepEqual(events, ["items:1", "status:ctx"]);
+});
+
 test("Turn helpers preserve queued prompt attachments when captions are edited", () => {
   const turn = {
     kind: "prompt" as const,
@@ -120,7 +268,8 @@ test("Turn helpers preserve queued prompt attachments when captions are edited",
       },
       { type: "image" as const, data: "abc", mimeType: "image/png" },
     ],
-    historyText: "old caption\nAttachments:\n- /tmp/demo.png\n- /tmp/report.txt",
+    historyText:
+      "old caption\nAttachments:\n- /tmp/demo.png\n- /tmp/report.txt",
     statusSummary: "old caption",
   };
   const updated = updateTelegramPromptTurnText({

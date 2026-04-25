@@ -5,17 +5,116 @@
 
 export const MAX_MESSAGE_LENGTH = 4096;
 
-// --- Escaping ---
+const TELEGRAM_TABLE_GRAPHEME_SEGMENTER =
+  typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : undefined;
+const TELEGRAM_TABLE_EMOJI_GRAPHEME_PATTERN =
+  /\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Regional_Indicator}/u;
 
-function escapeHtml(text: string): string {
+// --- HTML Helpers ---
+
+interface OpenHtmlTag {
+  name: string;
+  openTag: string;
+}
+
+const TELEGRAM_VOID_HTML_TAGS = new Set(["br", "hr"]);
+
+export function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
 
-function escapeHtmlAttribute(text: string): string {
+export function escapeHtmlAttribute(text: string): string {
   return escapeHtml(text).replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function getHtmlTagName(tag: string): string | undefined {
+  return tag.match(/^<\/?\s*([a-zA-Z][\w-]*)/)?.[1]?.toLowerCase();
+}
+
+function isHtmlClosingTag(tag: string): boolean {
+  return /^<\//.test(tag);
+}
+
+function isHtmlSelfClosingTag(tag: string): boolean {
+  return /\/\s*>$/.test(tag);
+}
+
+function getHtmlClosingTags(openTags: OpenHtmlTag[]): string {
+  return [...openTags]
+    .reverse()
+    .map((tag) => `</${tag.name}>`)
+    .join("");
+}
+
+function getHtmlOpeningTags(openTags: OpenHtmlTag[]): string {
+  return openTags.map((tag) => tag.openTag).join("");
+}
+
+function updateOpenHtmlTags(tag: string, openTags: OpenHtmlTag[]): void {
+  const name = getHtmlTagName(tag);
+  if (!name || TELEGRAM_VOID_HTML_TAGS.has(name)) return;
+  if (isHtmlClosingTag(tag)) {
+    const index = openTags.map((openTag) => openTag.name).lastIndexOf(name);
+    if (index !== -1) openTags.splice(index, 1);
+    return;
+  }
+  if (isHtmlSelfClosingTag(tag)) return;
+  openTags.push({ name, openTag: tag });
+}
+
+export function chunkHtmlPreservingTags(
+  html: string,
+  maxLength: number,
+): string[] {
+  if (html.length <= maxLength) return [html];
+  const chunks: string[] = [];
+  const openTags: OpenHtmlTag[] = [];
+  const tagPattern = /<\/?[a-zA-Z][^>]*>/g;
+  let current = "";
+  let index = 0;
+  const flushCurrent = (): void => {
+    if (current.length === 0) return;
+    chunks.push(`${current}${getHtmlClosingTags(openTags)}`);
+    current = getHtmlOpeningTags(openTags);
+  };
+  const appendText = (text: string): void => {
+    let remaining = text;
+    while (remaining.length > 0) {
+      const closingTags = getHtmlClosingTags(openTags);
+      const available = maxLength - current.length - closingTags.length;
+      if (available <= 0) {
+        flushCurrent();
+        continue;
+      }
+      const slice = remaining.slice(0, available);
+      current += slice;
+      remaining = remaining.slice(slice.length);
+      if (remaining.length > 0) flushCurrent();
+    }
+  };
+  const appendTag = (tag: string): void => {
+    const closingTags = isHtmlClosingTag(tag)
+      ? ""
+      : getHtmlClosingTags(openTags);
+    if (current.length + tag.length + closingTags.length > maxLength) {
+      flushCurrent();
+    }
+    current += tag;
+    updateOpenHtmlTags(tag, openTags);
+  };
+  for (const match of html.matchAll(tagPattern)) {
+    appendText(html.slice(index, match.index));
+    appendTag(match[0]);
+    index = match.index + match[0].length;
+  }
+  appendText(html.slice(index));
+  if (current.length > 0) chunks.push(current);
+  return chunks;
 }
 
 // --- Plain Preview Rendering ---
@@ -222,7 +321,7 @@ function parseMarkdownAutolinkAt(
   return { startIndex: index, endIndex, destination };
 }
 
-function replaceMarkdownLinkLike(
+function replaceMarkdownLink(
   text: string,
   options: {
     renderInlineLink: (
@@ -256,7 +355,7 @@ function replaceMarkdownLinkLike(
 }
 
 function stripInlineMarkdownToPlainText(text: string): string {
-  let result = replaceMarkdownLinkLike(text, {
+  let result = replaceMarkdownLink(text, {
     renderInlineLink: (link, supported) => {
       const plainLabel = stripInlineMarkdownToPlainText(link.label).trim();
       if (plainLabel.length > 0) return plainLabel;
@@ -390,7 +489,7 @@ function splitLeadingMarkdownBlankLines(markdown: string): {
 
 export type TelegramPreviewRenderStrategy = "plain" | "rich-stable-blocks";
 
-export interface TelegramPreviewSnapshotStateLike {
+export interface TelegramPreviewSnapshotState {
   pendingText: string;
   lastSentText: string;
   lastSentParseMode?: "HTML";
@@ -403,7 +502,7 @@ export interface TelegramPreviewSnapshot extends TelegramRenderedChunk {
 }
 
 export function buildTelegramPreviewFlushText(options: {
-  state: TelegramPreviewSnapshotStateLike;
+  state: TelegramPreviewSnapshotState;
   maxMessageLength: number;
   renderPreviewText: (markdown: string) => string;
 }): string | undefined {
@@ -419,7 +518,7 @@ export function buildTelegramPreviewFlushText(options: {
 
 function buildTelegramPlainPreviewSnapshot(options: {
   sourceText: string;
-  state: TelegramPreviewSnapshotStateLike;
+  state: TelegramPreviewSnapshotState;
   maxMessageLength: number;
   renderPreviewText: (markdown: string) => string;
 }): TelegramPreviewSnapshot | undefined {
@@ -447,13 +546,44 @@ interface TelegramStablePreviewSplit {
   unstableTail: string;
 }
 
+function buildTelegramStablePreviewSplit(
+  lines: string[],
+  stableEndIndex: number,
+): TelegramStablePreviewSplit {
+  return {
+    stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
+    unstableTail: lines.slice(stableEndIndex).join("\n"),
+  };
+}
+
+function collectTelegramStablePreviewTextBlockLines(
+  lines: string[],
+  index: number,
+): { nextIndex: number } {
+  let nextIndex = index;
+  while (nextIndex < lines.length) {
+    const current = lines[nextIndex] ?? "";
+    const following = lines[nextIndex + 1] ?? "";
+    if (current.trim().length === 0) break;
+    if (
+      nextIndex !== index &&
+      (isFencedCodeStart(current) ||
+        canStartIndentedCodeBlock(lines, nextIndex) ||
+        /^\s*>/.test(current) ||
+        (current.includes("|") && isMarkdownTableSeparator(following)))
+    ) {
+      break;
+    }
+    nextIndex += 1;
+  }
+  return { nextIndex };
+}
+
 function splitTelegramStablePreviewMarkdown(
   markdown: string,
 ): TelegramStablePreviewSplit {
   const normalized = normalizeMarkdownDocument(markdown);
-  if (normalized.length === 0) {
-    return { stableMarkdown: "", unstableTail: "" };
-  }
+  if (normalized.length === 0) return { stableMarkdown: "", unstableTail: "" };
   const lines = normalized.split("\n");
   let index = 0;
   let stableEndIndex = 0;
@@ -467,104 +597,108 @@ function splitTelegramStablePreviewMarkdown(
     const nextLine = lines[index + 1] ?? "";
     const fence = parseMarkdownFence(line);
     if (fence) {
-      index += 1;
-      while (
-        index < lines.length &&
-        !isMatchingMarkdownFence(lines[index] ?? "", fence)
-      ) {
-        index += 1;
+      const block = collectFencedMarkdownCodeLines(lines, index, fence);
+      if (!block.closed) {
+        return buildTelegramStablePreviewSplit(lines, stableEndIndex);
       }
-      if (index >= lines.length) {
-        return {
-          stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
-          unstableTail: lines.slice(stableEndIndex).join("\n"),
-        };
-      }
-      index += 1;
+      index = block.nextIndex;
       stableEndIndex = index;
       continue;
     }
     if (line.includes("|") && isMarkdownTableSeparator(nextLine)) {
-      index += 2;
-      while (index < lines.length) {
-        const tableLine = lines[index] ?? "";
-        if (tableLine.trim().length === 0 || !tableLine.includes("|")) {
-          break;
-        }
-        index += 1;
-      }
+      const block = collectMarkdownTableBlockLines(lines, index);
+      index = block.nextIndex;
       if (index >= lines.length) {
-        return {
-          stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
-          unstableTail: lines.slice(stableEndIndex).join("\n"),
-        };
+        return buildTelegramStablePreviewSplit(lines, stableEndIndex);
       }
       stableEndIndex = index;
       continue;
     }
     if (canStartIndentedCodeBlock(lines, index)) {
-      while (index < lines.length) {
-        const rawLine = lines[index] ?? "";
-        if (rawLine.trim().length === 0) {
-          index += 1;
-          continue;
-        }
-        if (!isIndentedCodeLine(rawLine)) break;
-        index += 1;
-      }
+      const block = collectIndentedMarkdownCodeLines(lines, index);
+      index = block.nextIndex;
       if (index >= lines.length) {
-        return {
-          stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
-          unstableTail: lines.slice(stableEndIndex).join("\n"),
-        };
+        return buildTelegramStablePreviewSplit(lines, stableEndIndex);
       }
       stableEndIndex = index;
       continue;
     }
     if (/^\s*>/.test(line)) {
-      while (index < lines.length && /^\s*>/.test(lines[index] ?? "")) {
-        index += 1;
-      }
+      const block = collectMarkdownQuoteBlockLines(lines, index);
+      index = block.nextIndex;
       if (index >= lines.length) {
-        return {
-          stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
-          unstableTail: lines.slice(stableEndIndex).join("\n"),
-        };
+        return buildTelegramStablePreviewSplit(lines, stableEndIndex);
       }
       stableEndIndex = index;
       continue;
     }
-    while (index < lines.length) {
-      const current = lines[index] ?? "";
-      const following = lines[index + 1] ?? "";
-      if (current.trim().length === 0) break;
-      if (
-        index !== blockStart &&
-        (isFencedCodeStart(current) ||
-          canStartIndentedCodeBlock(lines, index) ||
-          /^\s*>/.test(current) ||
-          (current.includes("|") && isMarkdownTableSeparator(following)))
-      ) {
-        break;
-      }
-      index += 1;
-    }
+    const block = collectTelegramStablePreviewTextBlockLines(lines, blockStart);
+    index = block.nextIndex;
     if (index >= lines.length) {
-      return {
-        stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
-        unstableTail: lines.slice(stableEndIndex).join("\n"),
-      };
+      return buildTelegramStablePreviewSplit(lines, stableEndIndex);
     }
     stableEndIndex = index;
   }
-  return {
-    stableMarkdown: lines.slice(0, stableEndIndex).join("\n"),
-    unstableTail: lines.slice(stableEndIndex).join("\n"),
-  };
+  return buildTelegramStablePreviewSplit(lines, stableEndIndex);
+}
+
+function renderTelegramStablePreviewChunk(options: {
+  stableMarkdown: string;
+  maxMessageLength: number;
+  renderTelegramMessage: (
+    text: string,
+    options?: { mode?: TelegramRenderMode },
+  ) => TelegramRenderedChunk[];
+}): TelegramRenderedChunk | undefined {
+  const stableChunk = options.renderTelegramMessage(options.stableMarkdown, {
+    mode: "markdown",
+  })[0];
+  if (!stableChunk || stableChunk.text.length === 0) return undefined;
+  if (stableChunk.text.length > options.maxMessageLength) return undefined;
+  return stableChunk;
+}
+
+function appendTelegramUnstablePreviewTail(options: {
+  previewText: string;
+  stableMarkdown: string;
+  unstableTail: string;
+  maxMessageLength: number;
+}): string {
+  if (options.unstableTail.length === 0) return options.previewText;
+  const tail = splitLeadingMarkdownBlankLines(options.unstableTail);
+  const minimumBlankLinesBeforeTail = endsWithMarkdownHeadingLine(
+    options.stableMarkdown,
+  )
+    ? 1
+    : 0;
+  const blankLinesBeforeTail = Math.max(
+    tail.blankLines,
+    minimumBlankLinesBeforeTail,
+  );
+  const separator =
+    tail.remainingText.length > 0 ? "\n".repeat(blankLinesBeforeTail + 1) : "";
+  const tailText = escapeHtml(tail.remainingText);
+  const candidate = `${options.previewText}${separator}${tailText}`;
+  return candidate.length <= options.maxMessageLength
+    ? candidate
+    : options.previewText;
+}
+
+function isTelegramPreviewSnapshotUnchanged(options: {
+  text: string;
+  parseMode?: "HTML";
+  state: TelegramPreviewSnapshotState;
+  strategy: TelegramPreviewRenderStrategy;
+}): boolean {
+  return (
+    options.text === options.state.lastSentText &&
+    options.parseMode === options.state.lastSentParseMode &&
+    options.strategy === options.state.lastSentStrategy
+  );
 }
 
 export function buildTelegramPreviewSnapshot(options: {
-  state: TelegramPreviewSnapshotStateLike;
+  state: TelegramPreviewSnapshotState;
   maxMessageLength: number;
   renderPreviewText: (markdown: string) => string;
   renderTelegramMessage: (
@@ -583,14 +717,12 @@ export function buildTelegramPreviewSnapshot(options: {
       renderPreviewText: options.renderPreviewText,
     });
   }
-  const stableChunk = options.renderTelegramMessage(split.stableMarkdown, {
-    mode: "markdown",
-  })[0];
-  if (
-    !stableChunk ||
-    stableChunk.text.length === 0 ||
-    stableChunk.text.length > options.maxMessageLength
-  ) {
+  const stableChunk = renderTelegramStablePreviewChunk({
+    stableMarkdown: split.stableMarkdown,
+    maxMessageLength: options.maxMessageLength,
+    renderTelegramMessage: options.renderTelegramMessage,
+  });
+  if (!stableChunk) {
     return buildTelegramPlainPreviewSnapshot({
       sourceText,
       state: options.state,
@@ -598,32 +730,19 @@ export function buildTelegramPreviewSnapshot(options: {
       renderPreviewText: options.renderPreviewText,
     });
   }
-  let previewText = stableChunk.text;
-  if (split.unstableTail.length > 0) {
-    const tail = splitLeadingMarkdownBlankLines(split.unstableTail);
-    const minimumBlankLinesBeforeTail = endsWithMarkdownHeadingLine(
-      split.stableMarkdown,
-    )
-      ? 1
-      : 0;
-    const blankLinesBeforeTail = Math.max(
-      tail.blankLines,
-      minimumBlankLinesBeforeTail,
-    );
-    const separator =
-      tail.remainingText.length > 0
-        ? "\n".repeat(blankLinesBeforeTail + 1)
-        : "";
-    const tailText = escapeHtml(tail.remainingText);
-    const candidate = `${previewText}${separator}${tailText}`;
-    if (candidate.length <= options.maxMessageLength) {
-      previewText = candidate;
-    }
-  }
+  const previewText = appendTelegramUnstablePreviewTail({
+    previewText: stableChunk.text,
+    stableMarkdown: split.stableMarkdown,
+    unstableTail: split.unstableTail,
+    maxMessageLength: options.maxMessageLength,
+  });
   if (
-    previewText === options.state.lastSentText &&
-    stableChunk.parseMode === options.state.lastSentParseMode &&
-    options.state.lastSentStrategy === "rich-stable-blocks"
+    isTelegramPreviewSnapshotUnchanged({
+      text: previewText,
+      parseMode: stableChunk.parseMode,
+      state: options.state,
+      strategy: "rich-stable-blocks",
+    })
   ) {
     return undefined;
   }
@@ -734,36 +853,55 @@ function renderDelimitedInlineStyle(
   );
 }
 
-function renderInlineMarkdown(text: string): string {
-  const tokens: string[] = [];
-  const makeToken = (html: string): string => {
-    const token = `\uE000${tokens.length}\uE001`;
-    tokens.push(html);
-    return token;
-  };
-  let result = replaceMarkdownLinkLike(text, {
+interface InlineMarkdownTokenState {
+  tokens: string[];
+}
+
+function makeInlineMarkdownToken(
+  state: InlineMarkdownTokenState,
+  html: string,
+): string {
+  const token = `\uE000${state.tokens.length}\uE001`;
+  state.tokens.push(html);
+  return token;
+}
+
+function stashInlineMarkdownLinks(
+  text: string,
+  state: InlineMarkdownTokenState,
+): string {
+  return replaceMarkdownLink(text, {
     renderInlineLink: (link, supported) => {
       const plainLabel = stripInlineMarkdownToPlainText(link.label).trim();
-      if (!supported) {
+      if (!supported)
         return plainLabel.length > 0 ? plainLabel : link.destination;
-      }
       const renderedLabel =
         plainLabel.length > 0 ? plainLabel : link.destination;
-      return makeToken(
+      return makeInlineMarkdownToken(
+        state,
         `<a href="${escapeHtmlAttribute(link.destination)}">${escapeHtml(renderedLabel)}</a>`,
       );
     },
     renderAutolink: (link) => {
-      return makeToken(
+      return makeInlineMarkdownToken(
+        state,
         `<a href="${escapeHtmlAttribute(link.destination)}">${escapeHtml(link.destination)}</a>`,
       );
     },
   });
-  result = result.replace(/`([^`\n]+)`/g, (_match, code: string) => {
-    return makeToken(`<code>${escapeHtml(code)}</code>`);
+}
+
+function stashInlineMarkdownCodeSpans(
+  text: string,
+  state: InlineMarkdownTokenState,
+): string {
+  return text.replace(/`([^`\n]+)`/g, (_match, code: string) => {
+    return makeInlineMarkdownToken(state, `<code>${escapeHtml(code)}</code>`);
   });
-  result = escapeHtml(result);
-  result = renderDelimitedInlineStyle(result, "***", (content) => {
+}
+
+function applyInlineMarkdownStyles(text: string): string {
+  let result = renderDelimitedInlineStyle(text, "***", (content) => {
     return `<b><i>${content}</i></b>`;
   });
   result = renderDelimitedInlineStyle(result, "___", (content) => {
@@ -781,14 +919,29 @@ function renderInlineMarkdown(text: string): string {
   result = renderDelimitedInlineStyle(result, "*", (content) => {
     return `<i>${content}</i>`;
   });
-  result = renderDelimitedInlineStyle(result, "_", (content) => {
+  return renderDelimitedInlineStyle(result, "_", (content) => {
     return `<i>${content}</i>`;
   });
-  result = result.replace(/\\([\\`*_{}\[\]()#+\-.!>~|])/g, "$1");
-  return result.replace(
+}
+
+function restoreInlineMarkdownTokens(
+  text: string,
+  state: InlineMarkdownTokenState,
+): string {
+  return text.replace(
     /\uE000(\d+)\uE001/g,
-    (_match, index: string) => tokens[Number(index)] ?? "",
+    (_match, index: string) => state.tokens[Number(index)] ?? "",
   );
+}
+
+function renderInlineMarkdown(text: string): string {
+  const tokenState: InlineMarkdownTokenState = { tokens: [] };
+  let result = stashInlineMarkdownLinks(text, tokenState);
+  result = stashInlineMarkdownCodeSpans(result, tokenState);
+  result = escapeHtml(result);
+  result = applyInlineMarkdownStyles(result);
+  result = result.replace(/\\([\\`*_{}\[\]()#+\-.!>~|])/g, "$1");
+  return restoreInlineMarkdownTokens(result, tokenState);
 }
 
 function buildListIndent(level: number): string {
@@ -815,67 +968,48 @@ function parseMarkdownQuoteLine(
   };
 }
 
+function renderMarkdownTextPiece(piece: string): string {
+  const heading = matchMarkdownHeadingLine(piece);
+  if (heading) {
+    const indent = buildListIndent(Math.floor((heading[1] ?? "").length / 2));
+    return `${indent}<b>${renderInlineMarkdown(heading[2] ?? "")}</b>`;
+  }
+  const task = piece.match(/^(\s*)([-*+]|\d+\.)\s+\[([ xX])\]\s+(.+)$/);
+  if (task) {
+    const indent = buildListIndent(Math.floor((task[1] ?? "").length / 2));
+    const listMarker = task[2] ?? "-";
+    const checkboxMarker =
+      (task[3] ?? " ").toLowerCase() === "x" ? "[x]" : "[ ]";
+    const taskPrefix = isMarkdownNumberedListMarker(listMarker)
+      ? `<code>${listMarker}</code> <code>${checkboxMarker}</code>`
+      : `<code>${checkboxMarker}</code>`;
+    return `${indent}${taskPrefix} ${renderInlineMarkdown(task[4] ?? "")}`;
+  }
+  const bullet = piece.match(/^(\s*)[-*+]\s+(.+)$/);
+  if (bullet) {
+    const indent = buildListIndent(Math.floor((bullet[1] ?? "").length / 2));
+    return `${indent}<code>-</code> ${renderInlineMarkdown(bullet[2] ?? "")}`;
+  }
+  const numbered = piece.match(/^(\s*)(\d+)\.\s+(.+)$/);
+  if (numbered) {
+    const indent = buildListIndent(Math.floor((numbered[1] ?? "").length / 2));
+    return `${indent}<code>${numbered[2]}.</code> ${renderInlineMarkdown(numbered[3] ?? "")}`;
+  }
+  const quote = piece.match(/^>\s?(.+)$/);
+  if (quote) {
+    return `<blockquote>${renderInlineMarkdown(quote[1] ?? "")}</blockquote>`;
+  }
+  if (/^([-*_]\s*){3,}$/.test(piece.trim())) return "────────────";
+  return renderInlineMarkdown(piece);
+}
+
 function renderMarkdownTextLines(block: string): string[] {
   const rendered: string[] = [];
   const lines = block.split("\n");
   for (const line of lines) {
     if (line.trim().length === 0) continue;
-    const pieces = splitPlainMarkdownLine(line);
-    for (const piece of pieces) {
-      const heading = matchMarkdownHeadingLine(piece);
-      if (heading) {
-        rendered.push(
-          `${buildListIndent(Math.floor((heading[1] ?? "").length / 2))}<b>${renderInlineMarkdown(heading[2] ?? "")}</b>`,
-        );
-        continue;
-      }
-      const task = piece.match(/^(\s*)([-*+]|\d+\.)\s+\[([ xX])\]\s+(.+)$/);
-      if (task) {
-        const indent = buildListIndent(Math.floor((task[1] ?? "").length / 2));
-        const listMarker = task[2] ?? "-";
-        const checkboxMarker =
-          (task[3] ?? " ").toLowerCase() === "x" ? "[x]" : "[ ]";
-        const taskPrefix = isMarkdownNumberedListMarker(listMarker)
-          ? `<code>${listMarker}</code> <code>${checkboxMarker}</code>`
-          : `<code>${checkboxMarker}</code>`;
-        rendered.push(
-          `${indent}${taskPrefix} ${renderInlineMarkdown(task[4] ?? "")}`,
-        );
-        continue;
-      }
-      const bullet = piece.match(/^(\s*)[-*+]\s+(.+)$/);
-      if (bullet) {
-        const indent = buildListIndent(
-          Math.floor((bullet[1] ?? "").length / 2),
-        );
-        rendered.push(
-          `${indent}<code>-</code> ${renderInlineMarkdown(bullet[2] ?? "")}`,
-        );
-        continue;
-      }
-      const numbered = piece.match(/^(\s*)(\d+)\.\s+(.+)$/);
-      if (numbered) {
-        const indent = buildListIndent(
-          Math.floor((numbered[1] ?? "").length / 2),
-        );
-        rendered.push(
-          `${indent}<code>${numbered[2]}.</code> ${renderInlineMarkdown(numbered[3] ?? "")}`,
-        );
-        continue;
-      }
-      const quote = piece.match(/^>\s?(.+)$/);
-      if (quote) {
-        rendered.push(
-          `<blockquote>${renderInlineMarkdown(quote[1] ?? "")}</blockquote>`,
-        );
-        continue;
-      }
-      const trimmed = piece.trim();
-      if (/^([-*_]\s*){3,}$/.test(trimmed)) {
-        rendered.push("────────────");
-        continue;
-      }
-      rendered.push(renderInlineMarkdown(piece));
+    for (const piece of splitPlainMarkdownLine(line)) {
+      rendered.push(renderMarkdownTextPiece(piece));
     }
   }
   return rendered;
@@ -925,6 +1059,64 @@ function renderMarkdownCodeBlock(code: string, language?: string): string[] {
   return chunks.length > 0 ? chunks : [`${open}${close}`];
 }
 
+function isTelegramTableEmojiGrapheme(grapheme: string): boolean {
+  return (
+    TELEGRAM_TABLE_EMOJI_GRAPHEME_PATTERN.test(grapheme) ||
+    grapheme.includes("\u20e3")
+  );
+}
+
+function getTelegramTableCodePointWidth(char: string): number {
+  const codePoint = char.codePointAt(0) ?? 0;
+  if (codePoint === 0 || codePoint < 32) return 0;
+  if (/\p{Mark}/u.test(char)) return 0;
+  if ((codePoint >= 0xfe00 && codePoint <= 0xfe0f) || codePoint === 0x200d)
+    return 0;
+  if (
+    (codePoint >= 0x1100 && codePoint <= 0x115f) ||
+    codePoint === 0x2329 ||
+    codePoint === 0x232a ||
+    (codePoint >= 0x2e80 && codePoint <= 0xa4cf) ||
+    (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
+    (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
+    (codePoint >= 0xfe10 && codePoint <= 0xfe19) ||
+    (codePoint >= 0xfe30 && codePoint <= 0xfe6f) ||
+    (codePoint >= 0xff00 && codePoint <= 0xff60) ||
+    (codePoint >= 0xffe0 && codePoint <= 0xffe6)
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+function getTelegramTableGraphemes(text: string): string[] {
+  if (TELEGRAM_TABLE_GRAPHEME_SEGMENTER) {
+    return Array.from(
+      TELEGRAM_TABLE_GRAPHEME_SEGMENTER.segment(text),
+      (segment) => segment.segment,
+    );
+  }
+  return Array.from(text);
+}
+
+function getTelegramTableCellWidth(text: string): number {
+  return getTelegramTableGraphemes(text).reduce((width, grapheme) => {
+    if (isTelegramTableEmojiGrapheme(grapheme)) return width + 2;
+    return (
+      width +
+      Array.from(grapheme).reduce(
+        (sum, char) => sum + getTelegramTableCodePointWidth(char),
+        0,
+      )
+    );
+  }, 0);
+}
+
+function padTelegramTableCellEnd(cell: string, width: number): string {
+  const padding = width - getTelegramTableCellWidth(cell);
+  return padding > 0 ? `${cell}${" ".repeat(padding)}` : cell;
+}
+
 function renderMarkdownTableBlock(lines: string[]): string[] {
   const rows = lines.map(parseMarkdownTableRow);
   const columnCount = Math.max(...rows.map((row) => row.length), 0);
@@ -938,12 +1130,16 @@ function renderMarkdownTableBlock(lines: string[]): string[] {
   const widths = Array.from({ length: columnCount }, (_, columnIndex) => {
     return Math.max(
       3,
-      ...normalizedRows.map((row) => (row[columnIndex] ?? "").length),
+      ...normalizedRows.map((row) =>
+        getTelegramTableCellWidth(row[columnIndex] ?? ""),
+      ),
     );
   });
   const formatRow = (row: string[]): string => {
     return row
-      .map((cell, columnIndex) => (cell ?? "").padEnd(widths[columnIndex] ?? 3))
+      .map((cell, columnIndex) =>
+        padTelegramTableCellEnd(cell ?? "", widths[columnIndex] ?? 3),
+      )
       .join(" | ");
   };
   const separator = widths.map((width) => "-".repeat(width)).join(" | ");
@@ -1014,9 +1210,100 @@ interface TelegramRenderedBlockWithSpacing {
   blankLinesBefore: number;
 }
 
-function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
-  const normalized = normalizeMarkdownDocument(markdown);
-  if (normalized.length === 0) return [];
+function collectFencedMarkdownCodeLines(
+  lines: string[],
+  index: number,
+  fence: { marker: "`" | "~"; length: number },
+): { codeLines: string[]; nextIndex: number; closed: boolean } {
+  const codeLines: string[] = [];
+  let nextIndex = index + 1;
+  while (
+    nextIndex < lines.length &&
+    !isMatchingMarkdownFence(lines[nextIndex] ?? "", fence)
+  ) {
+    codeLines.push(lines[nextIndex] ?? "");
+    nextIndex += 1;
+  }
+  const closed = nextIndex < lines.length;
+  if (closed) nextIndex += 1;
+  return { codeLines, nextIndex, closed };
+}
+
+function collectMarkdownTableBlockLines(
+  lines: string[],
+  index: number,
+): { tableLines: string[]; nextIndex: number } {
+  const tableLines = [lines[index] ?? ""];
+  let nextIndex = index + 2;
+  while (nextIndex < lines.length) {
+    const tableLine = lines[nextIndex] ?? "";
+    if (tableLine.trim().length === 0 || !tableLine.includes("|")) break;
+    tableLines.push(tableLine);
+    nextIndex += 1;
+  }
+  return { tableLines, nextIndex };
+}
+
+function collectIndentedMarkdownCodeLines(
+  lines: string[],
+  index: number,
+): { codeLines: string[]; nextIndex: number } {
+  const codeLines: string[] = [];
+  let nextIndex = index;
+  while (nextIndex < lines.length) {
+    const rawLine = lines[nextIndex] ?? "";
+    if (rawLine.trim().length === 0) {
+      codeLines.push("");
+      nextIndex += 1;
+      continue;
+    }
+    if (!isIndentedCodeLine(rawLine)) break;
+    codeLines.push(stripIndentedCodePrefix(rawLine));
+    nextIndex += 1;
+  }
+  return { codeLines, nextIndex };
+}
+
+function collectMarkdownQuoteBlockLines(
+  lines: string[],
+  index: number,
+): { quoteLines: string[]; nextIndex: number } {
+  const quoteLines: string[] = [];
+  let nextIndex = index;
+  while (nextIndex < lines.length && /^\s*>/.test(lines[nextIndex] ?? "")) {
+    quoteLines.push(lines[nextIndex] ?? "");
+    nextIndex += 1;
+  }
+  return { quoteLines, nextIndex };
+}
+
+function isMarkdownTextBlockBoundary(lines: string[], index: number): boolean {
+  const current = lines[index] ?? "";
+  const following = lines[index + 1] ?? "";
+  if (current.trim().length === 0) return true;
+  if (isFencedCodeStart(current)) return true;
+  if (canStartIndentedCodeBlock(lines, index)) return true;
+  if (/^\s*>/.test(current)) return true;
+  return current.includes("|") && isMarkdownTableSeparator(following);
+}
+
+function collectMarkdownTextBlockLines(
+  lines: string[],
+  index: number,
+): { textLines: string[]; nextIndex: number } {
+  const textLines: string[] = [];
+  let nextIndex = index;
+  while (nextIndex < lines.length) {
+    if (isMarkdownTextBlockBoundary(lines, nextIndex)) break;
+    textLines.push(lines[nextIndex] ?? "");
+    nextIndex += 1;
+  }
+  return { textLines, nextIndex };
+}
+
+function renderMarkdownDocumentBlocks(
+  normalizedMarkdown: string,
+): TelegramRenderedBlockWithSpacing[] {
   const renderedBlocks: TelegramRenderedBlockWithSpacing[] = [];
   let minimumBlankLinesBeforeNextBlock = 0;
   const pushRenderedBlocks = (
@@ -1035,7 +1322,7 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
     }
     minimumBlankLinesBeforeNextBlock = 0;
   };
-  const lines = normalized.split("\n");
+  const lines = normalizedMarkdown.split("\n");
   let index = 0;
   let pendingBlankLines = 0;
   while (index < lines.length) {
@@ -1061,123 +1348,118 @@ function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
     }
     const fence = parseMarkdownFence(line);
     if (fence) {
-      index += 1;
-      const codeLines: string[] = [];
-      while (
-        index < lines.length &&
-        !isMatchingMarkdownFence(lines[index] ?? "", fence)
-      ) {
-        codeLines.push(lines[index] ?? "");
-        index += 1;
-      }
-      if (index < lines.length) {
-        index += 1;
-      }
+      const block = collectFencedMarkdownCodeLines(lines, index, fence);
+      index = block.nextIndex;
       pushRenderedBlocks(
-        renderMarkdownCodeBlock(codeLines.join("\n"), fence.info),
+        renderMarkdownCodeBlock(block.codeLines.join("\n"), fence.info),
         pendingBlankLines,
       );
       pendingBlankLines = 0;
       continue;
     }
     if (line.includes("|") && isMarkdownTableSeparator(nextLine)) {
-      const tableLines: string[] = [line];
-      index += 2;
-      while (index < lines.length) {
-        const tableLine = lines[index] ?? "";
-        if (tableLine.trim().length === 0 || !tableLine.includes("|")) {
-          break;
-        }
-        tableLines.push(tableLine);
-        index += 1;
-      }
+      const block = collectMarkdownTableBlockLines(lines, index);
+      index = block.nextIndex;
       pushRenderedBlocks(
-        renderMarkdownTableBlock(tableLines),
+        renderMarkdownTableBlock(block.tableLines),
         pendingBlankLines,
       );
       pendingBlankLines = 0;
       continue;
     }
     if (canStartIndentedCodeBlock(lines, index)) {
-      const codeLines: string[] = [];
-      while (index < lines.length) {
-        const rawLine = lines[index] ?? "";
-        if (rawLine.trim().length === 0) {
-          codeLines.push("");
-          index += 1;
-          continue;
-        }
-        if (!isIndentedCodeLine(rawLine)) break;
-        codeLines.push(stripIndentedCodePrefix(rawLine));
-        index += 1;
-      }
+      const block = collectIndentedMarkdownCodeLines(lines, index);
+      index = block.nextIndex;
       pushRenderedBlocks(
-        renderMarkdownCodeBlock(codeLines.join("\n")),
+        renderMarkdownCodeBlock(block.codeLines.join("\n")),
         pendingBlankLines,
       );
       pendingBlankLines = 0;
       continue;
     }
     if (/^\s*>/.test(line)) {
-      const quoteLines: string[] = [];
-      while (index < lines.length && /^\s*>/.test(lines[index] ?? "")) {
-        quoteLines.push(lines[index] ?? "");
-        index += 1;
-      }
+      const block = collectMarkdownQuoteBlockLines(lines, index);
+      index = block.nextIndex;
       pushRenderedBlocks(
-        renderMarkdownQuoteBlock(quoteLines),
+        renderMarkdownQuoteBlock(block.quoteLines),
         pendingBlankLines,
       );
       pendingBlankLines = 0;
       continue;
     }
-    const textLines: string[] = [];
-    while (index < lines.length) {
-      const current = lines[index] ?? "";
-      const following = lines[index + 1] ?? "";
-      if (current.trim().length === 0) break;
-      if (
-        isFencedCodeStart(current) ||
-        canStartIndentedCodeBlock(lines, index) ||
-        /^\s*>/.test(current)
-      )
-        break;
-      if (current.includes("|") && isMarkdownTableSeparator(following)) break;
-      textLines.push(current);
-      index += 1;
-    }
+    const block = collectMarkdownTextBlockLines(lines, index);
+    index = block.nextIndex;
     pushRenderedBlocks(
-      renderMarkdownTextBlock(textLines.join("\n")),
+      renderMarkdownTextBlock(block.textLines.join("\n")),
       pendingBlankLines,
     );
     pendingBlankLines = 0;
   }
+  return renderedBlocks;
+}
+
+interface TelegramMarkdownChunkAccumulator {
+  chunks: string[];
+  current: string;
+}
+
+function flushTelegramMarkdownChunkAccumulator(
+  accumulator: TelegramMarkdownChunkAccumulator,
+): void {
+  if (accumulator.current.length === 0) return;
+  accumulator.chunks.push(accumulator.current);
+  accumulator.current = "";
+}
+
+function splitOversizedTelegramMarkdownBlock(text: string): string[] {
   const chunks: string[] = [];
-  let current = "";
-  for (const block of renderedBlocks) {
-    const separator = "\n".repeat(block.blankLinesBefore + 1);
-    const candidate =
-      current.length === 0 ? block.text : `${current}${separator}${block.text}`;
-    if (candidate.length <= MAX_MESSAGE_LENGTH) {
-      current = candidate;
-      continue;
-    }
-    if (current.length > 0) {
-      chunks.push(current);
-      current = "";
-    }
-    if (block.text.length <= MAX_MESSAGE_LENGTH) {
-      current = block.text;
-      continue;
-    }
-    for (let i = 0; i < block.text.length; i += MAX_MESSAGE_LENGTH) {
-      chunks.push(block.text.slice(i, i + MAX_MESSAGE_LENGTH));
-    }
-  }
-  if (current.length > 0) {
-    chunks.push(current);
+  for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
+    chunks.push(text.slice(i, i + MAX_MESSAGE_LENGTH));
   }
   return chunks;
+}
+
+function appendTelegramRenderedMarkdownBlock(
+  accumulator: TelegramMarkdownChunkAccumulator,
+  block: TelegramRenderedBlockWithSpacing,
+): void {
+  const separator = "\n".repeat(block.blankLinesBefore + 1);
+  const candidate =
+    accumulator.current.length === 0
+      ? block.text
+      : `${accumulator.current}${separator}${block.text}`;
+  if (candidate.length <= MAX_MESSAGE_LENGTH) {
+    accumulator.current = candidate;
+    return;
+  }
+  flushTelegramMarkdownChunkAccumulator(accumulator);
+  if (block.text.length <= MAX_MESSAGE_LENGTH) {
+    accumulator.current = block.text;
+    return;
+  }
+  accumulator.chunks.push(...splitOversizedTelegramMarkdownBlock(block.text));
+}
+
+function chunkTelegramRenderedMarkdownBlocks(
+  renderedBlocks: TelegramRenderedBlockWithSpacing[],
+): string[] {
+  const accumulator: TelegramMarkdownChunkAccumulator = {
+    chunks: [],
+    current: "",
+  };
+  for (const block of renderedBlocks) {
+    appendTelegramRenderedMarkdownBlock(accumulator, block);
+  }
+  flushTelegramMarkdownChunkAccumulator(accumulator);
+  return accumulator.chunks;
+}
+
+function renderMarkdownToTelegramHtmlChunks(markdown: string): string[] {
+  const normalized = normalizeMarkdownDocument(markdown);
+  if (normalized.length === 0) return [];
+  return chunkTelegramRenderedMarkdownBlocks(
+    renderMarkdownDocumentBlocks(normalized),
+  );
 }
 
 // --- Unified Telegram Rendering ---
@@ -1245,94 +1527,6 @@ function chunkParagraphs(text: string): string[] {
   return chunks;
 }
 
-interface OpenHtmlTag {
-  name: string;
-  openTag: string;
-}
-
-const TELEGRAM_VOID_HTML_TAGS = new Set(["br", "hr"]);
-
-function getHtmlTagName(tag: string): string | undefined {
-  return tag.match(/^<\/?\s*([a-zA-Z][\w-]*)/)?.[1]?.toLowerCase();
-}
-
-function isHtmlClosingTag(tag: string): boolean {
-  return /^<\//.test(tag);
-}
-
-function isHtmlSelfClosingTag(tag: string): boolean {
-  return /\/\s*>$/.test(tag);
-}
-
-function getHtmlClosingTags(openTags: OpenHtmlTag[]): string {
-  return [...openTags]
-    .reverse()
-    .map((tag) => `</${tag.name}>`)
-    .join("");
-}
-
-function getHtmlOpeningTags(openTags: OpenHtmlTag[]): string {
-  return openTags.map((tag) => tag.openTag).join("");
-}
-
-function updateOpenHtmlTags(tag: string, openTags: OpenHtmlTag[]): void {
-  const name = getHtmlTagName(tag);
-  if (!name || TELEGRAM_VOID_HTML_TAGS.has(name)) return;
-  if (isHtmlClosingTag(tag)) {
-    const index = openTags.map((openTag) => openTag.name).lastIndexOf(name);
-    if (index !== -1) openTags.splice(index, 1);
-    return;
-  }
-  if (isHtmlSelfClosingTag(tag)) return;
-  openTags.push({ name, openTag: tag });
-}
-
-function chunkHtmlPreservingTags(html: string): string[] {
-  if (html.length <= MAX_MESSAGE_LENGTH) return [html];
-  const chunks: string[] = [];
-  const openTags: OpenHtmlTag[] = [];
-  const tagPattern = /<\/?[a-zA-Z][^>]*>/g;
-  let current = "";
-  let index = 0;
-  const flushCurrent = (): void => {
-    if (current.length === 0) return;
-    chunks.push(`${current}${getHtmlClosingTags(openTags)}`);
-    current = getHtmlOpeningTags(openTags);
-  };
-  const appendText = (text: string): void => {
-    let remaining = text;
-    while (remaining.length > 0) {
-      const closingTags = getHtmlClosingTags(openTags);
-      const available =
-        MAX_MESSAGE_LENGTH - current.length - closingTags.length;
-      if (available <= 0) {
-        flushCurrent();
-        continue;
-      }
-      const slice = remaining.slice(0, available);
-      current += slice;
-      remaining = remaining.slice(slice.length);
-      if (remaining.length > 0) flushCurrent();
-    }
-  };
-  const appendTag = (tag: string): void => {
-    const closingTags = getHtmlClosingTags(openTags);
-    if (current.length + tag.length + closingTags.length > MAX_MESSAGE_LENGTH) {
-      flushCurrent();
-    }
-    current += tag;
-    updateOpenHtmlTags(tag, openTags);
-  };
-  for (const match of html.matchAll(tagPattern)) {
-    appendText(html.slice(index, match.index));
-    appendTag(match[0]);
-    index = match.index + match[0].length;
-  }
-  appendText(html.slice(index));
-  if (current.length > 0) chunks.push(current);
-  return chunks;
-}
-
 export function renderTelegramMessage(
   text: string,
   options?: { mode?: TelegramRenderMode },
@@ -1342,7 +1536,7 @@ export function renderTelegramMessage(
     return chunkParagraphs(text).map((chunk) => ({ text: chunk }));
   }
   if (mode === "html") {
-    return chunkHtmlPreservingTags(text).map((chunk) => ({
+    return chunkHtmlPreservingTags(text, MAX_MESSAGE_LENGTH).map((chunk) => ({
       text: chunk,
       parseMode: "HTML",
     }));

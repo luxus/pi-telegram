@@ -3,27 +3,34 @@
  * Owns prompt-turn summary and content construction so queued Telegram turns are assembled consistently
  */
 
+import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
-
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
 
 import {
   collectTelegramMessageIds,
+  type DownloadedTelegramMessageFile,
+  type DownloadTelegramMessageFilesDeps,
+  downloadTelegramMessageFiles,
+  extractTelegramMessagesText,
   formatTelegramHistoryText,
+  guessMediaType,
+  type TelegramMediaMessage,
 } from "./media.ts";
-import type { PendingTelegramTurn } from "./queue.ts";
+import type {
+  PendingTelegramTurn,
+  TelegramPromptContent,
+  TelegramQueueItem,
+  TelegramQueueStore,
+} from "./queue.ts";
 
-export interface TelegramTurnMessageLike {
+export const TELEGRAM_PREFIX = "[telegram]";
+
+export interface TelegramTurnMessage {
   message_id: number;
   chat: { id: number };
 }
 
-export interface DownloadedTelegramTurnFileLike {
-  path: string;
-  fileName: string;
-  isImage: boolean;
-  mimeType?: string;
-}
+export type DownloadedTelegramTurnFile = DownloadedTelegramMessageFile;
 
 export function truncateTelegramQueueSummary(
   text: string,
@@ -45,7 +52,7 @@ export function truncateTelegramQueueSummary(
 
 export function formatTelegramTurnStatusSummary(
   rawText: string,
-  files: DownloadedTelegramTurnFileLike[],
+  files: DownloadedTelegramTurnFile[],
 ): string {
   const textSummary = truncateTelegramQueueSummary(rawText);
   if (textSummary) return textSummary;
@@ -62,7 +69,7 @@ export function formatTelegramTurnStatusSummary(
 export function buildTelegramTurnPrompt(options: {
   telegramPrefix: string;
   rawText: string;
-  files: DownloadedTelegramTurnFileLike[];
+  files: DownloadedTelegramTurnFile[];
   historyTurns?: Pick<PendingTelegramTurn, "historyText">[];
 }): string {
   let prompt = options.telegramPrefix;
@@ -92,7 +99,7 @@ export function buildTelegramTurnPrompt(options: {
 function splitTelegramPromptAttachmentSuffix(prompt: string): {
   promptWithoutAttachments: string;
   attachmentSuffix: string;
-  attachmentFiles: DownloadedTelegramTurnFileLike[];
+  attachmentFiles: DownloadedTelegramTurnFile[];
 } {
   const marker = "\n\nTelegram attachments were saved locally:";
   const markerIndex = prompt.indexOf(marker);
@@ -117,13 +124,12 @@ function buildEditedTelegramPromptText(options: {
   existingPrompt: string;
   telegramPrefix: string;
   rawText: string;
-}): { text: string; attachmentFiles: DownloadedTelegramTurnFileLike[] } {
+}): { text: string; attachmentFiles: DownloadedTelegramTurnFile[] } {
   const { promptWithoutAttachments, attachmentSuffix, attachmentFiles } =
     splitTelegramPromptAttachmentSuffix(options.existingPrompt);
   const currentMessageMarker = "Current Telegram message:";
-  const currentMessageIndex = promptWithoutAttachments.lastIndexOf(
-    currentMessageMarker,
-  );
+  const currentMessageIndex =
+    promptWithoutAttachments.lastIndexOf(currentMessageMarker);
   if (currentMessageIndex !== -1) {
     const prefix = promptWithoutAttachments.slice(
       0,
@@ -150,7 +156,7 @@ export function updateTelegramPromptTurnText(options: {
   telegramPrefix: string;
   rawText: string;
 }): PendingTelegramTurn {
-  let attachmentFiles: DownloadedTelegramTurnFileLike[] = [];
+  let attachmentFiles: DownloadedTelegramTurnFile[] = [];
   const nextContent = options.turn.content.map((block, index) => {
     if (index !== 0 || block.type !== "text") return block;
     const updated = buildEditedTelegramPromptText({
@@ -175,21 +181,110 @@ export function updateTelegramPromptTurnText(options: {
   };
 }
 
-export async function buildTelegramPromptTurn(options: {
+export function updateQueuedTelegramPromptTurnText<
+  TContext = unknown,
+>(options: {
+  items: TelegramQueueItem<TContext>[];
+  sourceMessageId: number | undefined;
   telegramPrefix: string;
-  messages: TelegramTurnMessageLike[];
+  rawText: string;
+}): { items: TelegramQueueItem<TContext>[]; changed: boolean } {
+  if (options.sourceMessageId === undefined) {
+    return { items: options.items, changed: false };
+  }
+  let changed = false;
+  const items = options.items.map((item) => {
+    if (
+      item.kind !== "prompt" ||
+      !item.sourceMessageIds.includes(options.sourceMessageId as number)
+    ) {
+      return item;
+    }
+    changed = true;
+    return updateTelegramPromptTurnText({
+      turn: item,
+      telegramPrefix: options.telegramPrefix,
+      rawText: options.rawText,
+    });
+  });
+  return { items, changed };
+}
+
+export interface TelegramQueuedPromptEditRuntimeDeps<
+  TContext = unknown,
+> extends TelegramQueueStore<TContext> {
+  updateStatus: (ctx: TContext) => void;
+}
+
+export function createTelegramQueuedPromptEditRuntime<
+  TMessage extends TelegramMediaMessage,
+  TContext = unknown,
+>(deps: TelegramQueuedPromptEditRuntimeDeps<TContext>) {
+  return {
+    updateFromEditedMessage: (message: TMessage, ctx: TContext): boolean => {
+      const { changed, items } = updateQueuedTelegramPromptTurnText({
+        items: deps.getQueuedItems(),
+        sourceMessageId: message.message_id,
+        telegramPrefix: TELEGRAM_PREFIX,
+        rawText: extractTelegramMessagesText([message]),
+      });
+      deps.setQueuedItems(items);
+      if (changed) deps.updateStatus(ctx);
+      return changed;
+    },
+  };
+}
+
+export interface BuildTelegramPromptTurnOptions {
+  telegramPrefix: string;
+  messages: TelegramTurnMessage[];
   historyTurns?: PendingTelegramTurn[];
   queueOrder: number;
   rawText: string;
-  files: DownloadedTelegramTurnFileLike[];
+  files: DownloadedTelegramTurnFile[];
   readBinaryFile: (path: string) => Promise<Uint8Array>;
   inferImageMimeType: (path: string) => string | undefined;
-}): Promise<PendingTelegramTurn> {
+}
+
+export type BuildTelegramPromptTurnRuntimeOptions = Omit<
+  BuildTelegramPromptTurnOptions,
+  "readBinaryFile"
+>;
+
+export interface TelegramPromptTurnRuntimeBuilderDeps extends DownloadTelegramMessageFilesDeps {
+  allocateQueueOrder: () => number;
+}
+
+export function createTelegramPromptTurnRuntimeBuilder<
+  TMessage extends TelegramTurnMessage & TelegramMediaMessage,
+>(
+  deps: TelegramPromptTurnRuntimeBuilderDeps,
+): (
+  messages: TMessage[],
+  historyTurns?: PendingTelegramTurn[],
+) => Promise<PendingTelegramTurn> {
+  return async (messages, historyTurns = []) =>
+    buildTelegramPromptTurnRuntime({
+      telegramPrefix: TELEGRAM_PREFIX,
+      messages,
+      historyTurns,
+      queueOrder: deps.allocateQueueOrder(),
+      rawText: extractTelegramMessagesText(messages),
+      files: await downloadTelegramMessageFiles(messages, {
+        downloadFile: deps.downloadFile,
+      }),
+      inferImageMimeType: guessMediaType,
+    });
+}
+
+export async function buildTelegramPromptTurn(
+  options: BuildTelegramPromptTurnOptions,
+): Promise<PendingTelegramTurn> {
   const firstMessage = options.messages[0];
   if (!firstMessage) {
     throw new Error("Missing Telegram message for turn creation");
   }
-  const content: Array<TextContent | ImageContent> = [
+  const content: TelegramPromptContent[] = [
     {
       type: "text",
       text: buildTelegramTurnPrompt({
@@ -227,4 +322,13 @@ export async function buildTelegramPromptTurn(options: {
       options.files,
     ),
   };
+}
+
+export async function buildTelegramPromptTurnRuntime(
+  options: BuildTelegramPromptTurnRuntimeOptions,
+): Promise<PendingTelegramTurn> {
+  return buildTelegramPromptTurn({
+    ...options,
+    readBinaryFile: readFile,
+  });
 }

@@ -1,29 +1,180 @@
 /**
- * Telegram API and config persistence helpers
- * Wraps bot API calls, file downloads, and local config reads and writes for the bridge runtime
+ * Telegram API transport helpers
+ * Wraps bot API calls, file downloads, runtime transport binding, and Telegram temp-file cleanup
  */
 
 import { randomUUID } from "node:crypto";
 import { createWriteStream, openAsBlob } from "node:fs";
-import {
-  mkdir,
-  readFile,
-  readdir,
-  stat,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
-export interface TelegramConfig {
-  botToken?: string;
-  botUsername?: string;
-  botId?: number;
-  allowedUserId?: number;
-  lastUpdateId?: number;
+export const TELEGRAM_FILE_MAX_BYTES = 50 * 1024 * 1024;
+
+export function getTelegramInboundFileByteLimitFromEnv(
+  env: NodeJS.ProcessEnv,
+  names: string[],
+  defaultValue = TELEGRAM_FILE_MAX_BYTES,
+): number {
+  for (const name of names) {
+    const rawValue = env[name]?.trim();
+    if (!rawValue) continue;
+    const parsed = Number(rawValue);
+    if (Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  }
+  return defaultValue;
 }
+
+const TEMP_DIR = join(homedir(), ".pi", "agent", "tmp", "telegram");
+const TELEGRAM_TEMP_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const TELEGRAM_INBOUND_FILE_MAX_BYTES = getTelegramInboundFileByteLimitFromEnv(
+  process.env,
+  ["PI_TELEGRAM_INBOUND_FILE_MAX_BYTES", "TELEGRAM_MAX_FILE_SIZE_BYTES"],
+  TELEGRAM_FILE_MAX_BYTES,
+);
+
+export interface TelegramUser {
+  id: number;
+  is_bot: boolean;
+  first_name: string;
+  username?: string;
+}
+
+export interface TelegramChat {
+  id: number;
+  type: string;
+}
+
+export interface TelegramPhotoSize {
+  file_id: string;
+  file_size?: number;
+}
+
+export interface TelegramDocument {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TelegramVideo {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TelegramAudio {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TelegramVoice {
+  file_id: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TelegramAnimation {
+  file_id: string;
+  file_name?: string;
+  mime_type?: string;
+  file_size?: number;
+}
+
+export interface TelegramSticker {
+  file_id: string;
+  emoji?: string;
+}
+
+export interface TelegramMessage {
+  message_id: number;
+  chat: TelegramChat;
+  from?: TelegramUser;
+  text?: string;
+  caption?: string;
+  media_group_id?: string;
+  photo?: TelegramPhotoSize[];
+  document?: TelegramDocument;
+  video?: TelegramVideo;
+  audio?: TelegramAudio;
+  voice?: TelegramVoice;
+  animation?: TelegramAnimation;
+  sticker?: TelegramSticker;
+}
+
+export interface TelegramCallbackQuery {
+  id: string;
+  from: TelegramUser;
+  message?: TelegramMessage;
+  data?: string;
+}
+
+export interface TelegramReactionTypeEmoji {
+  type: "emoji";
+  emoji: string;
+}
+
+export interface TelegramReactionTypeCustomEmoji {
+  type: "custom_emoji";
+  custom_emoji_id: string;
+}
+
+export interface TelegramReactionTypePaid {
+  type: "paid";
+}
+
+export type TelegramReactionType =
+  | TelegramReactionTypeEmoji
+  | TelegramReactionTypeCustomEmoji
+  | TelegramReactionTypePaid;
+
+export interface TelegramMessageReactionUpdated {
+  chat: TelegramChat;
+  message_id: number;
+  user?: TelegramUser;
+  actor_chat?: TelegramChat;
+  old_reaction: TelegramReactionType[];
+  new_reaction: TelegramReactionType[];
+  date: number;
+}
+
+export interface TelegramUpdate {
+  update_id: number;
+  message?: TelegramMessage;
+  edited_message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
+  message_reaction?: TelegramMessageReactionUpdated;
+  deleted_business_messages?: { message_ids?: unknown };
+}
+
+export interface TelegramSentMessage {
+  message_id: number;
+}
+
+export interface TelegramReplyParameters {
+  message_id: number;
+  allow_sending_without_reply: true;
+}
+
+export type TelegramSendMessageBody = Record<string, unknown> & {
+  chat_id: number;
+  text: string;
+  parse_mode?: "HTML";
+  reply_markup?: unknown;
+  reply_parameters?: TelegramReplyParameters;
+};
+
+export type TelegramEditMessageTextBody = Record<string, unknown> & {
+  chat_id: number;
+  message_id: number;
+  text: string;
+  parse_mode?: "HTML";
+};
 
 interface TelegramApiResponse<T> {
   ok: boolean;
@@ -76,6 +227,59 @@ export interface TelegramApiClient {
   ) => Promise<void>;
 }
 
+export interface TelegramBridgeApiRuntimeDeps {
+  client: TelegramApiClient;
+  tempDir: string;
+  maxFileSizeBytes: number;
+  tempFileMaxAgeMs: number;
+  recordRuntimeEvent: (
+    kind: "api" | "multipart" | "download",
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
+}
+
+export interface TelegramBridgeApiRuntime {
+  call: <TResponse>(
+    method: string,
+    body: Record<string, unknown>,
+    options?: TelegramApiCallOptions,
+  ) => Promise<TResponse>;
+  callMultipart: <TResponse>(
+    method: string,
+    fields: Record<string, string>,
+    fileField: string,
+    filePath: string,
+    fileName: string,
+    options?: TelegramApiCallOptions,
+  ) => Promise<TResponse>;
+  downloadFile: (fileId: string, suggestedName: string) => Promise<string>;
+  deleteWebhook: (signal?: AbortSignal) => Promise<boolean>;
+  getUpdates: (
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => Promise<TelegramUpdate[]>;
+  setMyCommands: (
+    commands: readonly { command: string; description: string }[],
+  ) => Promise<boolean>;
+  sendChatAction: (chatId: number, action: "typing") => Promise<boolean>;
+  sendTypingAction: (chatId: number) => Promise<unknown>;
+  sendMessageDraft: (
+    chatId: number,
+    draftId: number,
+    text: string,
+  ) => Promise<boolean>;
+  sendMessage: (body: TelegramSendMessageBody) => Promise<TelegramSentMessage>;
+  editMessageText: (
+    body: TelegramEditMessageTextBody,
+  ) => Promise<"edited" | "unchanged">;
+  answerCallbackQuery: (
+    callbackQueryId: string,
+    text?: string,
+  ) => Promise<void>;
+  prepareTempDir: () => Promise<number>;
+}
+
 function sanitizeFileName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_");
 }
@@ -92,6 +296,12 @@ class TelegramApiHttpError extends Error {
     this.status = status;
     this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+export function isTelegramMessageNotModifiedError(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message.includes("message is not modified")
+  );
 }
 
 function isRetryableTelegramApiError(error: unknown): boolean {
@@ -160,9 +370,7 @@ async function writeTelegramDownloadResponse(
     return;
   }
   await pipeline(
-    Readable.fromWeb(
-      response.body as unknown as Parameters<typeof Readable.fromWeb>[0],
-    ),
+    Readable.from(response.body, { objectMode: false }),
     createTelegramDownloadLimitTransform(maxFileSizeBytes),
     createWriteStream(targetPath),
   );
@@ -247,30 +455,6 @@ async function callTelegramWithRetry<TResponse>(
   }
 }
 
-export async function readTelegramConfig(
-  configPath: string,
-): Promise<TelegramConfig> {
-  try {
-    const content = await readFile(configPath, "utf8");
-    return JSON.parse(content) as TelegramConfig;
-  } catch {
-    return {};
-  }
-}
-
-export async function writeTelegramConfig(
-  agentDir: string,
-  configPath: string,
-  config: TelegramConfig,
-): Promise<void> {
-  await mkdir(agentDir, { recursive: true });
-  await writeFile(
-    configPath,
-    JSON.stringify(config, null, "\t") + "\n",
-    "utf8",
-  );
-}
-
 export async function cleanupTelegramTempFiles(
   tempDir: string,
   maxAgeMs: number,
@@ -298,19 +482,32 @@ export async function cleanupTelegramTempFiles(
   return removedCount;
 }
 
+export async function prepareTelegramTempDir(
+  tempDir: string,
+  maxAgeMs: number,
+): Promise<number> {
+  await mkdir(tempDir, { recursive: true });
+  return cleanupTelegramTempFiles(tempDir, maxAgeMs);
+}
+
+function assertTelegramBotTokenConfigured(
+  botToken: string | undefined,
+): string {
+  if (!botToken) throw new Error("Telegram bot token is not configured");
+  return botToken;
+}
+
 export async function callTelegram<TResponse>(
   botToken: string | undefined,
   method: string,
   body: Record<string, unknown>,
   options?: TelegramApiCallOptions,
 ): Promise<TResponse> {
-  if (!botToken) {
-    throw new Error("Telegram bot token is not configured");
-  }
+  const configuredBotToken = assertTelegramBotTokenConfigured(botToken);
   return callTelegramWithRetry(
     method,
     async () =>
-      fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
+      fetch(`https://api.telegram.org/bot${configuredBotToken}/${method}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
@@ -318,6 +515,21 @@ export async function callTelegram<TResponse>(
       }),
     options,
   );
+}
+
+export type TelegramBotIdentityResponse = Pick<
+  TelegramApiResponse<TelegramUser>,
+  "ok" | "result" | "description"
+>;
+
+export async function fetchTelegramBotIdentity(
+  botToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<TelegramBotIdentityResponse> {
+  const response = await fetchImpl(
+    `https://api.telegram.org/bot${botToken}/getMe`,
+  );
+  return response.json() as Promise<TelegramBotIdentityResponse>;
 }
 
 export async function callTelegramMultipart<TResponse>(
@@ -329,9 +541,7 @@ export async function callTelegramMultipart<TResponse>(
   fileName: string,
   options?: TelegramApiCallOptions,
 ): Promise<TResponse> {
-  if (!botToken) {
-    throw new Error("Telegram bot token is not configured");
-  }
+  const configuredBotToken = assertTelegramBotTokenConfigured(botToken);
   const fileBlob = await openAsBlob(filePath);
   return callTelegramWithRetry(
     method,
@@ -341,11 +551,14 @@ export async function callTelegramMultipart<TResponse>(
         form.set(key, value);
       }
       form.set(fileField, fileBlob, fileName);
-      return fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
-        method: "POST",
-        body: form,
-        signal: options?.signal,
-      });
+      return fetch(
+        `https://api.telegram.org/bot${configuredBotToken}/${method}`,
+        {
+          method: "POST",
+          body: form,
+          signal: options?.signal,
+        },
+      );
     },
     options,
   );
@@ -358,11 +571,9 @@ export async function downloadTelegramFile(
   tempDir: string,
   options?: TelegramFileDownloadOptions,
 ): Promise<string> {
-  if (!botToken) {
-    throw new Error("Telegram bot token is not configured");
-  }
+  const configuredBotToken = assertTelegramBotTokenConfigured(botToken);
   const file = await callTelegram<TelegramGetFileResult>(
-    botToken,
+    configuredBotToken,
     "getFile",
     { file_id: fileId },
     { signal: options?.signal },
@@ -374,7 +585,7 @@ export async function downloadTelegramFile(
     `${randomUUID()}-${sanitizeFileName(suggestedName)}`,
   );
   const response = await fetch(
-    `https://api.telegram.org/file/bot${botToken}/${file.file_path}`,
+    `https://api.telegram.org/file/bot${configuredBotToken}/${file.file_path}`,
     { signal: options?.signal },
   );
   if (!response.ok) {
@@ -414,6 +625,131 @@ export async function answerTelegramCallbackQuery(
   } catch {
     // ignore
   }
+}
+
+export function createTelegramChatActionSender<TAction extends string>(
+  sendChatAction: (chatId: number, action: TAction) => Promise<unknown>,
+  action: TAction,
+): (chatId: number) => Promise<unknown> {
+  return (chatId) => sendChatAction(chatId, action);
+}
+
+export function createDefaultTelegramBridgeApiRuntime(deps: {
+  getBotToken: () => string | undefined;
+  recordRuntimeEvent: TelegramBridgeApiRuntimeDeps["recordRuntimeEvent"];
+}): TelegramBridgeApiRuntime {
+  return createTelegramBridgeApiRuntime({
+    client: createTelegramApiClient(deps.getBotToken),
+    tempDir: TEMP_DIR,
+    maxFileSizeBytes: TELEGRAM_INBOUND_FILE_MAX_BYTES,
+    tempFileMaxAgeMs: TELEGRAM_TEMP_FILE_MAX_AGE_MS,
+    recordRuntimeEvent: deps.recordRuntimeEvent,
+  });
+}
+
+export function createTelegramBridgeApiRuntime(
+  deps: TelegramBridgeApiRuntimeDeps,
+): TelegramBridgeApiRuntime {
+  const callRecorded = async <TResponse>(
+    method: string,
+    body: Record<string, unknown>,
+    options?: TelegramApiCallOptions,
+  ): Promise<TResponse> => {
+    try {
+      return await deps.client.call(method, body, options);
+    } catch (error) {
+      deps.recordRuntimeEvent("api", error, { method });
+      throw error;
+    }
+  };
+  return {
+    call: callRecorded,
+    callMultipart: async (
+      method,
+      fields,
+      fileField,
+      filePath,
+      fileName,
+      options,
+    ) => {
+      try {
+        return await deps.client.callMultipart(
+          method,
+          fields,
+          fileField,
+          filePath,
+          fileName,
+          options,
+        );
+      } catch (error) {
+        deps.recordRuntimeEvent("multipart", error, { method, fileName });
+        throw error;
+      }
+    },
+    downloadFile: async (fileId, suggestedName) => {
+      try {
+        return await deps.client.downloadFile(
+          fileId,
+          suggestedName,
+          deps.tempDir,
+          {
+            maxFileSizeBytes: deps.maxFileSizeBytes,
+          },
+        );
+      } catch (error) {
+        deps.recordRuntimeEvent("download", error, { suggestedName });
+        throw error;
+      }
+    },
+    deleteWebhook: (signal) =>
+      callRecorded<boolean>(
+        "deleteWebhook",
+        { drop_pending_updates: false },
+        { signal },
+      ),
+    getUpdates: (body, signal) =>
+      callRecorded<TelegramUpdate[]>("getUpdates", body, { signal }),
+    setMyCommands: (commands) =>
+      callRecorded<boolean>("setMyCommands", { commands }),
+    sendChatAction: (chatId, action) =>
+      callRecorded<boolean>("sendChatAction", {
+        chat_id: chatId,
+        action,
+      }),
+    sendTypingAction: createTelegramChatActionSender(
+      (chatId, action) =>
+        callRecorded<boolean>("sendChatAction", {
+          chat_id: chatId,
+          action,
+        }),
+      "typing",
+    ),
+    sendMessageDraft: (chatId, draftId, text) => {
+      if (text.length === 0) return Promise.resolve(false);
+      return callRecorded<boolean>("sendMessageDraft", {
+        chat_id: chatId,
+        draft_id: draftId,
+        text,
+      });
+    },
+    sendMessage: (body) =>
+      callRecorded<TelegramSentMessage>("sendMessage", body),
+    editMessageText: async (body) => {
+      try {
+        await deps.client.call("editMessageText", body);
+        return "edited";
+      } catch (error) {
+        if (isTelegramMessageNotModifiedError(error)) return "unchanged";
+        deps.recordRuntimeEvent("api", error, { method: "editMessageText" });
+        throw error;
+      }
+    },
+    answerCallbackQuery: (callbackQueryId, text) => {
+      return deps.client.answerCallbackQuery(callbackQueryId, text);
+    },
+    prepareTempDir: () =>
+      prepareTelegramTempDir(deps.tempDir, deps.tempFileMaxAgeMs),
+  };
 }
 
 export function createTelegramApiClient(

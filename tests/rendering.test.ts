@@ -6,14 +6,40 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { __telegramTestUtils } from "../index.ts";
 import {
   buildTelegramPreviewSnapshot,
+  chunkHtmlPreservingTags,
+  escapeHtml,
+  escapeHtmlAttribute,
+  MAX_MESSAGE_LENGTH,
   renderMarkdownPreviewText,
+  renderTelegramMessage,
 } from "../lib/rendering.ts";
 
+function countMatches(text: string, pattern: RegExp): number {
+  return text.match(pattern)?.length ?? 0;
+}
+
+test("HTML helpers escape text and attribute contexts", () => {
+  assert.equal(escapeHtml("<tag>&value"), "&lt;tag&gt;&amp;value");
+  assert.equal(
+    escapeHtmlAttribute(`"quoted" 'value' & <tag>`),
+    "&quot;quoted&quot; &#39;value&#39; &amp; &lt;tag&gt;",
+  );
+});
+
+test("HTML helpers chunk long text while preserving open tags", () => {
+  const chunks = chunkHtmlPreservingTags(`<b>${"x".repeat(10)}</b>`, 12);
+  assert.deepEqual(chunks, ["<b>xxxxx</b>", "<b>xxxxx</b>"]);
+});
+
+test("HTML helpers do not reopen void tags across chunks", () => {
+  const chunks = chunkHtmlPreservingTags(`a<br>${"b".repeat(10)}`, 8);
+  assert.deepEqual(chunks, ["a<br>bbb", "bbbbbbbb".slice(0, 7)]);
+});
+
 test("Nested lists stay out of code blocks", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage(
+  const chunks = renderTelegramMessage(
     "- Level 1\n  - Level 2\n    - Level 3 with **bold** text",
     { mode: "markdown" },
   );
@@ -31,27 +57,25 @@ test("Nested lists stay out of code blocks", () => {
 });
 
 test("Fenced code blocks preserve literal markdown", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage(
-    '~~~ts\nconst value = "**raw**";\n~~~',
-    { mode: "markdown" },
-  );
+  const chunks = renderTelegramMessage('~~~ts\nconst value = "**raw**";\n~~~', {
+    mode: "markdown",
+  });
   assert.equal(chunks.length, 1);
   assert.match(chunks[0]?.text ?? "", /<pre><code class="language-ts">/);
   assert.match(chunks[0]?.text ?? "", /\*\*raw\*\*/);
 });
 
 test("Underscores inside words do not become italic", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage(
-    "Path: foo_bar_baz.txt and **bold**",
-    { mode: "markdown" },
-  );
+  const chunks = renderTelegramMessage("Path: foo_bar_baz.txt and **bold**", {
+    mode: "markdown",
+  });
   assert.equal(chunks.length, 1);
   assert.equal((chunks[0]?.text ?? "").includes("<i>bar</i>"), false);
   assert.match(chunks[0]?.text ?? "", /<b>bold<\/b>/);
 });
 
 test("Quoted nested lists stay in blockquote rendering", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage(
+  const chunks = renderTelegramMessage(
     "> Quoted intro\n> - nested item\n>   - deeper item",
     { mode: "markdown" },
   );
@@ -63,10 +87,9 @@ test("Quoted nested lists stay in blockquote rendering", () => {
 });
 
 test("Numbered lists use monospace numeric markers", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage(
-    "1. first\n  2. second",
-    { mode: "markdown" },
-  );
+  const chunks = renderTelegramMessage("1. first\n  2. second", {
+    mode: "markdown",
+  });
   assert.equal(chunks.length, 1);
   assert.match(chunks[0]?.text ?? "", /<code>1\.<\/code> first/);
   assert.match(chunks[0]?.text ?? "", /<code>2\.<\/code> second/);
@@ -75,7 +98,7 @@ test("Numbered lists use monospace numeric markers", () => {
 test("Ordered task lists preserve numeric markers in previews and final rendering", () => {
   const markdown = "1. [x] first\n2. [ ] second";
   assert.equal(renderMarkdownPreviewText(markdown), markdown);
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.equal(chunks.length, 1);
@@ -92,7 +115,7 @@ test("Ordered task lists preserve numeric markers in previews and final renderin
 test("Leading indentation on the first markdown line stays intact", () => {
   const markdown = "  - nested bullet\n    - nested child";
   assert.equal(renderMarkdownPreviewText(markdown), markdown);
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.equal(chunks.length, 1);
@@ -112,7 +135,7 @@ test("Preview and final rendering preserve multiple blank lines between blocks",
     renderMarkdownPreviewText(markdown),
     "Title\n\n\nParagraph\n\n\n> Quote",
   );
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.equal(chunks.length, 1);
@@ -150,17 +173,16 @@ test("Rendering preserves original blank-line spacing across block transitions",
     },
   ];
   for (const testCase of cases) {
-    const finalChunks = __telegramTestUtils.renderTelegramMessage(
-      testCase.markdown,
-      { mode: "markdown" },
-    );
+    const finalChunks = renderTelegramMessage(testCase.markdown, {
+      mode: "markdown",
+    });
     assert.equal(finalChunks.length, 1);
     assert.equal(finalChunks[0]?.text ?? "", testCase.finalText);
     const preview = buildTelegramPreviewSnapshot({
       state: { pendingText: testCase.markdown, lastSentText: "" },
-      maxMessageLength: __telegramTestUtils.MAX_MESSAGE_LENGTH,
+      maxMessageLength: MAX_MESSAGE_LENGTH,
       renderPreviewText: renderMarkdownPreviewText,
-      renderTelegramMessage: __telegramTestUtils.renderTelegramMessage,
+      renderTelegramMessage: renderTelegramMessage,
     });
     assert.equal(preview?.text ?? "", testCase.previewText);
   }
@@ -168,7 +190,7 @@ test("Rendering preserves original blank-line spacing across block transitions",
 
 test("Headings keep visible spacing before following code blocks even without source blank lines", () => {
   const markdown = "### Title\n```ts\nconst x = 1\n```";
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.equal(chunks.length, 1);
@@ -181,7 +203,7 @@ test("Headings keep visible spacing before following code blocks even without so
 test("Standalone checkbox-looking prose stays literal outside task lists", () => {
   const markdown = "Use [ ] as a placeholder and keep [x] literal";
   assert.equal(renderMarkdownPreviewText(markdown), markdown);
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.equal(chunks.length, 1);
@@ -192,10 +214,9 @@ test("Standalone checkbox-looking prose stays literal outside task lists", () =>
 });
 
 test("Nested blockquotes flatten into one Telegram blockquote with indentation", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage(
-    "> outer\n>> inner\n>>> deepest",
-    { mode: "markdown" },
-  );
+  const chunks = renderTelegramMessage("> outer\n>> inner\n>>> deepest", {
+    mode: "markdown",
+  });
   assert.equal(chunks.length, 1);
   assert.equal((chunks[0]?.text.match(/<blockquote>/g) ?? []).length, 1);
   assert.equal((chunks[0]?.text.match(/<\/blockquote>/g) ?? []).length, 1);
@@ -205,7 +226,7 @@ test("Nested blockquotes flatten into one Telegram blockquote with indentation",
 });
 
 test("Markdown tables render as literal monospace blocks without outer side borders", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage(
+  const chunks = renderTelegramMessage(
     "| Name | Value |\n| --- | --- |\n| **x** | `y` |",
     { mode: "markdown" },
   );
@@ -218,8 +239,31 @@ test("Markdown tables render as literal monospace blocks without outer side bord
   assert.equal((chunks[0]?.text ?? "").includes("| x |"), false);
 });
 
+test("Markdown table padding uses emoji grapheme display width", () => {
+  const chunks = renderTelegramMessage(
+    "| Icon | Name |\n| --- | --- |\n| 👩‍💻 | dev |\n| ✅ | done |\n| 1️⃣ | key |",
+    { mode: "markdown" },
+  );
+  assert.equal(chunks.length, 1);
+  assert.match(chunks[0]?.text ?? "", /Icon \| Name/);
+  assert.match(chunks[0]?.text ?? "", /👩‍💻 {3}\| dev /u);
+  assert.match(chunks[0]?.text ?? "", /✅ {3}\| done/u);
+  assert.match(chunks[0]?.text ?? "", /1️⃣ {3}\| key /u);
+});
+
+test("Markdown table padding handles CJK and combining marks", () => {
+  const chunks = renderTelegramMessage(
+    "| Word | Note |\n| --- | --- |\n| é | acute |\n| 東京 | city |",
+    { mode: "markdown" },
+  );
+  assert.equal(chunks.length, 1);
+  assert.match(chunks[0]?.text ?? "", /Word \| Note /);
+  assert.match(chunks[0]?.text ?? "", /é {4}\| acute/u);
+  assert.match(chunks[0]?.text ?? "", /東京 \| city /u);
+});
+
 test("Links, code spans, and underscore-heavy text coexist safely", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage(
+  const chunks = renderTelegramMessage(
     "See [docs](https://example.com), run `foo_bar()` and keep foo_bar.txt literal",
     { mode: "markdown" },
   );
@@ -233,7 +277,7 @@ test("Links, code spans, and underscore-heavy text coexist safely", () => {
 });
 
 test("HTML attributes are escaped or sanitized in generated Telegram markup", () => {
-  const linkChunks = __telegramTestUtils.renderTelegramMessage(
+  const linkChunks = renderTelegramMessage(
     '[quoted](<https://example.com/"quoted">)',
     { mode: "markdown" },
   );
@@ -241,7 +285,7 @@ test("HTML attributes are escaped or sanitized in generated Telegram markup", ()
     linkChunks[0]?.text ?? "",
     /<a href="https:\/\/example.com\/&quot;quoted&quot;">quoted<\/a>/,
   );
-  const codeChunks = __telegramTestUtils.renderTelegramMessage(
+  const codeChunks = renderTelegramMessage(
     '```ts"onclick=bad\nconst value = 1;\n```',
     { mode: "markdown" },
   );
@@ -253,25 +297,25 @@ test("HTML attributes are escaped or sanitized in generated Telegram markup", ()
 });
 
 test("HTML mode chunks long messages below Telegram limits", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage("x".repeat(5000), {
+  const chunks = renderTelegramMessage("x".repeat(5000), {
     mode: "html",
   });
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
     assert.equal(chunk.parseMode, "HTML");
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
   }
 });
 
 test("HTML mode keeps tags balanced across long chunk boundaries", () => {
-  const chunks = __telegramTestUtils.renderTelegramMessage(
+  const chunks = renderTelegramMessage(
     `<blockquote><b>${"x".repeat(5000)}</b></blockquote>`,
     { mode: "html" },
   );
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
     assert.equal(chunk.parseMode, "HTML");
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
     assert.equal(
       (chunk.text.match(/<blockquote>/g) ?? []).length,
       (chunk.text.match(/<\/blockquote>/g) ?? []).length,
@@ -297,7 +341,7 @@ test("Links degrade or normalize safely across supported and unsupported markdow
     "",
     "[^1]: Footnote body",
   ].join("\n");
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.equal(chunks.length, 1);
@@ -332,12 +376,12 @@ test("Long quoted blocks stay chunked with balanced blockquote tags", () => {
     { length: 500 },
     (_, index) => `> quoted **${index}** line`,
   ).join("\n");
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
     assert.equal(
       (chunk.text.match(/<blockquote>/g) ?? []).length,
       (chunk.text.match(/<\/blockquote>/g) ?? []).length,
@@ -350,12 +394,12 @@ test("Long markdown replies stay chunked below Telegram limits", () => {
     { length: 600 },
     (_, index) => `- item **${index}**`,
   ).join("\n");
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
     assert.equal(
       (chunk.text.match(/<b>/g) ?? []).length,
       (chunk.text.match(/<\/b>/g) ?? []).length,
@@ -369,12 +413,12 @@ test("Long mixed links and code spans stay chunked with balanced inline tags", (
     (_, index) =>
       `Paragraph ${index}: see [docs ${index}](https://example.com/${index}), run \`code_${index}()\`, and keep foo_bar_${index}.txt literal`,
   ).join("\n\n");
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
     assert.equal(
       (chunk.text.match(/<a /g) ?? []).length,
       (chunk.text.match(/<\/a>/g) ?? []).length,
@@ -394,16 +438,16 @@ test("Long multi-block markdown keeps quotes and code fences structurally balanc
       `> quoted **${index}** line`,
       `- item ${index}`,
       "```ts",
-      `const value_${index} = \"**raw**\";`,
+      `const value_${index} = "**raw**";`,
       "```",
     ].join("\n");
   }).join("\n\n");
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
     assert.equal(
       (chunk.text.match(/<blockquote>/g) ?? []).length,
       (chunk.text.match(/<\/blockquote>/g) ?? []).length,
@@ -424,12 +468,12 @@ test("Chunked mixed block transitions keep quote and list structure balanced", (
       `plain paragraph ${index} with [link](https://example.com/${index})`,
     ].join("\n");
   }).join("\n\n");
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
     assert.equal(
       (chunk.text.match(/<blockquote>/g) ?? []).length,
       (chunk.text.match(/<\/blockquote>/g) ?? []).length,
@@ -445,17 +489,17 @@ test("Chunked code fence transitions keep code blocks closed before following pr
   const markdown = Array.from({ length: 220 }, (_, index) => {
     return [
       "```ts",
-      `const block_${index} = \"value_${index}\";`,
+      `const block_${index} = "value_${index}";`,
       "```",
       `After code **${index}** and \`inline_${index}()\``,
     ].join("\n");
   }).join("\n\n");
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
     assert.equal(
       (chunk.text.match(/<pre><code/g) ?? []).length,
       (chunk.text.match(/<\/code><\/pre>/g) ?? []).length,
@@ -471,12 +515,12 @@ test("Long inline formatting paragraphs stay balanced across chunk boundaries", 
   const markdown = Array.from({ length: 500 }, (_, index) => {
     return `Segment ${index} keeps **bold_${index}** with \`code_${index}()\`, [link_${index}](https://example.com/${index}), and foo_bar_${index}.txt literal.`;
   }).join(" ");
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
     assert.equal(
       (chunk.text.match(/<b>/g) ?? []).length,
       (chunk.text.match(/<\/b>/g) ?? []).length,
@@ -493,23 +537,85 @@ test("Long inline formatting paragraphs stay balanced across chunk boundaries", 
   }
 });
 
+test("Realistic model output fixtures render safely", () => {
+  const fixtures = [
+    [
+      "Here is the migration plan:",
+      "",
+      "1. [x] Snapshot the database",
+      "2. [ ] Apply the patch with `pnpm db:migrate`",
+      "3. [ ] Verify [Grafana](https://example.com/dashboards/db)",
+      "",
+      "> Note: keep `user_id` and `team_id` untouched.",
+      "",
+      "```sql",
+      "ALTER TABLE users ADD COLUMN team_id uuid; -- **literal**",
+      "```",
+    ].join("\n"),
+    [
+      "### Comparison",
+      "| Option | Pros | Cons |",
+      "| --- | --- | --- |",
+      "| A | Fast | More foo_bar flags |",
+      "| B | Safer | Requires rollback notes |",
+      "",
+      "Unsupported relative link: [local](./notes.md)",
+      "Supported link: [docs](https://example.com/path?q=a_b)",
+    ].join("\n"),
+    [
+      "The JSON payload should stay literal:",
+      "",
+      "```json",
+      '{ "markdown": "**not bold**", "path": "foo_bar/baz" }',
+      "```",
+      "",
+      "Nested quote from model output:",
+      "> outer",
+      ">> inner with **bold**",
+    ].join("\n"),
+  ];
+  for (const markdown of fixtures) {
+    const chunks = renderTelegramMessage(markdown, {
+      mode: "markdown",
+    });
+    assert.ok(chunks.length > 0);
+    for (const chunk of chunks) {
+      assert.equal(chunk.parseMode, "HTML");
+      assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
+      assert.equal(
+        countMatches(chunk.text, /<a /g),
+        countMatches(chunk.text, /<\/a>/g),
+      );
+      assert.equal(
+        countMatches(chunk.text, /<blockquote>/g),
+        countMatches(chunk.text, /<\/blockquote>/g),
+      );
+      assert.equal(
+        countMatches(chunk.text, /<pre><code/g),
+        countMatches(chunk.text, /<\/code><\/pre>/g),
+      );
+      assert.equal(chunk.text.includes("<i>bar</i>"), false);
+    }
+  }
+});
+
 test("Chunked list, code, quote, and prose cycles stay balanced across transitions", () => {
   const markdown = Array.from({ length: 180 }, (_, index) => {
     return [
       `- list item **${index}**`,
       "```ts",
-      `const cycle_${index} = \"value_${index}\";`,
+      `const cycle_${index} = "value_${index}";`,
       "```",
       `> quoted ${index} with [link](https://example.com/${index})`,
       `Plain paragraph ${index} with \`inline_${index}()\``,
     ].join("\n");
   }).join("\n\n");
-  const chunks = __telegramTestUtils.renderTelegramMessage(markdown, {
+  const chunks = renderTelegramMessage(markdown, {
     mode: "markdown",
   });
   assert.ok(chunks.length > 1);
   for (const chunk of chunks) {
-    assert.ok(chunk.text.length <= __telegramTestUtils.MAX_MESSAGE_LENGTH);
+    assert.ok(chunk.text.length <= MAX_MESSAGE_LENGTH);
     assert.equal(
       (chunk.text.match(/<pre><code/g) ?? []).length,
       (chunk.text.match(/<\/code><\/pre>/g) ?? []).length,

@@ -3,24 +3,29 @@
  * Owns update extraction, authorization, classification, execution planning, and runtime execution for Telegram updates
  */
 
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import {
+  createTelegramUserPairingRuntime,
+  getTelegramAuthorizationState,
+  type TelegramAuthorizationState,
+  type TelegramUserPairingRuntimeDeps,
+} from "./config.ts";
 
 // --- Extraction ---
 
-export interface TelegramReactionTypeEmojiLike {
+export interface TelegramReactionTypeEmoji {
   type: "emoji";
   emoji: string;
 }
 
-export interface TelegramReactionTypeNonEmojiLike {
+export interface TelegramReactionTypeNonEmoji {
   type: string;
 }
 
-export type TelegramReactionTypeLike =
-  | TelegramReactionTypeEmojiLike
-  | TelegramReactionTypeNonEmojiLike;
+export type TelegramReactionType =
+  | TelegramReactionTypeEmoji
+  | TelegramReactionTypeNonEmoji;
 
-export interface TelegramUpdateLike {
+export interface TelegramUpdateDeletion {
   deleted_business_messages?: { message_ids?: unknown };
 }
 
@@ -33,12 +38,12 @@ export function normalizeTelegramReactionEmoji(emoji: string): string {
 }
 
 export function collectTelegramReactionEmojis(
-  reactions: TelegramReactionTypeLike[],
+  reactions: TelegramReactionType[],
 ): Set<string> {
   return new Set(
     reactions
       .filter(
-        (reaction): reaction is TelegramReactionTypeEmojiLike =>
+        (reaction): reaction is TelegramReactionTypeEmoji =>
           reaction.type === "emoji",
       )
       .map((reaction) => normalizeTelegramReactionEmoji(reaction.emoji)),
@@ -46,7 +51,7 @@ export function collectTelegramReactionEmojis(
 }
 
 export function extractDeletedTelegramMessageIds(
-  update: TelegramUpdateLike,
+  update: TelegramUpdateDeletion,
 ): number[] {
   const deletedBusinessMessageIds =
     update.deleted_business_messages?.message_ids;
@@ -58,55 +63,37 @@ export function extractDeletedTelegramMessageIds(
 
 // --- Routing ---
 
-export interface TelegramUserLike {
+export interface TelegramUser {
   id: number;
   is_bot: boolean;
 }
 
-export interface TelegramChatLike {
+export interface TelegramChat {
   id?: number;
   type: string;
 }
 
-export interface TelegramMessageLike {
-  chat: TelegramChatLike;
-  from?: TelegramUserLike;
+export interface TelegramUpdateMessage {
+  chat: TelegramChat;
+  from?: TelegramUser;
   message_id?: number;
 }
 
-export interface TelegramCallbackQueryLike {
+export interface TelegramCallbackQuery {
   id?: string;
-  from: TelegramUserLike;
-  message?: TelegramMessageLike;
+  from: TelegramUser;
+  message?: TelegramUpdateMessage;
 }
 
-export interface TelegramUpdateRoutingLike {
-  message?: TelegramMessageLike;
-  edited_message?: TelegramMessageLike;
-  callback_query?: TelegramCallbackQueryLike;
-}
-
-export type TelegramAuthorizationState =
-  | { kind: "pair"; userId: number }
-  | { kind: "allow" }
-  | { kind: "deny" };
-
-export function getTelegramAuthorizationState(
-  userId: number,
-  allowedUserId?: number,
-): TelegramAuthorizationState {
-  if (allowedUserId === undefined) {
-    return { kind: "pair", userId };
-  }
-  if (userId === allowedUserId) {
-    return { kind: "allow" };
-  }
-  return { kind: "deny" };
+export interface TelegramUpdateRouting {
+  message?: TelegramUpdateMessage;
+  edited_message?: TelegramUpdateMessage;
+  callback_query?: TelegramCallbackQuery;
 }
 
 export function getAuthorizedTelegramCallbackQuery(
-  update: TelegramUpdateRoutingLike,
-): TelegramCallbackQueryLike | undefined {
+  update: TelegramUpdateRouting,
+): TelegramCallbackQuery | undefined {
   const query = update.callback_query;
   if (!query) return undefined;
   const message = query.message;
@@ -117,8 +104,8 @@ export function getAuthorizedTelegramCallbackQuery(
 }
 
 export function getAuthorizedTelegramMessage(
-  update: TelegramUpdateRoutingLike,
-): TelegramMessageLike | undefined {
+  update: TelegramUpdateRouting,
+): TelegramUpdateMessage | undefined {
   const message = update.message;
   if (
     !message ||
@@ -132,8 +119,8 @@ export function getAuthorizedTelegramMessage(
 }
 
 export function getAuthorizedTelegramEditedMessage(
-  update: TelegramUpdateRoutingLike,
-): TelegramMessageLike | undefined {
+  update: TelegramUpdateRouting,
+): TelegramUpdateMessage | undefined {
   const message = update.edited_message;
   if (
     !message ||
@@ -148,40 +135,54 @@ export function getAuthorizedTelegramEditedMessage(
 
 // --- Flow ---
 
-export interface TelegramMessageReactionUpdatedLike {
+export interface TelegramMessageReactionUpdated {
   chat: { type: string };
-  user?: TelegramUserLike;
+  user?: TelegramUser;
+  message_id: number;
+  old_reaction: TelegramReactionType[];
+  new_reaction: TelegramReactionType[];
 }
 
-export interface TelegramUpdateFlowLike
-  extends TelegramUpdateRoutingLike, TelegramUpdateLike {
-  message_reaction?: TelegramMessageReactionUpdatedLike;
+export interface TelegramUpdateFlow
+  extends TelegramUpdateRouting, TelegramUpdateDeletion {
+  message_reaction?: TelegramMessageReactionUpdated;
 }
 
-export type TelegramUpdateFlowAction =
+export type TelegramUpdateFlowAction<
+  TReactionUpdate extends TelegramMessageReactionUpdated =
+    TelegramMessageReactionUpdated,
+  TCallbackQuery extends TelegramCallbackQuery = TelegramCallbackQuery,
+  TMessage extends TelegramUpdateMessage = TelegramUpdateMessage,
+> =
   | { kind: "ignore" }
   | { kind: "deleted"; messageIds: number[] }
-  | { kind: "reaction"; reactionUpdate: TelegramMessageReactionUpdatedLike }
+  | { kind: "reaction"; reactionUpdate: TReactionUpdate }
   | {
       kind: "callback";
-      query: TelegramCallbackQueryLike;
+      query: TCallbackQuery;
       authorization: TelegramAuthorizationState;
     }
   | {
       kind: "message";
-      message: TelegramMessageLike & { from: TelegramUserLike };
+      message: TMessage & { from: TelegramUser };
       authorization: TelegramAuthorizationState;
     }
   | {
       kind: "edited-message";
-      message: TelegramMessageLike & { from: TelegramUserLike };
+      message: TMessage & { from: TelegramUser };
       authorization: TelegramAuthorizationState;
     };
 
-export function buildTelegramUpdateFlowAction(
-  update: TelegramUpdateFlowLike,
+export function buildTelegramUpdateFlowAction<
+  TUpdate extends TelegramUpdateFlow,
+>(
+  update: TUpdate,
   allowedUserId?: number,
-): TelegramUpdateFlowAction {
+): TelegramUpdateFlowAction<
+  NonNullable<TUpdate["message_reaction"]>,
+  NonNullable<TUpdate["callback_query"]>,
+  NonNullable<TUpdate["message"] | TUpdate["edited_message"]>
+> {
   const deletedMessageIds = extractDeletedTelegramMessageIds(update);
   if (deletedMessageIds.length > 0) {
     return { kind: "deleted", messageIds: deletedMessageIds };
@@ -193,7 +194,7 @@ export function buildTelegramUpdateFlowAction(
   if (query) {
     return {
       kind: "callback",
-      query,
+      query: query as NonNullable<TUpdate["callback_query"]>,
       authorization: getTelegramAuthorizationState(
         query.from.id,
         allowedUserId,
@@ -204,7 +205,9 @@ export function buildTelegramUpdateFlowAction(
   if (message?.from) {
     return {
       kind: "message",
-      message: message as TelegramMessageLike & { from: TelegramUserLike },
+      message: message as NonNullable<
+        TUpdate["message"] | TUpdate["edited_message"]
+      > & { from: TelegramUser },
       authorization: getTelegramAuthorizationState(
         message.from.id,
         allowedUserId,
@@ -215,9 +218,9 @@ export function buildTelegramUpdateFlowAction(
   if (editedMessage?.from) {
     return {
       kind: "edited-message",
-      message: editedMessage as TelegramMessageLike & {
-        from: TelegramUserLike;
-      },
+      message: editedMessage as NonNullable<
+        TUpdate["message"] | TUpdate["edited_message"]
+      > & { from: TelegramUser },
       authorization: getTelegramAuthorizationState(
         editedMessage.from.id,
         allowedUserId,
@@ -229,36 +232,45 @@ export function buildTelegramUpdateFlowAction(
 
 // --- Execution Planning ---
 
-export type TelegramUpdateExecutionPlan =
+export type TelegramUpdateExecutionPlan<
+  TReactionUpdate extends TelegramMessageReactionUpdated =
+    TelegramMessageReactionUpdated,
+  TCallbackQuery extends TelegramCallbackQuery = TelegramCallbackQuery,
+  TMessage extends TelegramUpdateMessage = TelegramUpdateMessage,
+> =
   | { kind: "ignore" }
   | { kind: "deleted"; messageIds: number[] }
   | {
       kind: "reaction";
-      reactionUpdate: NonNullable<TelegramUpdateFlowLike["message_reaction"]>;
+      reactionUpdate: TReactionUpdate;
     }
   | {
       kind: "callback";
-      query: TelegramCallbackQueryLike;
+      query: TCallbackQuery;
       shouldPair: boolean;
       shouldDeny: boolean;
     }
   | {
       kind: "message";
-      message: TelegramMessageLike & { from: TelegramUserLike };
+      message: TMessage & { from: TelegramUser };
       shouldPair: boolean;
       shouldNotifyPaired: boolean;
       shouldDeny: boolean;
     }
   | {
       kind: "edited-message";
-      message: TelegramMessageLike & { from: TelegramUserLike };
+      message: TMessage & { from: TelegramUser };
       shouldPair: boolean;
       shouldDeny: boolean;
     };
 
-export function buildTelegramUpdateExecutionPlan(
-  action: TelegramUpdateFlowAction,
-): TelegramUpdateExecutionPlan {
+export function buildTelegramUpdateExecutionPlan<
+  TReactionUpdate extends TelegramMessageReactionUpdated,
+  TCallbackQuery extends TelegramCallbackQuery,
+  TMessage extends TelegramUpdateMessage,
+>(
+  action: TelegramUpdateFlowAction<TReactionUpdate, TCallbackQuery, TMessage>,
+): TelegramUpdateExecutionPlan<TReactionUpdate, TCallbackQuery, TMessage> {
   switch (action.kind) {
     case "ignore":
       return { kind: "ignore" };
@@ -291,10 +303,16 @@ export function buildTelegramUpdateExecutionPlan(
   }
 }
 
-export function buildTelegramUpdateExecutionPlanFromUpdate(
-  update: TelegramUpdateFlowLike,
+export function buildTelegramUpdateExecutionPlanFromUpdate<
+  TUpdate extends TelegramUpdateFlow,
+>(
+  update: TUpdate,
   allowedUserId?: number,
-): TelegramUpdateExecutionPlan {
+): TelegramUpdateExecutionPlan<
+  NonNullable<TUpdate["message_reaction"]>,
+  NonNullable<TUpdate["callback_query"]>,
+  NonNullable<TUpdate["message"] | TUpdate["edited_message"]>
+> {
   return buildTelegramUpdateExecutionPlan(
     buildTelegramUpdateFlowAction(update, allowedUserId),
   );
@@ -302,33 +320,31 @@ export function buildTelegramUpdateExecutionPlanFromUpdate(
 
 // --- Runtime ---
 
-export interface TelegramUpdateRuntimeDeps {
-  ctx: ExtensionContext;
+export interface TelegramUpdateRuntimeDeps<
+  TContext = unknown,
+  TReactionUpdate extends TelegramMessageReactionUpdated =
+    TelegramMessageReactionUpdated,
+  TCallbackQuery extends TelegramCallbackQuery = TelegramCallbackQuery,
+  TMessage extends TelegramUpdateMessage = TelegramUpdateMessage,
+> {
+  ctx: TContext;
   removePendingMediaGroupMessages: (messageIds: number[]) => void;
   removeQueuedTelegramTurnsByMessageIds: (
     messageIds: number[],
-    ctx: ExtensionContext,
+    ctx: TContext,
   ) => number;
   handleAuthorizedTelegramReactionUpdate: (
-    reactionUpdate: NonNullable<
-      Extract<
-        TelegramUpdateExecutionPlan,
-        { kind: "reaction" }
-      >["reactionUpdate"]
-    >,
-    ctx: ExtensionContext,
+    reactionUpdate: TReactionUpdate,
+    ctx: TContext,
   ) => Promise<void>;
-  pairTelegramUserIfNeeded: (
-    userId: number,
-    ctx: ExtensionContext,
-  ) => Promise<boolean>;
+  pairTelegramUserIfNeeded: (userId: number, ctx: TContext) => Promise<boolean>;
   answerCallbackQuery: (
     callbackQueryId: string,
     text?: string,
   ) => Promise<void>;
   handleAuthorizedTelegramCallbackQuery: (
-    query: Extract<TelegramUpdateExecutionPlan, { kind: "callback" }>["query"],
-    ctx: ExtensionContext,
+    query: TCallbackQuery,
+    ctx: TContext,
   ) => Promise<void>;
   sendTextReply: (
     chatId: number,
@@ -336,29 +352,77 @@ export interface TelegramUpdateRuntimeDeps {
     text: string,
   ) => Promise<number | undefined>;
   handleAuthorizedTelegramMessage: (
-    message: Extract<
-      TelegramUpdateExecutionPlan,
-      { kind: "message" }
-    >["message"],
-    ctx: ExtensionContext,
+    message: TMessage,
+    ctx: TContext,
   ) => Promise<void>;
   handleAuthorizedTelegramEditedMessage: (
-    message: Extract<
-      TelegramUpdateExecutionPlan,
-      { kind: "edited-message" }
-    >["message"],
-    ctx: ExtensionContext,
+    message: TMessage,
+    ctx: TContext,
+  ) => unknown;
+}
+
+export interface TelegramUpdateRuntimeControllerDeps<
+  TContext = unknown,
+  TCallbackQuery extends TelegramCallbackQuery = TelegramCallbackQuery,
+  TMessage extends TelegramUpdateMessage = TelegramUpdateMessage,
+> {
+  getAllowedUserId: () => number | undefined;
+  removePendingMediaGroupMessages: (messageIds: number[]) => void;
+  removeQueuedTelegramTurnsByMessageIds: (
+    messageIds: number[],
+    ctx: TContext,
+  ) => number;
+  clearQueuedTelegramTurnPriorityByMessageId: (
+    messageId: number,
+    ctx: TContext,
+  ) => boolean;
+  prioritizeQueuedTelegramTurnByMessageId: (
+    messageId: number,
+    ctx: TContext,
+  ) => boolean;
+  pairTelegramUserIfNeeded: (userId: number, ctx: TContext) => Promise<boolean>;
+  answerCallbackQuery: (
+    callbackQueryId: string,
+    text?: string,
   ) => Promise<void>;
+  handleAuthorizedTelegramCallbackQuery: (
+    query: TCallbackQuery,
+    ctx: TContext,
+  ) => Promise<void>;
+  sendTextReply: (
+    chatId: number,
+    replyToMessageId: number,
+    text: string,
+  ) => Promise<number | undefined>;
+  handleAuthorizedTelegramMessage: (
+    message: TMessage,
+    ctx: TContext,
+  ) => Promise<void>;
+  handleAuthorizedTelegramEditedMessage: (
+    message: TMessage,
+    ctx: TContext,
+  ) => unknown;
+}
+
+export interface TelegramUpdateRuntimeController<
+  TContext = unknown,
+  TUpdate extends TelegramUpdateFlow = TelegramUpdateFlow,
+> {
+  handleAuthorizedReactionUpdate: (
+    reactionUpdate: NonNullable<TUpdate["message_reaction"]>,
+    ctx: TContext,
+  ) => Promise<void>;
+  handleUpdate: (update: TUpdate, ctx: TContext) => Promise<void>;
 }
 
 function getTelegramCallbackQueryId(
-  query: TelegramCallbackQueryLike,
+  query: TelegramCallbackQuery,
 ): string | undefined {
   return typeof query.id === "string" ? query.id : undefined;
 }
 
 function getTelegramMessageReplyTarget(
-  message: TelegramMessageLike,
+  message: TelegramUpdateMessage,
 ): { chatId: number; messageId: number } | undefined {
   if (
     typeof message.chat.id !== "number" ||
@@ -372,10 +436,18 @@ function getTelegramMessageReplyTarget(
   };
 }
 
-export async function executeTelegramUpdate(
-  update: TelegramUpdateFlowLike,
+export async function executeTelegramUpdate<
+  TUpdate extends TelegramUpdateFlow,
+  TContext = unknown,
+>(
+  update: TUpdate,
   allowedUserId: number | undefined,
-  deps: TelegramUpdateRuntimeDeps,
+  deps: TelegramUpdateRuntimeDeps<
+    TContext,
+    NonNullable<TUpdate["message_reaction"]>,
+    NonNullable<TUpdate["callback_query"]>,
+    NonNullable<TUpdate["message"] | TUpdate["edited_message"]>
+  >,
 ): Promise<void> {
   await executeTelegramUpdatePlan(
     buildTelegramUpdateExecutionPlanFromUpdate(update, allowedUserId),
@@ -383,9 +455,168 @@ export async function executeTelegramUpdate(
   );
 }
 
-export async function executeTelegramUpdatePlan(
-  plan: TelegramUpdateExecutionPlan,
-  deps: TelegramUpdateRuntimeDeps,
+export type TelegramPairedUpdateRuntimeControllerDeps<
+  TContext = unknown,
+  TUpdate extends TelegramUpdateFlow = TelegramUpdateFlow,
+> = Omit<
+  TelegramUpdateRuntimeControllerDeps<
+    TContext,
+    NonNullable<TUpdate["callback_query"]>,
+    NonNullable<TUpdate["message"] | TUpdate["edited_message"]>
+  >,
+  "pairTelegramUserIfNeeded"
+> &
+  TelegramUserPairingRuntimeDeps<TContext>;
+
+export function createTelegramPairedUpdateRuntime<
+  TContext = unknown,
+  TUpdate extends TelegramUpdateFlow = TelegramUpdateFlow,
+>(
+  deps: TelegramPairedUpdateRuntimeControllerDeps<TContext, TUpdate>,
+): TelegramUpdateRuntimeController<TContext, TUpdate> {
+  return createTelegramUpdateRuntime({
+    getAllowedUserId: deps.getAllowedUserId,
+    removePendingMediaGroupMessages: deps.removePendingMediaGroupMessages,
+    removeQueuedTelegramTurnsByMessageIds:
+      deps.removeQueuedTelegramTurnsByMessageIds,
+    clearQueuedTelegramTurnPriorityByMessageId:
+      deps.clearQueuedTelegramTurnPriorityByMessageId,
+    prioritizeQueuedTelegramTurnByMessageId:
+      deps.prioritizeQueuedTelegramTurnByMessageId,
+    pairTelegramUserIfNeeded: createTelegramUserPairingRuntime({
+      getAllowedUserId: deps.getAllowedUserId,
+      setAllowedUserId: deps.setAllowedUserId,
+      persistConfig: deps.persistConfig,
+      updateStatus: deps.updateStatus,
+    }).pairIfNeeded,
+    answerCallbackQuery: deps.answerCallbackQuery,
+    handleAuthorizedTelegramCallbackQuery:
+      deps.handleAuthorizedTelegramCallbackQuery,
+    sendTextReply: deps.sendTextReply,
+    handleAuthorizedTelegramMessage: deps.handleAuthorizedTelegramMessage,
+    handleAuthorizedTelegramEditedMessage:
+      deps.handleAuthorizedTelegramEditedMessage,
+  });
+}
+
+export function createTelegramUpdateRuntime<
+  TContext = unknown,
+  TUpdate extends TelegramUpdateFlow = TelegramUpdateFlow,
+>(
+  deps: TelegramUpdateRuntimeControllerDeps<
+    TContext,
+    NonNullable<TUpdate["callback_query"]>,
+    NonNullable<TUpdate["message"] | TUpdate["edited_message"]>
+  >,
+): TelegramUpdateRuntimeController<TContext, TUpdate> {
+  const handleAuthorizedReactionUpdate = async (
+    reactionUpdate: NonNullable<TUpdate["message_reaction"]>,
+    ctx: TContext,
+  ): Promise<void> => {
+    await handleAuthorizedTelegramReactionUpdate(reactionUpdate, {
+      allowedUserId: deps.getAllowedUserId(),
+      ctx,
+      removePendingMediaGroupMessages: deps.removePendingMediaGroupMessages,
+      removeQueuedTelegramTurnsByMessageIds:
+        deps.removeQueuedTelegramTurnsByMessageIds,
+      clearQueuedTelegramTurnPriorityByMessageId:
+        deps.clearQueuedTelegramTurnPriorityByMessageId,
+      prioritizeQueuedTelegramTurnByMessageId:
+        deps.prioritizeQueuedTelegramTurnByMessageId,
+    });
+  };
+  return {
+    handleAuthorizedReactionUpdate,
+    handleUpdate: (update, ctx) =>
+      executeTelegramUpdate(update, deps.getAllowedUserId(), {
+        ctx,
+        removePendingMediaGroupMessages: deps.removePendingMediaGroupMessages,
+        removeQueuedTelegramTurnsByMessageIds:
+          deps.removeQueuedTelegramTurnsByMessageIds,
+        handleAuthorizedTelegramReactionUpdate: handleAuthorizedReactionUpdate,
+        pairTelegramUserIfNeeded: deps.pairTelegramUserIfNeeded,
+        answerCallbackQuery: deps.answerCallbackQuery,
+        handleAuthorizedTelegramCallbackQuery:
+          deps.handleAuthorizedTelegramCallbackQuery,
+        sendTextReply: deps.sendTextReply,
+        handleAuthorizedTelegramMessage: deps.handleAuthorizedTelegramMessage,
+        handleAuthorizedTelegramEditedMessage:
+          deps.handleAuthorizedTelegramEditedMessage,
+      }),
+  };
+}
+
+export interface AuthorizedTelegramReactionUpdateDeps<TContext> {
+  allowedUserId?: number;
+  ctx: TContext;
+  removePendingMediaGroupMessages: (messageIds: number[]) => void;
+  removeQueuedTelegramTurnsByMessageIds: (
+    messageIds: number[],
+    ctx: TContext,
+  ) => number;
+  clearQueuedTelegramTurnPriorityByMessageId: (
+    messageId: number,
+    ctx: TContext,
+  ) => boolean;
+  prioritizeQueuedTelegramTurnByMessageId: (
+    messageId: number,
+    ctx: TContext,
+  ) => boolean;
+}
+
+export async function handleAuthorizedTelegramReactionUpdate<TContext>(
+  reactionUpdate: TelegramMessageReactionUpdated,
+  deps: AuthorizedTelegramReactionUpdateDeps<TContext>,
+): Promise<void> {
+  const reactionUser = reactionUpdate.user;
+  if (
+    reactionUpdate.chat.type !== "private" ||
+    !reactionUser ||
+    reactionUser.is_bot ||
+    reactionUser.id !== deps.allowedUserId
+  ) {
+    return;
+  }
+  const oldEmojis = collectTelegramReactionEmojis(reactionUpdate.old_reaction);
+  const newEmojis = collectTelegramReactionEmojis(reactionUpdate.new_reaction);
+  const dislikeAdded = !oldEmojis.has("👎") && newEmojis.has("👎");
+  if (dislikeAdded) {
+    deps.removePendingMediaGroupMessages([reactionUpdate.message_id]);
+    deps.removeQueuedTelegramTurnsByMessageIds(
+      [reactionUpdate.message_id],
+      deps.ctx,
+    );
+    return;
+  }
+  const likeRemoved = oldEmojis.has("👍") && !newEmojis.has("👍");
+  if (likeRemoved) {
+    deps.clearQueuedTelegramTurnPriorityByMessageId(
+      reactionUpdate.message_id,
+      deps.ctx,
+    );
+  }
+  const likeAdded = !oldEmojis.has("👍") && newEmojis.has("👍");
+  if (!likeAdded) return;
+  deps.prioritizeQueuedTelegramTurnByMessageId(
+    reactionUpdate.message_id,
+    deps.ctx,
+  );
+}
+
+export async function executeTelegramUpdatePlan<
+  TContext = unknown,
+  TReactionUpdate extends TelegramMessageReactionUpdated =
+    TelegramMessageReactionUpdated,
+  TCallbackQuery extends TelegramCallbackQuery = TelegramCallbackQuery,
+  TMessage extends TelegramUpdateMessage = TelegramUpdateMessage,
+>(
+  plan: TelegramUpdateExecutionPlan<TReactionUpdate, TCallbackQuery, TMessage>,
+  deps: TelegramUpdateRuntimeDeps<
+    TContext,
+    TReactionUpdate,
+    TCallbackQuery,
+    TMessage
+  >,
 ): Promise<void> {
   if (plan.kind === "ignore") return;
   if (plan.kind === "deleted") {

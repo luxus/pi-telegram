@@ -3,9 +3,6 @@
  * Owns queue items, queue mutations, dispatch and lifecycle planning, session resets, and queue-adjacent runtime helpers
  */
 
-import type { ImageContent, Model, TextContent } from "@mariozechner/pi-ai";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-
 // --- Queue Items ---
 
 export interface QueuedAttachment {
@@ -13,8 +10,56 @@ export interface QueuedAttachment {
   fileName: string;
 }
 
+export interface TelegramPromptTextContent {
+  type: "text";
+  text: string;
+}
+
+export interface TelegramPromptImageContent {
+  type: "image";
+  data: string;
+  mimeType: string;
+}
+
+export type TelegramPromptContent =
+  | TelegramPromptTextContent
+  | TelegramPromptImageContent;
+
 export type TelegramQueueItemKind = "prompt" | "control";
 export type TelegramQueueLane = "control" | "priority" | "default";
+export type TelegramQueueAdmissionMode =
+  | "control-queue"
+  | "priority-queue"
+  | "default-queue";
+
+export interface TelegramQueueLaneContract {
+  lane: TelegramQueueLane;
+  admissionMode: TelegramQueueAdmissionMode;
+  dispatchRank: number;
+  allowedKinds: readonly TelegramQueueItemKind[];
+}
+
+export const TELEGRAM_QUEUE_LANE_CONTRACTS: readonly TelegramQueueLaneContract[] =
+  [
+    {
+      lane: "control",
+      admissionMode: "control-queue",
+      dispatchRank: 0,
+      allowedKinds: ["control", "prompt"],
+    },
+    {
+      lane: "priority",
+      admissionMode: "priority-queue",
+      dispatchRank: 1,
+      allowedKinds: ["prompt"],
+    },
+    {
+      lane: "default",
+      admissionMode: "default-queue",
+      dispatchRank: 2,
+      allowedKinds: ["prompt"],
+    },
+  ] as const;
 
 export interface TelegramQueueItemBase {
   kind: TelegramQueueItemKind;
@@ -30,19 +75,44 @@ export interface PendingTelegramTurn extends TelegramQueueItemBase {
   kind: "prompt";
   sourceMessageIds: number[];
   queuedAttachments: QueuedAttachment[];
-  content: Array<TextContent | ImageContent>;
+  content: TelegramPromptContent[];
   historyText: string;
 }
 
-export interface PendingTelegramControlItem extends TelegramQueueItemBase {
+export interface PendingTelegramControlItem<
+  TContext = unknown,
+> extends TelegramQueueItemBase {
   kind: "control";
   controlType: "status" | "model";
-  execute: (ctx: ExtensionContext) => Promise<void>;
+  execute: (ctx: TContext) => Promise<void>;
 }
 
-export type TelegramQueueItem =
+export type TelegramQueueItem<TContext = unknown> =
   | PendingTelegramTurn
-  | PendingTelegramControlItem;
+  | PendingTelegramControlItem<TContext>;
+
+export interface TelegramQueueStore<TContext = unknown> {
+  getQueuedItems: () => TelegramQueueItem<TContext>[];
+  setQueuedItems: (items: TelegramQueueItem<TContext>[]) => void;
+}
+
+export interface TelegramQueueStateStore<
+  TContext = unknown,
+> extends TelegramQueueStore<TContext> {
+  hasQueuedItems: () => boolean;
+}
+
+export interface TelegramActiveTurnStore<
+  TTurn extends PendingTelegramTurn = PendingTelegramTurn,
+> {
+  get: () => TTurn | undefined;
+  has: () => boolean;
+  set: (turn: TTurn) => void;
+  clear: () => void;
+  getChatId: () => number | undefined;
+  getReplyToMessageId: () => number | undefined;
+  getSourceMessageIds: () => number[] | undefined;
+}
 
 export interface TelegramDispatchGuardState {
   compactionInProgress: boolean;
@@ -52,39 +122,91 @@ export interface TelegramDispatchGuardState {
   hasPendingMessages: boolean;
 }
 
-export interface TelegramInFlightModelSwitchState {
-  isIdle: boolean;
-  hasActiveTelegramTurn: boolean;
-  hasAbortHandler: boolean;
+export function getTelegramQueueLaneContract(
+  lane: TelegramQueueLane,
+): TelegramQueueLaneContract {
+  const contract = TELEGRAM_QUEUE_LANE_CONTRACTS.find(
+    (entry) => entry.lane === lane,
+  );
+  if (!contract) throw new Error(`Unknown Telegram queue lane: ${lane}`);
+  return contract;
+}
+
+export function getTelegramQueueItemAdmissionMode(
+  item: Pick<TelegramQueueItem, "queueLane">,
+): TelegramQueueAdmissionMode {
+  return getTelegramQueueLaneContract(item.queueLane).admissionMode;
+}
+
+export function isTelegramQueueItemAdmissionValid(
+  item: Pick<TelegramQueueItem, "kind" | "queueLane">,
+): boolean {
+  return getTelegramQueueLaneContract(item.queueLane).allowedKinds.includes(
+    item.kind,
+  );
+}
+
+export function assertTelegramQueueItemAdmissionValid(
+  item: Pick<TelegramQueueItem, "kind" | "queueLane">,
+): void {
+  if (isTelegramQueueItemAdmissionValid(item)) return;
+  throw new Error(
+    `Invalid Telegram queue admission: ${item.kind} item cannot use ${item.queueLane} lane`,
+  );
 }
 
 function getTelegramQueueLaneRank(lane: TelegramQueueLane): number {
-  switch (lane) {
-    case "control":
-      return 0;
-    case "priority":
-      return 1;
-    default:
-      return 2;
-  }
+  return getTelegramQueueLaneContract(lane).dispatchRank;
 }
 
-export function isPendingTelegramTurn(
-  item: TelegramQueueItem,
+export function isPendingTelegramTurn<TContext = unknown>(
+  item: TelegramQueueItem<TContext>,
 ): item is PendingTelegramTurn {
   return item.kind === "prompt";
 }
 
+export function createTelegramQueueStore<TContext = unknown>(
+  initialItems: TelegramQueueItem<TContext>[] = [],
+): TelegramQueueStateStore<TContext> {
+  let queuedItems = initialItems;
+  return {
+    getQueuedItems: () => queuedItems,
+    setQueuedItems: (items) => {
+      queuedItems = items;
+    },
+    hasQueuedItems: () => queuedItems.length > 0,
+  };
+}
+
+export function createTelegramActiveTurnStore<
+  TTurn extends PendingTelegramTurn = PendingTelegramTurn,
+>(): TelegramActiveTurnStore<TTurn> {
+  let activeTurn: TTurn | undefined;
+  return {
+    get: () => activeTurn,
+    has: () => !!activeTurn,
+    set: (turn) => {
+      activeTurn = { ...turn };
+    },
+    clear: () => {
+      activeTurn = undefined;
+    },
+    getChatId: () => activeTurn?.chatId,
+    getReplyToMessageId: () => activeTurn?.replyToMessageId,
+    getSourceMessageIds: () => activeTurn?.sourceMessageIds,
+  };
+}
+
 // --- Queue Mutations ---
 
-export function partitionTelegramQueueItemsForHistory(
-  items: TelegramQueueItem[],
+export function partitionTelegramQueueItemsForHistory<TContext = unknown>(
+  items: TelegramQueueItem<TContext>[],
 ): {
   historyTurns: PendingTelegramTurn[];
-  remainingItems: TelegramQueueItem[];
+  remainingItems: TelegramQueueItem<TContext>[];
 } {
   const historyTurns: PendingTelegramTurn[] = [];
-  const remainingItems: TelegramQueueItem[] = [];
+  const remainingItems: TelegramQueueItem<TContext>[] = [];
   for (const item of items) {
     if (isPendingTelegramTurn(item)) {
       historyTurns.push(item);
@@ -95,10 +217,36 @@ export function partitionTelegramQueueItemsForHistory(
   return { historyTurns, remainingItems };
 }
 
-export function compareTelegramQueueItems(
-  left: TelegramQueueItem,
-  right: TelegramQueueItem,
+export function planTelegramPromptEnqueue<TContext = unknown>(
+  items: TelegramQueueItem<TContext>[],
+  preserveQueuedTurnsAsHistory: boolean,
+): {
+  historyTurns: PendingTelegramTurn[];
+  remainingItems: TelegramQueueItem<TContext>[];
+} {
+  if (!preserveQueuedTurnsAsHistory) {
+    return { historyTurns: [], remainingItems: items };
+  }
+  return partitionTelegramQueueItemsForHistory(items);
+}
+
+export function appendTelegramQueueItem<
+  TContext = unknown,
+  TItem extends TelegramQueueItem<TContext> = TelegramQueueItem<TContext>,
+>(
+  items: TelegramQueueItem<TContext>[],
+  item: TItem,
+): TelegramQueueItem<TContext>[] {
+  assertTelegramQueueItemAdmissionValid(item);
+  return [...items, item];
+}
+
+export function compareTelegramQueueItems<TContext = unknown>(
+  left: TelegramQueueItem<TContext>,
+  right: TelegramQueueItem<TContext>,
 ): number {
+  assertTelegramQueueItemAdmissionValid(left);
+  assertTelegramQueueItemAdmissionValid(right);
   const laneRankDelta =
     getTelegramQueueLaneRank(left.queueLane) -
     getTelegramQueueLaneRank(right.queueLane);
@@ -109,10 +257,10 @@ export function compareTelegramQueueItems(
   return left.queueOrder - right.queueOrder;
 }
 
-export function removeTelegramQueueItemsByMessageIds(
-  items: TelegramQueueItem[],
+export function removeTelegramQueueItemsByMessageIds<TContext = unknown>(
+  items: TelegramQueueItem<TContext>[],
   messageIds: number[],
-): { items: TelegramQueueItem[]; removedCount: number } {
+): { items: TelegramQueueItem<TContext>[]; removedCount: number } {
   if (messageIds.length === 0 || items.length === 0) {
     return { items, removedCount: 0 };
   }
@@ -129,10 +277,10 @@ export function removeTelegramQueueItemsByMessageIds(
   };
 }
 
-export function clearTelegramQueuePromptPriority(
-  items: TelegramQueueItem[],
+export function clearTelegramQueuePromptPriority<TContext = unknown>(
+  items: TelegramQueueItem<TContext>[],
   messageId: number,
-): { items: TelegramQueueItem[]; changed: boolean } {
+): { items: TelegramQueueItem<TContext>[]; changed: boolean } {
   let changed = false;
   const nextItems = items.map((item) => {
     if (
@@ -152,11 +300,11 @@ export function clearTelegramQueuePromptPriority(
   return { items: nextItems, changed };
 }
 
-export function prioritizeTelegramQueuePrompt(
-  items: TelegramQueueItem[],
+export function prioritizeTelegramQueuePrompt<TContext = unknown>(
+  items: TelegramQueueItem<TContext>[],
   messageId: number,
   laneOrder: number,
-): { items: TelegramQueueItem[]; changed: boolean } {
+): { items: TelegramQueueItem<TContext>[]; changed: boolean } {
   let changed = false;
   const nextItems = items.map((item) => {
     if (
@@ -175,10 +323,13 @@ export function prioritizeTelegramQueuePrompt(
   return { items: nextItems, changed };
 }
 
-export function consumeDispatchedTelegramPrompt(
-  items: TelegramQueueItem[],
+export function consumeDispatchedTelegramPrompt<TContext = unknown>(
+  items: TelegramQueueItem<TContext>[],
   hasPendingDispatch: boolean,
-): { activeTurn?: PendingTelegramTurn; remainingItems: TelegramQueueItem[] } {
+): {
+  activeTurn?: PendingTelegramTurn;
+  remainingItems: TelegramQueueItem<TContext>[];
+} {
   if (!hasPendingDispatch) {
     return { activeTurn: undefined, remainingItems: items };
   }
@@ -189,15 +340,17 @@ export function consumeDispatchedTelegramPrompt(
   return { activeTurn: nextItem, remainingItems: items.slice(1) };
 }
 
-function formatTelegramQueueItemStatusSummary(item: TelegramQueueItem): string {
+function formatTelegramQueueItemStatusSummary<TContext = unknown>(
+  item: TelegramQueueItem<TContext>,
+): string {
   if (item.queueLane === "priority") {
     return `⬆ ${item.statusSummary}`;
   }
   return item.statusSummary;
 }
 
-export function formatQueuedTelegramItemsStatus(
-  items: TelegramQueueItem[],
+export function formatQueuedTelegramItemsStatus<TContext = unknown>(
+  items: TelegramQueueItem<TContext>[],
 ): string {
   if (items.length === 0) return "";
   const previewCount = 4;
@@ -222,45 +375,90 @@ export function canDispatchTelegramTurnState(
   );
 }
 
-export function canRestartTelegramTurnForModelSwitch(
-  state: TelegramInFlightModelSwitchState,
-): boolean {
-  return !state.isIdle && state.hasActiveTelegramTurn && state.hasAbortHandler;
+export interface TelegramDispatchReadinessDeps<TContext> {
+  isCompactionInProgress: () => boolean;
+  hasActiveTurn: () => boolean;
+  hasDispatchPending: () => boolean;
+  isIdle: (ctx: TContext) => boolean;
+  hasPendingMessages: (ctx: TContext) => boolean;
 }
 
-export function shouldTriggerPendingTelegramModelSwitchAbort(state: {
-  hasPendingModelSwitch: boolean;
-  hasActiveTelegramTurn: boolean;
-  hasAbortHandler: boolean;
-  activeToolExecutions: number;
-}): boolean {
-  return (
-    state.hasPendingModelSwitch &&
-    state.hasActiveTelegramTurn &&
-    state.hasAbortHandler &&
-    state.activeToolExecutions === 0
-  );
+export function createTelegramDispatchReadinessChecker<TContext>(
+  deps: TelegramDispatchReadinessDeps<TContext>,
+): (ctx: TContext) => boolean {
+  return (ctx) =>
+    canDispatchTelegramTurnState({
+      compactionInProgress: deps.isCompactionInProgress(),
+      hasActiveTelegramTurn: deps.hasActiveTurn(),
+      hasPendingTelegramDispatch: deps.hasDispatchPending(),
+      isIdle: deps.isIdle(ctx),
+      hasPendingMessages: deps.hasPendingMessages(ctx),
+    });
+}
+
+export function buildPendingTelegramControlItem<TContext = unknown>(options: {
+  chatId: number;
+  replyToMessageId: number;
+  controlType: PendingTelegramControlItem<TContext>["controlType"];
+  queueOrder: number;
+  laneOrder: number;
+  statusSummary: string;
+  execute: PendingTelegramControlItem<TContext>["execute"];
+}): PendingTelegramControlItem<TContext> {
+  return {
+    kind: "control",
+    controlType: options.controlType,
+    chatId: options.chatId,
+    replyToMessageId: options.replyToMessageId,
+    queueOrder: options.queueOrder,
+    queueLane: "control",
+    laneOrder: options.laneOrder,
+    statusSummary: options.statusSummary,
+    execute: options.execute,
+  };
+}
+
+export interface TelegramControlItemBuilderDeps {
+  allocateItemOrder: () => number;
+  allocateControlOrder: () => number;
+}
+
+export function createTelegramControlItemBuilder<TContext = unknown>(
+  deps: TelegramControlItemBuilderDeps,
+): (options: {
+  chatId: number;
+  replyToMessageId: number;
+  controlType: PendingTelegramControlItem<TContext>["controlType"];
+  statusSummary: string;
+  execute: PendingTelegramControlItem<TContext>["execute"];
+}) => PendingTelegramControlItem<TContext> {
+  return (options) =>
+    buildPendingTelegramControlItem<TContext>({
+      ...options,
+      queueOrder: deps.allocateItemOrder(),
+      laneOrder: deps.allocateControlOrder(),
+    });
 }
 
 // --- Dispatch Planning ---
 
-export type TelegramQueueDispatchAction =
-  | { kind: "none"; remainingItems: TelegramQueueItem[] }
+export type TelegramQueueDispatchAction<TContext = unknown> =
+  | { kind: "none"; remainingItems: TelegramQueueItem<TContext>[] }
   | {
       kind: "control";
-      item: PendingTelegramControlItem;
-      remainingItems: TelegramQueueItem[];
+      item: PendingTelegramControlItem<TContext>;
+      remainingItems: TelegramQueueItem<TContext>[];
     }
   | {
       kind: "prompt";
       item: PendingTelegramTurn;
-      remainingItems: TelegramQueueItem[];
+      remainingItems: TelegramQueueItem<TContext>[];
     };
 
-export function planNextTelegramQueueAction(
-  items: TelegramQueueItem[],
+export function planNextTelegramQueueAction<TContext = unknown>(
+  items: TelegramQueueItem<TContext>[],
   canDispatch: boolean,
-): TelegramQueueDispatchAction {
+): TelegramQueueDispatchAction<TContext> {
   if (!canDispatch || items.length === 0) {
     return { kind: "none", remainingItems: items };
   }
@@ -268,6 +466,7 @@ export function planNextTelegramQueueAction(
   if (!firstItem) {
     return { kind: "none", remainingItems: items };
   }
+  assertTelegramQueueItemAdmissionValid(firstItem);
   if (isPendingTelegramTurn(firstItem)) {
     return { kind: "prompt", item: firstItem, remainingItems: items };
   }
@@ -288,19 +487,74 @@ export function shouldDispatchAfterTelegramAgentEnd(options: {
 
 // --- Agent Runtime ---
 
-export interface TelegramAgentStartPlan {
+export interface TelegramAgentStartPlan<TContext = unknown> {
   activeTurn?: PendingTelegramTurn;
-  remainingItems: TelegramQueueItem[];
+  remainingItems: TelegramQueueItem<TContext>[];
   shouldResetPendingModelSwitch: boolean;
   shouldResetToolExecutions: boolean;
   shouldClearDispatchPending: boolean;
 }
 
-export function buildTelegramAgentStartPlan(options: {
-  queuedItems: TelegramQueueItem[];
+export interface TelegramAgentStartRuntimeDeps<
+  TTurn extends PendingTelegramTurn,
+  TContext = unknown,
+> {
+  queuedItems: TelegramQueueItem<TContext>[];
   hasPendingDispatch: boolean;
   hasActiveTurn: boolean;
-}): TelegramAgentStartPlan {
+  resetToolExecutions: () => void;
+  resetPendingModelSwitch: () => void;
+  setQueuedItems: (items: TelegramQueueItem<TContext>[]) => void;
+  clearDispatchPending: () => void;
+  setActiveTurn: (turn: TTurn) => void;
+  createPreviewState: () => void;
+  startTypingLoop: () => void;
+  updateStatus: () => void;
+}
+
+export interface TelegramAgentStartHookRuntimeDeps<
+  TTurn extends PendingTelegramTurn,
+  TContext = unknown,
+> {
+  setAbortHandler: (ctx: TContext) => void;
+  getQueuedItems: () => TelegramQueueItem<TContext>[];
+  hasPendingDispatch: () => boolean;
+  hasActiveTurn: () => boolean;
+  resetToolExecutions: () => void;
+  resetPendingModelSwitch: () => void;
+  setQueuedItems: (items: TelegramQueueItem<TContext>[]) => void;
+  clearDispatchPending: () => void;
+  setActiveTurn: (turn: TTurn) => void;
+  createPreviewState: () => void;
+  startTypingLoop: (ctx: TContext) => void;
+  updateStatus: (ctx: TContext) => void;
+}
+
+export type TelegramAgentStartHookEvent = unknown;
+
+export interface TelegramToolExecutionRuntimeDeps {
+  hasActiveTurn: () => boolean;
+  getActiveToolExecutions: () => number;
+  setActiveToolExecutions: (count: number) => void;
+}
+
+export interface TelegramToolExecutionEndRuntimeDeps extends TelegramToolExecutionRuntimeDeps {
+  triggerPendingModelSwitchAbort: () => void;
+}
+
+export interface TelegramToolExecutionHookRuntimeDeps<
+  TContext,
+> extends TelegramToolExecutionRuntimeDeps {
+  triggerPendingModelSwitchAbort: (ctx: TContext) => unknown;
+}
+
+export type TelegramToolExecutionHookEvent = unknown;
+
+export function buildTelegramAgentStartPlan<TContext = unknown>(options: {
+  queuedItems: TelegramQueueItem<TContext>[];
+  hasPendingDispatch: boolean;
+  hasActiveTurn: boolean;
+}): TelegramAgentStartPlan<TContext> {
   if (options.hasActiveTurn || !options.hasPendingDispatch) {
     return {
       activeTurn: undefined,
@@ -323,6 +577,52 @@ export function buildTelegramAgentStartPlan(options: {
   };
 }
 
+export function handleTelegramAgentStartRuntime<
+  TTurn extends PendingTelegramTurn,
+  TContext = unknown,
+>(deps: TelegramAgentStartRuntimeDeps<TTurn, TContext>): void {
+  const startPlan = buildTelegramAgentStartPlan({
+    queuedItems: deps.queuedItems,
+    hasPendingDispatch: deps.hasPendingDispatch,
+    hasActiveTurn: deps.hasActiveTurn,
+  });
+  if (startPlan.shouldResetToolExecutions) deps.resetToolExecutions();
+  if (startPlan.shouldResetPendingModelSwitch) deps.resetPendingModelSwitch();
+  deps.setQueuedItems(startPlan.remainingItems);
+  if (startPlan.shouldClearDispatchPending) deps.clearDispatchPending();
+  if (startPlan.activeTurn) {
+    deps.setActiveTurn(startPlan.activeTurn as TTurn);
+    deps.createPreviewState();
+    deps.startTypingLoop();
+  }
+  deps.updateStatus();
+}
+
+export function createTelegramAgentStartHook<
+  TTurn extends PendingTelegramTurn,
+  TContext = unknown,
+>(deps: TelegramAgentStartHookRuntimeDeps<TTurn, TContext>) {
+  return async function onAgentStart(
+    _event: TelegramAgentStartHookEvent,
+    ctx: TContext,
+  ): Promise<void> {
+    deps.setAbortHandler(ctx);
+    handleTelegramAgentStartRuntime<TTurn, TContext>({
+      queuedItems: deps.getQueuedItems(),
+      hasPendingDispatch: deps.hasPendingDispatch(),
+      hasActiveTurn: deps.hasActiveTurn(),
+      resetToolExecutions: deps.resetToolExecutions,
+      resetPendingModelSwitch: deps.resetPendingModelSwitch,
+      setQueuedItems: deps.setQueuedItems,
+      clearDispatchPending: deps.clearDispatchPending,
+      setActiveTurn: deps.setActiveTurn,
+      createPreviewState: deps.createPreviewState,
+      startTypingLoop: () => deps.startTypingLoop(ctx),
+      updateStatus: () => deps.updateStatus(ctx),
+    });
+  };
+}
+
 export function getNextTelegramToolExecutionCount(options: {
   hasActiveTurn: boolean;
   currentCount: number;
@@ -335,6 +635,75 @@ export function getNextTelegramToolExecutionCount(options: {
   return Math.max(0, options.currentCount - 1);
 }
 
+export function handleTelegramToolExecutionStartRuntime(
+  deps: TelegramToolExecutionRuntimeDeps,
+): void {
+  deps.setActiveToolExecutions(
+    getNextTelegramToolExecutionCount({
+      hasActiveTurn: deps.hasActiveTurn(),
+      currentCount: deps.getActiveToolExecutions(),
+      event: "start",
+    }),
+  );
+}
+
+export function handleTelegramToolExecutionEndRuntime(
+  deps: TelegramToolExecutionEndRuntimeDeps,
+): void {
+  const hasActiveTurn = deps.hasActiveTurn();
+  deps.setActiveToolExecutions(
+    getNextTelegramToolExecutionCount({
+      hasActiveTurn,
+      currentCount: deps.getActiveToolExecutions(),
+      event: "end",
+    }),
+  );
+  if (hasActiveTurn) deps.triggerPendingModelSwitchAbort();
+}
+
+export type TelegramAgentLifecycleHooksRuntimeDeps<
+  TTurn extends PendingTelegramTurn,
+  TContext,
+  TMessage,
+> = TelegramAgentStartHookRuntimeDeps<TTurn, TContext> &
+  TelegramAgentEndHookRuntimeDeps<TTurn, TContext, TMessage> &
+  TelegramToolExecutionHookRuntimeDeps<TContext>;
+
+export function createTelegramAgentLifecycleHooks<
+  TTurn extends PendingTelegramTurn,
+  TContext,
+  TMessage,
+>(deps: TelegramAgentLifecycleHooksRuntimeDeps<TTurn, TContext, TMessage>) {
+  return {
+    onAgentStart: createTelegramAgentStartHook<TTurn, TContext>(deps),
+    onAgentEnd: createTelegramAgentEndHook<TTurn, TContext, TMessage>(deps),
+    ...createTelegramToolExecutionHooks<TContext>(deps),
+  };
+}
+
+export function createTelegramToolExecutionHooks<TContext>(
+  deps: TelegramToolExecutionHookRuntimeDeps<TContext>,
+) {
+  return {
+    onToolExecutionStart: (): void => {
+      handleTelegramToolExecutionStartRuntime(deps);
+    },
+    onToolExecutionEnd: (
+      _event: TelegramToolExecutionHookEvent,
+      ctx: TContext,
+    ): void => {
+      handleTelegramToolExecutionEndRuntime({
+        hasActiveTurn: deps.hasActiveTurn,
+        getActiveToolExecutions: deps.getActiveToolExecutions,
+        setActiveToolExecutions: deps.setActiveToolExecutions,
+        triggerPendingModelSwitchAbort: () => {
+          deps.triggerPendingModelSwitchAbort(ctx);
+        },
+      });
+    },
+  };
+}
+
 // --- Agent End Lifecycle ---
 
 export interface TelegramAgentEndPlan {
@@ -343,6 +712,66 @@ export interface TelegramAgentEndPlan {
   shouldDispatchNext: boolean;
   shouldSendErrorMessage: boolean;
   shouldSendAttachmentNotice: boolean;
+}
+
+export interface TelegramAgentEndAssistantResult {
+  text?: string;
+  stopReason?: string;
+  errorMessage?: string;
+}
+
+export interface TelegramAgentEndRuntimeDeps<
+  TTurn extends PendingTelegramTurn,
+> {
+  turn: TTurn | undefined;
+  assistant: TelegramAgentEndAssistantResult;
+  preserveQueuedTurnsAsHistory: boolean;
+  resetRuntimeState: () => void;
+  updateStatus: () => void;
+  dispatchNextQueuedTelegramTurn: () => void;
+  clearPreview: (chatId: number) => Promise<void>;
+  setPreviewPendingText: (text: string) => void;
+  finalizeMarkdownPreview: (
+    chatId: number,
+    markdown: string,
+    replyToMessageId: number,
+  ) => Promise<boolean>;
+  sendMarkdownReply: (
+    chatId: number,
+    replyToMessageId: number,
+    markdown: string,
+  ) => Promise<unknown>;
+  sendTextReply: (
+    chatId: number,
+    replyToMessageId: number,
+    text: string,
+  ) => Promise<unknown>;
+  sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+}
+
+export interface TelegramAgentEndHookRuntimeDeps<
+  TTurn extends PendingTelegramTurn,
+  TContext,
+  TMessage,
+> {
+  getActiveTurn: () => TTurn | undefined;
+  extractAssistant: (
+    messages: readonly TMessage[],
+  ) => TelegramAgentEndAssistantResult;
+  getPreserveQueuedTurnsAsHistory: () => boolean;
+  resetRuntimeState: () => void;
+  updateStatus: (ctx: TContext) => void;
+  dispatchNextQueuedTelegramTurn: (ctx: TContext) => void;
+  clearPreview: (chatId: number) => Promise<void>;
+  setPreviewPendingText: (text: string) => void;
+  finalizeMarkdownPreview: TelegramAgentEndRuntimeDeps<TTurn>["finalizeMarkdownPreview"];
+  sendMarkdownReply: TelegramAgentEndRuntimeDeps<TTurn>["sendMarkdownReply"];
+  sendTextReply: TelegramAgentEndRuntimeDeps<TTurn>["sendTextReply"];
+  sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+}
+
+export interface TelegramAgentEndHookEvent<TMessage> {
+  messages: readonly TMessage[];
 }
 
 export function buildTelegramAgentEndPlan(options: {
@@ -411,30 +840,278 @@ export function buildTelegramAgentEndPlan(options: {
   };
 }
 
+export function createTelegramAgentEndHook<
+  TTurn extends PendingTelegramTurn,
+  TContext,
+  TMessage,
+>(deps: TelegramAgentEndHookRuntimeDeps<TTurn, TContext, TMessage>) {
+  return async function onAgentEnd(
+    event: TelegramAgentEndHookEvent<TMessage>,
+    ctx: TContext,
+  ): Promise<void> {
+    const turn = deps.getActiveTurn();
+    await handleTelegramAgentEndRuntime({
+      turn,
+      assistant: turn ? deps.extractAssistant(event.messages) : {},
+      preserveQueuedTurnsAsHistory: deps.getPreserveQueuedTurnsAsHistory(),
+      resetRuntimeState: deps.resetRuntimeState,
+      updateStatus: () => deps.updateStatus(ctx),
+      dispatchNextQueuedTelegramTurn: () =>
+        deps.dispatchNextQueuedTelegramTurn(ctx),
+      clearPreview: deps.clearPreview,
+      setPreviewPendingText: deps.setPreviewPendingText,
+      finalizeMarkdownPreview: deps.finalizeMarkdownPreview,
+      sendMarkdownReply: deps.sendMarkdownReply,
+      sendTextReply: deps.sendTextReply,
+      sendQueuedAttachments: deps.sendQueuedAttachments,
+    });
+  };
+}
+
+export async function handleTelegramAgentEndRuntime<
+  TTurn extends PendingTelegramTurn,
+>(deps: TelegramAgentEndRuntimeDeps<TTurn>): Promise<void> {
+  const { turn, assistant } = deps;
+  const finalText = assistant.text;
+  deps.resetRuntimeState();
+  deps.updateStatus();
+  const endPlan = buildTelegramAgentEndPlan({
+    hasTurn: !!turn,
+    stopReason: assistant.stopReason,
+    hasFinalText: !!finalText,
+    hasQueuedAttachments: (turn?.queuedAttachments.length ?? 0) > 0,
+    preserveQueuedTurnsAsHistory: deps.preserveQueuedTurnsAsHistory,
+  });
+  if (!turn) {
+    if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
+    return;
+  }
+  if (endPlan.shouldClearPreview) {
+    await deps.clearPreview(turn.chatId);
+  }
+  if (endPlan.shouldSendErrorMessage) {
+    await deps.sendTextReply(
+      turn.chatId,
+      turn.replyToMessageId,
+      assistant.errorMessage ||
+        "Telegram bridge: pi failed while processing the request.",
+    );
+    if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
+    return;
+  }
+  if (finalText) deps.setPreviewPendingText(finalText);
+  if (endPlan.kind === "text" && finalText) {
+    const finalized = await deps.finalizeMarkdownPreview(
+      turn.chatId,
+      finalText,
+      turn.replyToMessageId,
+    );
+    if (!finalized) {
+      await deps.clearPreview(turn.chatId);
+      await deps.sendMarkdownReply(
+        turn.chatId,
+        turn.replyToMessageId,
+        finalText,
+      );
+    }
+  }
+  if (endPlan.shouldSendAttachmentNotice) {
+    await deps.sendTextReply(
+      turn.chatId,
+      turn.replyToMessageId,
+      "Attached requested file(s).",
+    );
+  }
+  await deps.sendQueuedAttachments(turn);
+  if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
+}
+
 // --- Session Runtime ---
 
-export interface TelegramPollingStartState {
-  hasBotToken: boolean;
-  hasPollingPromise: boolean;
-}
-
-export function shouldStartTelegramPolling(
-  state: TelegramPollingStartState,
-): boolean {
-  return state.hasBotToken && !state.hasPollingPromise;
-}
-
-export function buildTelegramSessionStartState(
-  currentModel: Model<any> | undefined,
-): {
-  currentTelegramModel: Model<any> | undefined;
+export interface TelegramSessionStartState<TModel = unknown> {
+  currentTelegramModel: TModel | undefined;
   activeTelegramToolExecutions: number;
   pendingTelegramModelSwitch: undefined;
   nextQueuedTelegramItemOrder: number;
   nextQueuedTelegramControlOrder: number;
   telegramTurnDispatchPending: boolean;
   compactionInProgress: boolean;
-} {
+}
+
+export interface TelegramSessionShutdownState<TQueueItem> {
+  queuedTelegramItems: TQueueItem[];
+  nextQueuedTelegramItemOrder: number;
+  nextQueuedTelegramControlOrder: number;
+  nextPriorityReactionOrder: number;
+  currentTelegramModel: undefined;
+  activeTelegramToolExecutions: number;
+  pendingTelegramModelSwitch: undefined;
+  telegramTurnDispatchPending: boolean;
+  compactionInProgress: boolean;
+  preserveQueuedTurnsAsHistory: boolean;
+}
+
+export interface TelegramSessionRuntimeCounterState {
+  nextQueuedTelegramItemOrder?: number;
+  nextQueuedTelegramControlOrder?: number;
+  nextPriorityReactionOrder?: number;
+}
+
+export interface TelegramSessionRuntimeFlagState {
+  activeTelegramToolExecutions?: number;
+  telegramTurnDispatchPending?: boolean;
+  compactionInProgress?: boolean;
+  preserveQueuedTurnsAsHistory?: boolean;
+}
+
+export interface TelegramSessionStateApplierDeps<TQueueItem, TModel> {
+  setQueuedItems: (items: TQueueItem[]) => void;
+  setCurrentModel: (model: TModel | undefined) => void;
+  setPendingModelSwitch: (selection: undefined) => void;
+  syncCounters: (state: TelegramSessionRuntimeCounterState) => void;
+  syncFlags: (state: TelegramSessionRuntimeFlagState) => void;
+}
+
+export interface TelegramSessionStateApplier<TQueueItem, TModel> {
+  applyStartState: (state: TelegramSessionStartState<TModel>) => void;
+  applyShutdownState: (state: TelegramSessionShutdownState<TQueueItem>) => void;
+}
+
+export interface TelegramSessionStartRuntimeDeps<TModel = unknown> {
+  currentModel: TModel | undefined;
+  loadConfig: () => Promise<void>;
+  applyState: (state: TelegramSessionStartState<TModel>) => void;
+  prepareTempDir: () => Promise<unknown>;
+  updateStatus: () => void;
+}
+
+export interface TelegramSessionShutdownRuntimeDeps<TQueueItem> {
+  applyState: (state: TelegramSessionShutdownState<TQueueItem>) => void;
+  clearPendingMediaGroups: () => void;
+  clearModelMenuState: () => void;
+  getActiveTurnChatId: () => number | undefined;
+  clearPreview: (chatId: number) => Promise<void>;
+  clearActiveTurn: () => void;
+  clearAbort: () => void;
+  stopPolling: () => Promise<void>;
+}
+
+export interface TelegramSessionLifecycleHookRuntimeDeps<
+  TContext,
+  TQueueItem,
+  TModel = unknown,
+> extends TelegramRuntimeEventRecorderPort {
+  getCurrentModel: (ctx: TContext) => TModel | undefined;
+  loadConfig: () => Promise<void>;
+  applySessionStartState: (state: TelegramSessionStartState<TModel>) => void;
+  prepareTempDir: () => Promise<unknown>;
+  updateStatus: (ctx: TContext) => void;
+  applySessionShutdownState: (
+    state: TelegramSessionShutdownState<TQueueItem>,
+  ) => void;
+  clearPendingMediaGroups: () => void;
+  clearModelMenuState: () => void;
+  getActiveTurnChatId: () => number | undefined;
+  clearPreview: (chatId: number) => Promise<void>;
+  clearActiveTurn: () => void;
+  clearAbort: () => void;
+  stopPolling: () => Promise<void>;
+}
+
+export type TelegramSessionLifecycleHookEvent = unknown;
+
+export function createTelegramSessionStateApplier<TQueueItem, TModel>(
+  deps: TelegramSessionStateApplierDeps<TQueueItem, TModel>,
+): TelegramSessionStateApplier<TQueueItem, TModel> {
+  return {
+    applyStartState: (state) => {
+      deps.setCurrentModel(state.currentTelegramModel);
+      deps.setPendingModelSwitch(state.pendingTelegramModelSwitch);
+      deps.syncCounters(state);
+      deps.syncFlags(state);
+    },
+    applyShutdownState: (state) => {
+      deps.setQueuedItems(state.queuedTelegramItems);
+      deps.syncCounters(state);
+      deps.syncFlags(state);
+      deps.setCurrentModel(state.currentTelegramModel);
+      deps.setPendingModelSwitch(state.pendingTelegramModelSwitch);
+    },
+  };
+}
+
+export interface TelegramQueueMutationRuntimeDeps<
+  TContext,
+> extends TelegramQueueStore<TContext> {
+  ctx: TContext;
+  getNextPriorityReactionOrder?: () => number;
+  incrementNextPriorityReactionOrder?: () => void;
+  updateStatus: (ctx: TContext) => void;
+}
+
+export interface TelegramQueueMutationControllerDeps<
+  TContext,
+> extends TelegramQueueStore<TContext> {
+  getNextPriorityReactionOrder?: () => number;
+  incrementNextPriorityReactionOrder?: () => void;
+  updateStatus: (ctx: TContext) => void;
+}
+
+export interface TelegramQueueMutationController<TContext> {
+  append: (item: TelegramQueueItem<TContext>, ctx: TContext) => void;
+  reorder: (ctx: TContext) => void;
+  removeByMessageIds: (messageIds: number[], ctx: TContext) => number;
+  clearPriorityByMessageId: (messageId: number, ctx: TContext) => boolean;
+  prioritizeByMessageId: (messageId: number, ctx: TContext) => boolean;
+}
+
+export interface TelegramControlQueueControllerDeps<TContext> {
+  appendControlItem: (
+    item: PendingTelegramControlItem<TContext>,
+    ctx: TContext,
+  ) => void;
+  dispatchNextQueuedTelegramTurn: (ctx: TContext) => void;
+}
+
+export interface TelegramControlQueueController<TContext> {
+  enqueue: (item: PendingTelegramControlItem<TContext>, ctx: TContext) => void;
+}
+
+export interface TelegramPromptEnqueueRuntimeDeps<
+  TMessage,
+  TContext = unknown,
+> extends TelegramQueueStore<TContext> {
+  getPreserveQueuedTurnsAsHistory: () => boolean;
+  setPreserveQueuedTurnsAsHistory: (preserve: boolean) => void;
+  createTurn: (
+    messages: TMessage[],
+    historyTurns: PendingTelegramTurn[],
+  ) => Promise<PendingTelegramTurn>;
+  updateStatus: () => void;
+  dispatchNextQueuedTelegramTurn: () => void;
+}
+
+export interface TelegramPromptEnqueueControllerDeps<
+  TMessage,
+  TContext = unknown,
+> extends TelegramQueueStore<TContext> {
+  getPreserveQueuedTurnsAsHistory: () => boolean;
+  setPreserveQueuedTurnsAsHistory: (preserve: boolean) => void;
+  createTurn: (
+    messages: TMessage[],
+    historyTurns: PendingTelegramTurn[],
+  ) => Promise<PendingTelegramTurn>;
+  updateStatus: (ctx: TContext) => void;
+  dispatchNextQueuedTelegramTurn: (ctx: TContext) => void;
+}
+
+export interface TelegramPromptEnqueueController<TMessage, TContext = unknown> {
+  enqueue: (messages: TMessage[], ctx: TContext) => Promise<void>;
+}
+
+export function buildTelegramSessionStartState<TModel = unknown>(
+  currentModel: TModel | undefined,
+): TelegramSessionStartState<TModel> {
   return {
     currentTelegramModel: currentModel,
     activeTelegramToolExecutions: 0,
@@ -446,18 +1123,9 @@ export function buildTelegramSessionStartState(
   };
 }
 
-export function buildTelegramSessionShutdownState<TQueueItem>(): {
-  queuedTelegramItems: TQueueItem[];
-  nextQueuedTelegramItemOrder: number;
-  nextQueuedTelegramControlOrder: number;
-  nextPriorityReactionOrder: number;
-  currentTelegramModel: undefined;
-  activeTelegramToolExecutions: number;
-  pendingTelegramModelSwitch: undefined;
-  telegramTurnDispatchPending: boolean;
-  compactionInProgress: boolean;
-  preserveQueuedTurnsAsHistory: boolean;
-} {
+export function buildTelegramSessionShutdownState<
+  TQueueItem,
+>(): TelegramSessionShutdownState<TQueueItem> {
   return {
     queuedTelegramItems: [],
     nextQueuedTelegramItemOrder: 0,
@@ -472,10 +1140,266 @@ export function buildTelegramSessionShutdownState<TQueueItem>(): {
   };
 }
 
+export async function startTelegramSessionRuntime<TModel = unknown>(
+  deps: TelegramSessionStartRuntimeDeps<TModel>,
+): Promise<void> {
+  await deps.loadConfig();
+  deps.applyState(buildTelegramSessionStartState(deps.currentModel));
+  await deps.prepareTempDir();
+  deps.updateStatus();
+}
+
+export async function shutdownTelegramSessionRuntime<TQueueItem>(
+  deps: TelegramSessionShutdownRuntimeDeps<TQueueItem>,
+): Promise<void> {
+  deps.applyState(buildTelegramSessionShutdownState<TQueueItem>());
+  deps.clearPendingMediaGroups();
+  deps.clearModelMenuState();
+  const activeTurnChatId = deps.getActiveTurnChatId();
+  if (activeTurnChatId !== undefined) {
+    await deps.clearPreview(activeTurnChatId);
+  }
+  deps.clearActiveTurn();
+  deps.clearAbort();
+  await deps.stopPolling();
+}
+
+export type TelegramSessionLifecycleRuntimeDeps<
+  TContext,
+  TQueueItem,
+  TModel = unknown,
+> = Omit<
+  TelegramSessionLifecycleHookRuntimeDeps<TContext, TQueueItem, TModel>,
+  "applySessionStartState" | "applySessionShutdownState"
+> &
+  TelegramSessionStateApplierDeps<TQueueItem, TModel>;
+
+export function createTelegramSessionLifecycleRuntime<
+  TContext,
+  TQueueItem,
+  TModel = unknown,
+>(deps: TelegramSessionLifecycleRuntimeDeps<TContext, TQueueItem, TModel>) {
+  const stateApplier = createTelegramSessionStateApplier({
+    setQueuedItems: deps.setQueuedItems,
+    setCurrentModel: deps.setCurrentModel,
+    setPendingModelSwitch: deps.setPendingModelSwitch,
+    syncCounters: deps.syncCounters,
+    syncFlags: deps.syncFlags,
+  });
+  return createTelegramSessionLifecycleHooks({
+    getCurrentModel: deps.getCurrentModel,
+    loadConfig: deps.loadConfig,
+    applySessionStartState: stateApplier.applyStartState,
+    prepareTempDir: deps.prepareTempDir,
+    updateStatus: deps.updateStatus,
+    applySessionShutdownState: stateApplier.applyShutdownState,
+    clearPendingMediaGroups: deps.clearPendingMediaGroups,
+    clearModelMenuState: deps.clearModelMenuState,
+    getActiveTurnChatId: deps.getActiveTurnChatId,
+    clearPreview: deps.clearPreview,
+    clearActiveTurn: deps.clearActiveTurn,
+    clearAbort: deps.clearAbort,
+    stopPolling: deps.stopPolling,
+    recordRuntimeEvent: deps.recordRuntimeEvent,
+  });
+}
+
+export function createTelegramSessionLifecycleHooks<
+  TContext,
+  TQueueItem,
+  TModel = unknown,
+>(deps: TelegramSessionLifecycleHookRuntimeDeps<TContext, TQueueItem, TModel>) {
+  return {
+    onSessionStart: async (
+      _event: TelegramSessionLifecycleHookEvent,
+      ctx: TContext,
+    ): Promise<void> => {
+      try {
+        await startTelegramSessionRuntime({
+          currentModel: deps.getCurrentModel(ctx),
+          loadConfig: deps.loadConfig,
+          applyState: deps.applySessionStartState,
+          prepareTempDir: deps.prepareTempDir,
+          updateStatus: () => deps.updateStatus(ctx),
+        });
+      } catch (error) {
+        deps.recordRuntimeEvent?.("session", error, { phase: "start" });
+        throw error;
+      }
+    },
+    onSessionShutdown: async (): Promise<void> => {
+      try {
+        await shutdownTelegramSessionRuntime<TQueueItem>({
+          applyState: deps.applySessionShutdownState,
+          clearPendingMediaGroups: deps.clearPendingMediaGroups,
+          clearModelMenuState: deps.clearModelMenuState,
+          getActiveTurnChatId: deps.getActiveTurnChatId,
+          clearPreview: deps.clearPreview,
+          clearActiveTurn: deps.clearActiveTurn,
+          clearAbort: deps.clearAbort,
+          stopPolling: deps.stopPolling,
+        });
+      } catch (error) {
+        deps.recordRuntimeEvent?.("session", error, { phase: "shutdown" });
+        throw error;
+      }
+    },
+  };
+}
+
+export function createTelegramQueueMutationController<TContext>(
+  deps: TelegramQueueMutationControllerDeps<TContext>,
+): TelegramQueueMutationController<TContext> {
+  const buildRuntimeDeps = (
+    ctx: TContext,
+  ): TelegramQueueMutationRuntimeDeps<TContext> => ({
+    ...deps,
+    ctx,
+  });
+  return {
+    append: (item, ctx) =>
+      appendTelegramQueueItemRuntime(item, buildRuntimeDeps(ctx)),
+    reorder: (ctx) => reorderTelegramQueueItemsRuntime(buildRuntimeDeps(ctx)),
+    removeByMessageIds: (messageIds, ctx) =>
+      removeTelegramQueueItemsByMessageIdsRuntime(
+        messageIds,
+        buildRuntimeDeps(ctx),
+      ),
+    clearPriorityByMessageId: (messageId, ctx) =>
+      clearTelegramQueuePromptPriorityRuntime(messageId, buildRuntimeDeps(ctx)),
+    prioritizeByMessageId: (messageId, ctx) =>
+      prioritizeTelegramQueuePromptRuntime(messageId, buildRuntimeDeps(ctx)),
+  };
+}
+
+function appendTelegramQueueItemRuntime<TContext>(
+  item: TelegramQueueItem<TContext>,
+  deps: TelegramQueueMutationRuntimeDeps<TContext>,
+): void {
+  deps.setQueuedItems(appendTelegramQueueItem(deps.getQueuedItems(), item));
+  reorderTelegramQueueItemsRuntime(deps);
+}
+
+export function reorderTelegramQueueItemsRuntime<TContext>(
+  deps: TelegramQueueMutationRuntimeDeps<TContext>,
+): void {
+  deps.setQueuedItems(
+    [...deps.getQueuedItems()].sort(compareTelegramQueueItems),
+  );
+  deps.updateStatus(deps.ctx);
+}
+
+export function removeTelegramQueueItemsByMessageIdsRuntime<TContext>(
+  messageIds: number[],
+  deps: TelegramQueueMutationRuntimeDeps<TContext>,
+): number {
+  const { items, removedCount } = removeTelegramQueueItemsByMessageIds(
+    deps.getQueuedItems(),
+    messageIds,
+  );
+  if (removedCount === 0) return 0;
+  deps.setQueuedItems(items);
+  deps.updateStatus(deps.ctx);
+  return removedCount;
+}
+
+export function clearTelegramQueuePromptPriorityRuntime<TContext>(
+  messageId: number,
+  deps: TelegramQueueMutationRuntimeDeps<TContext>,
+): boolean {
+  const { changed, items } = clearTelegramQueuePromptPriority(
+    deps.getQueuedItems(),
+    messageId,
+  );
+  if (!changed) return false;
+  deps.setQueuedItems(items);
+  reorderTelegramQueueItemsRuntime(deps);
+  return true;
+}
+
+export function prioritizeTelegramQueuePromptRuntime<TContext>(
+  messageId: number,
+  deps: TelegramQueueMutationRuntimeDeps<TContext>,
+): boolean {
+  const nextPriorityReactionOrder = deps.getNextPriorityReactionOrder?.();
+  if (nextPriorityReactionOrder === undefined) return false;
+  const { changed, items } = prioritizeTelegramQueuePrompt(
+    deps.getQueuedItems(),
+    messageId,
+    nextPriorityReactionOrder,
+  );
+  if (!changed) return false;
+  deps.setQueuedItems(items);
+  deps.incrementNextPriorityReactionOrder?.();
+  reorderTelegramQueueItemsRuntime(deps);
+  return true;
+}
+
+export async function enqueueTelegramPromptTurnRuntime<
+  TMessage,
+  TContext = unknown,
+>(
+  messages: TMessage[],
+  deps: TelegramPromptEnqueueRuntimeDeps<TMessage, TContext>,
+): Promise<void> {
+  const enqueuePlan = planTelegramPromptEnqueue(
+    deps.getQueuedItems(),
+    deps.getPreserveQueuedTurnsAsHistory(),
+  );
+  deps.setPreserveQueuedTurnsAsHistory(false);
+  const turn = await deps.createTurn(messages, enqueuePlan.historyTurns);
+  deps.setQueuedItems(
+    appendTelegramQueueItem(enqueuePlan.remainingItems, turn),
+  );
+  deps.updateStatus();
+  deps.dispatchNextQueuedTelegramTurn();
+}
+
+export function createTelegramPromptEnqueueController<
+  TMessage,
+  TContext = unknown,
+>(
+  deps: TelegramPromptEnqueueControllerDeps<TMessage, TContext>,
+): TelegramPromptEnqueueController<TMessage, TContext> {
+  return {
+    enqueue: (messages, ctx) =>
+      enqueueTelegramPromptTurnRuntime(messages, {
+        ...deps,
+        updateStatus: () => deps.updateStatus(ctx),
+        dispatchNextQueuedTelegramTurn: () =>
+          deps.dispatchNextQueuedTelegramTurn(ctx),
+      }),
+  };
+}
+
+export function createTelegramControlQueueController<TContext>(
+  deps: TelegramControlQueueControllerDeps<TContext>,
+): TelegramControlQueueController<TContext> {
+  return {
+    enqueue: (item, ctx) => {
+      deps.appendControlItem(item, ctx);
+      deps.dispatchNextQueuedTelegramTurn(ctx);
+    },
+  };
+}
+
 // --- Control Runtime ---
 
-export interface TelegramControlRuntimeDeps {
-  ctx: ExtensionContext;
+function getTelegramQueueErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export interface TelegramRuntimeEventRecorderPort {
+  recordRuntimeEvent?: (
+    category: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
+}
+
+export interface TelegramControlRuntimeDeps<TContext>
+  extends TelegramRuntimeEventRecorderPort {
+  ctx: TContext;
   sendTextReply: (
     chatId: number,
     replyToMessageId: number,
@@ -484,14 +1408,19 @@ export interface TelegramControlRuntimeDeps {
   onSettled: () => void;
 }
 
-export async function executeTelegramControlItemRuntime(
-  item: PendingTelegramControlItem,
-  deps: TelegramControlRuntimeDeps,
+export async function executeTelegramControlItemRuntime<TContext>(
+  item: PendingTelegramControlItem<TContext>,
+  deps: TelegramControlRuntimeDeps<TContext>,
 ): Promise<void> {
   try {
     await item.execute(deps.ctx);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = getTelegramQueueErrorMessage(error);
+    deps.recordRuntimeEvent?.("control", error, {
+      controlType: item.controlType,
+      chatId: item.chatId,
+      replyToMessageId: item.replyToMessageId,
+    });
     await deps.sendTextReply(
       item.chatId,
       item.replyToMessageId,
@@ -504,9 +1433,12 @@ export async function executeTelegramControlItemRuntime(
 
 // --- Dispatch Runtime ---
 
-export interface TelegramDispatchRuntimeDeps {
+export interface TelegramDispatchRuntimeDeps<TContext = unknown> {
   executeControlItem: (
-    item: Extract<TelegramQueueDispatchAction, { kind: "control" }>["item"],
+    item: Extract<
+      TelegramQueueDispatchAction<TContext>,
+      { kind: "control" }
+    >["item"],
   ) => void;
   onPromptDispatchStart: (chatId: number) => void;
   sendUserMessage: (
@@ -519,9 +1451,25 @@ export interface TelegramDispatchRuntimeDeps {
   onIdle: () => void;
 }
 
-export function executeTelegramQueueDispatchPlan(
-  plan: TelegramQueueDispatchAction,
-  deps: TelegramDispatchRuntimeDeps,
+export interface TelegramQueueDispatchControllerDeps<TContext = unknown>
+  extends TelegramRuntimeEventRecorderPort {
+  getQueuedItems: () => TelegramQueueItem<TContext>[];
+  setQueuedItems: (items: TelegramQueueItem<TContext>[]) => void;
+  canDispatch: (ctx: TContext) => boolean;
+  updateStatus: (ctx: TContext, error?: string) => void;
+  sendTextReply: TelegramControlRuntimeDeps<TContext>["sendTextReply"];
+  onPromptDispatchStart: (ctx: TContext, chatId: number) => void;
+  sendUserMessage: TelegramDispatchRuntimeDeps<TContext>["sendUserMessage"];
+  onPromptDispatchFailure: (ctx: TContext, message: string) => void;
+}
+
+export interface TelegramQueueDispatchController<TContext = unknown> {
+  dispatchNext: (ctx: TContext) => void;
+}
+
+export function executeTelegramQueueDispatchPlan<TContext = unknown>(
+  plan: TelegramQueueDispatchAction<TContext>,
+  deps: TelegramDispatchRuntimeDeps<TContext>,
 ): void {
   if (plan.kind === "none") {
     deps.onIdle();
@@ -535,7 +1483,83 @@ export function executeTelegramQueueDispatchPlan(
   try {
     deps.sendUserMessage(plan.item.content);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = getTelegramQueueErrorMessage(error);
     deps.onPromptDispatchFailure(message);
   }
+}
+
+export type TelegramQueueDispatchRuntimeDeps<TContext = unknown> = Omit<
+  TelegramQueueDispatchControllerDeps<TContext>,
+  "canDispatch"
+> &
+  TelegramDispatchReadinessDeps<TContext>;
+
+export function createTelegramQueueDispatchRuntime<TContext = unknown>(
+  deps: TelegramQueueDispatchRuntimeDeps<TContext>,
+): TelegramQueueDispatchController<TContext> {
+  return createTelegramQueueDispatchController({
+    getQueuedItems: deps.getQueuedItems,
+    setQueuedItems: deps.setQueuedItems,
+    canDispatch: createTelegramDispatchReadinessChecker({
+      isCompactionInProgress: deps.isCompactionInProgress,
+      hasActiveTurn: deps.hasActiveTurn,
+      hasDispatchPending: deps.hasDispatchPending,
+      isIdle: deps.isIdle,
+      hasPendingMessages: deps.hasPendingMessages,
+    }),
+    updateStatus: deps.updateStatus,
+    sendTextReply: deps.sendTextReply,
+    onPromptDispatchStart: deps.onPromptDispatchStart,
+    sendUserMessage: deps.sendUserMessage,
+    onPromptDispatchFailure: deps.onPromptDispatchFailure,
+    recordRuntimeEvent: deps.recordRuntimeEvent,
+  });
+}
+
+export function createTelegramQueueDispatchController<TContext = unknown>(
+  deps: TelegramQueueDispatchControllerDeps<TContext>,
+): TelegramQueueDispatchController<TContext> {
+  let controlDispatchPending = false;
+  const controller: TelegramQueueDispatchController<TContext> = {
+    dispatchNext: (ctx) => {
+      if (controlDispatchPending) {
+        deps.updateStatus(ctx);
+        return;
+      }
+      const dispatchPlan = planNextTelegramQueueAction(
+        deps.getQueuedItems(),
+        deps.canDispatch(ctx),
+      );
+      if (dispatchPlan.kind !== "none") {
+        deps.setQueuedItems(dispatchPlan.remainingItems);
+      }
+      executeTelegramQueueDispatchPlan(dispatchPlan, {
+        executeControlItem: (item) => {
+          controlDispatchPending = true;
+          deps.updateStatus(ctx);
+          void executeTelegramControlItemRuntime(item, {
+            ctx,
+            sendTextReply: deps.sendTextReply,
+            recordRuntimeEvent: deps.recordRuntimeEvent,
+            onSettled: () => {
+              controlDispatchPending = false;
+              deps.updateStatus(ctx);
+              controller.dispatchNext(ctx);
+            },
+          });
+        },
+        onPromptDispatchStart: (chatId) => {
+          deps.onPromptDispatchStart(ctx, chatId);
+        },
+        sendUserMessage: deps.sendUserMessage,
+        onPromptDispatchFailure: (message) => {
+          deps.onPromptDispatchFailure(ctx, message);
+        },
+        onIdle: () => {
+          deps.updateStatus(ctx);
+        },
+      });
+    },
+  };
+  return controller;
 }
