@@ -33,6 +33,7 @@ export interface PiSettingsManager {
 
 export interface PiExtensionApiRuntimePorts {
   sendUserMessage: ExtensionAPI["sendUserMessage"];
+  exec: ExtensionAPI["exec"];
   getThinkingLevel: ExtensionAPI["getThinkingLevel"];
   setThinkingLevel: ExtensionAPI["setThinkingLevel"];
   setModel: ExtensionAPI["setModel"];
@@ -41,11 +42,16 @@ export interface PiExtensionApiRuntimePorts {
 export function createExtensionApiRuntimePorts(
   api: Pick<
     ExtensionAPI,
-    "sendUserMessage" | "getThinkingLevel" | "setThinkingLevel" | "setModel"
+    | "sendUserMessage"
+    | "exec"
+    | "getThinkingLevel"
+    | "setThinkingLevel"
+    | "setModel"
   >,
 ): PiExtensionApiRuntimePorts {
   return {
     sendUserMessage: (content) => api.sendUserMessage(content),
+    exec: (command, args, options) => api.exec(command, args, options),
     getThinkingLevel: () => api.getThinkingLevel(),
     setThinkingLevel: (level) => api.setThinkingLevel(level),
     setModel: (model) => api.setModel(model),
@@ -60,6 +66,10 @@ export function getExtensionContextModel(
   ctx: ExtensionContext,
 ): ExtensionContext["model"] {
   return ctx.model;
+}
+
+export function getExtensionContextCwd(ctx: ExtensionContext): string {
+  return ctx.cwd;
 }
 
 export function isExtensionContextIdle(ctx: ExtensionContext): boolean {

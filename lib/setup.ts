@@ -21,6 +21,11 @@ export interface TelegramSetupUser {
   username?: string;
 }
 
+export interface TelegramPollingStartResult {
+  ok: boolean;
+  message?: string;
+}
+
 export interface TelegramSetupDeps {
   hasUI: boolean;
   env: NodeJS.ProcessEnv;
@@ -34,7 +39,7 @@ export interface TelegramSetupDeps {
   }>;
   persistConfig: (config: TelegramSetupConfig) => Promise<void>;
   notify: (message: string, level: "info" | "error") => void;
-  startPolling: () => void | Promise<void>;
+  startPolling: () => unknown | Promise<unknown>;
   updateStatus: () => void;
 }
 
@@ -61,7 +66,7 @@ export interface TelegramSetupPromptRuntimeDeps<
   setupGuard: TelegramSetupGuard;
   getMe: TelegramSetupDeps["getMe"];
   persistConfig: (config: TelegramSetupConfig) => Promise<void>;
-  startPolling: (ctx: TContext) => void | Promise<void>;
+  startPolling: (ctx: TContext) => unknown | Promise<unknown>;
   updateStatus: (ctx: TContext) => void;
   recordRuntimeEvent?: (
     category: string,
@@ -77,6 +82,12 @@ const TELEGRAM_BOT_TOKEN_ENV_VARS = [
   "TELEGRAM_TOKEN",
   "TELEGRAM_KEY",
 ] as const;
+
+function isTelegramPollingStartResult(
+  value: unknown,
+): value is TelegramPollingStartResult {
+  return !!value && typeof value === "object" && typeof (value as { ok?: unknown }).ok === "boolean";
+}
 
 export function getTelegramBotTokenInputDefault(
   env: NodeJS.ProcessEnv = process.env,
@@ -135,7 +146,10 @@ export async function runTelegramSetup(
     "Send /start to your bot in Telegram to pair this extension with your account.",
     "info",
   );
-  await deps.startPolling();
+  const startResult = await deps.startPolling();
+  if (isTelegramPollingStartResult(startResult) && startResult.message) {
+    deps.notify(startResult.message, startResult.ok ? "info" : "error");
+  }
   deps.updateStatus();
   return nextConfig;
 }

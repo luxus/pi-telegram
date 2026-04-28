@@ -58,6 +58,7 @@
 - Queued items have explicit kinds and lanes so prompt turns and synthetic control actions can share one ordering model
 - Keep queue admission contract explicit and validated: immediate commands execute without entering the queue, control commands enter the `control` lane, normal prompts enter the `default` lane, reaction-promoted prompts enter the `priority` lane, and queue append/planning paths should reject invalid kind/lane pairings predictably
 - Dispatch must still respect active turns, pending prompt dispatch, unsettled control-item execution, compaction, and pi pending-message state
+- Long-lived timers, pollers, and ownership watchers must not depend on live pi context objects after session replacement. Snapshot primitive identity such as `cwd` when installing a watcher, stop local timers during session shutdown, and catch stale-context status updates during async cleanup.
 - Prompt items should remain in the queue until `agent_start` consumes the dispatched turn; removing them earlier breaks active-turn binding, preview delivery, and end-of-turn follow-up behavior
 - In-flight `/model` switching is supported only for Telegram-owned active turns and is implemented as set-model plus synthetic continuation turn plus abort
 - If a tool call is active during in-flight `/model` switching, the abort is delayed until that tool finishes instead of interrupting the tool mid-flight
@@ -92,12 +93,12 @@
 ## 6.3 Current Domain Ownership Snapshot
 
 - Queue owns scheduling/lifecycle semantics: lane contracts, queue and active-turn stores, mutations, dispatch readiness/runtime, control/prompt enqueueing, session state appliers, and agent/tool lifecycle hooks; model owns model identity/thinking-level contracts, scoped resolution and CLI pattern parsing, current-model state/runtime helpers, in-flight switch state, restart eligibility, delayed abort decisions, Telegram-prefix-defaulted continuation prompt construction/queueing, and controller runtime binding over queue turns
-- Runtime owns session-local primitives and timers; pi owns direct SDK imports and bound extension API ports; config owns persisted bot/session pairing state, single-user authorization, and first-user pairing side effects; API owns Bot API transport shapes/helpers, temp-dir/inbound-limit/runtime-error helpers, and runtime-bound chat actions
+- Runtime owns session-local primitives and timers; locks owns shared `locks.json` singleton ownership, interactive takeover, stale same-`cwd` restart resume, session-replacement suspension, and ownership-drift shutdown; pi owns direct SDK imports and bound extension API ports; config owns persisted bot/session pairing state, single-user authorization, first-user pairing side effects, and inbound attachment handler config; API owns Bot API transport shapes/helpers, temp-dir/inbound-limit/runtime-error helpers, and runtime-bound chat actions
 - Preview owns streaming preview lifecycle and transports, defaulting reply metadata through the replies-domain helper when callers do not override it; replies owns final rendered-message delivery and reply parameters; rendering owns Telegram HTML Markdown/block/chunk/preview-snapshot formatting
-- Polling owns long-poll controller state/activity/loop wiring; updates owns callback/message/edit/reaction routing and queue/media/menu update adapters; registration owns pi tool/command/lifecycle-hook binding
+- Polling owns long-poll controller state/activity/loop wiring; updates owns callback/message/edit/reaction classification/execution; routing owns inbound update composition across menus, commands, media grouping, prompt queueing, edits, and paired authorization; handlers owns inbound attachment handler matching, command/tool invocation, prompt-text injection, and fallback behavior; registration owns pi tool/command/lifecycle-hook binding
 - Commands own slash-command parsing, execution-mode contracts, command target/control queue adapters, bot-command metadata/registration, and stop/compact/status/model/help side effects
 - Menu owns inline menu state/cache/building, callback/action runtimes, status/thinking/model UI support, and selection planning; status owns bridge status rendering, grouped pi-side diagnostic lines, and recent-event state
-- Turns own Telegram prompt turn-building/editing and prompt-prefix identity; media owns inbound text/file/media-group extraction and download assembly; attachments own outbound file queueing, narrow structural attachment turn targets, stat checks, limits, and delivery classification; setup owns token prompt, env fallback, and validation flow
+- Turns own Telegram prompt turn-building/editing, prompt-prefix identity, and attachment-handler output handoff into prompt content; media owns inbound text/file/media-group extraction and download assembly; attachments own outbound file queueing, narrow structural attachment turn targets, stat checks, limits, and delivery classification; setup owns token prompt, env fallback, and validation flow
 
 ## 6.4 Entrypoint And Import Boundaries
 
@@ -124,7 +125,7 @@
 - `ctx.ui.input()` provides placeholder text rather than an editable prefilled value; when a real default must appear already filled in, prefer `ctx.ui.editor()`
 - For `/telegram-setup`, prefer the locally saved bot token over environment variables on repeat setup runs; env vars are the bootstrap path when no local token exists
 - Status/model/thinking controls are driven through Telegram inline keyboards and callback queries
-- Inbound files may become pi image inputs; outbound files must flow through `telegram_attach`
+- Inbound files may become pi image inputs or configured attachment-handler text before queueing; outbound files must flow through `telegram_attach`
 
 ## 9. Pre-Task Preparation Protocol
 

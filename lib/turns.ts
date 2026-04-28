@@ -4,7 +4,7 @@
  */
 
 import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import {
   collectTelegramMessageIds,
@@ -53,9 +53,14 @@ export function truncateTelegramQueueSummary(
 export function formatTelegramTurnStatusSummary(
   rawText: string,
   files: DownloadedTelegramTurnFile[],
+  handlerOutputs: string[] = [],
 ): string {
   const textSummary = truncateTelegramQueueSummary(rawText);
   if (textSummary) return textSummary;
+  const handlerSummary = truncateTelegramQueueSummary(
+    handlerOutputs.join(" "),
+  );
+  if (handlerSummary) return handlerSummary;
   if (files.length === 1) {
     const fileName = basename(
       files[0]?.fileName || files[0]?.path || "attachment",
@@ -66,10 +71,37 @@ export function formatTelegramTurnStatusSummary(
   return "(empty message)";
 }
 
+function appendTelegramListSection(
+  text: string,
+  title: string,
+  items: string[],
+): string {
+  if (items.length === 0) return text;
+  const prefix = text.length > 0 ? `${text}\n\n` : "";
+  return `${prefix}[${title}]\n${items.map((item) => `- ${item}`).join("\n")}`;
+}
+
+function appendTelegramAttachmentSection(
+  text: string,
+  files: Pick<DownloadedTelegramTurnFile, "path">[],
+): string {
+  if (files.length === 0) return text;
+  const dirs = [...new Set(files.map((file) => dirname(file.path)))];
+  const sameDir = dirs.length === 1;
+  const header = sameDir ? `[attachments] ${dirs[0]}` : "[attachments]";
+  const items = sameDir
+    ? files.map((file) => `/${basename(file.path)}`)
+    : files.map((file) => file.path);
+  const prefix = text.length > 0 ? `${text}\n\n` : "";
+  return `${prefix}${header}\n${items.map((item) => `- ${item}`).join("\n")}`;
+}
+
 export function buildTelegramTurnPrompt(options: {
   telegramPrefix: string;
   rawText: string;
   files: DownloadedTelegramTurnFile[];
+  promptFiles?: DownloadedTelegramTurnFile[];
+  handlerOutputs?: string[];
   historyTurns?: Pick<PendingTelegramTurn, "historyText">[];
 }): string {
   let prompt = options.telegramPrefix;
@@ -87,12 +119,9 @@ export function buildTelegramTurnPrompt(options: {
         ? `\n${options.rawText}`
         : ` ${options.rawText}`;
   }
-  if (options.files.length > 0) {
-    prompt += "\n\nTelegram attachments were saved locally:";
-    for (const file of options.files) {
-      prompt += `\n- ${file.path}`;
-    }
-  }
+  const promptFiles = options.promptFiles ?? options.files;
+  prompt = appendTelegramAttachmentSection(prompt, promptFiles);
+  prompt = appendTelegramListSection(prompt, "outputs", options.handlerOutputs ?? []);
   return prompt;
 }
 
@@ -101,7 +130,7 @@ function splitTelegramPromptAttachmentSuffix(prompt: string): {
   attachmentSuffix: string;
   attachmentFiles: DownloadedTelegramTurnFile[];
 } {
-  const marker = "\n\nTelegram attachments were saved locally:";
+  const marker = "\n\n[attachments]";
   const markerIndex = prompt.indexOf(marker);
   if (markerIndex === -1) {
     return {
@@ -112,11 +141,30 @@ function splitTelegramPromptAttachmentSuffix(prompt: string): {
   }
   const promptWithoutAttachments = prompt.slice(0, markerIndex);
   const attachmentSuffix = prompt.slice(markerIndex);
-  const attachmentFiles = attachmentSuffix
-    .split("\n")
+  const attachmentLines: string[] = [];
+  let readingAttachments = false;
+  let attachmentDir: string | undefined;
+  for (const line of attachmentSuffix.split("\n")) {
+    const trimmed = line.trim();
+    const attachmentMatch = trimmed.match(/^\[attachments\](?:\s+(.+))?$/);
+    if (attachmentMatch) {
+      readingAttachments = true;
+      attachmentDir = attachmentMatch[1]?.trim();
+      continue;
+    }
+    if (readingAttachments && /^\[[^\]]+\](?:\s+.*)?$/.test(trimmed)) break;
+    if (readingAttachments) attachmentLines.push(line);
+  }
+  const attachmentFiles = attachmentLines
     .map((line) => line.match(/^- (.+)$/)?.[1]?.trim())
     .filter((path): path is string => !!path)
-    .map((path) => ({ path, fileName: basename(path), isImage: false }));
+    .map((path) => (attachmentDir ? join(attachmentDir, path.replace(/^\/+/, "")) : path))
+    .map((path) => ({
+      path,
+      fileName: basename(path),
+      isImage: false,
+      kind: "document" as const,
+    }));
   return { promptWithoutAttachments, attachmentSuffix, attachmentFiles };
 }
 
@@ -242,6 +290,8 @@ export interface BuildTelegramPromptTurnOptions {
   queueOrder: number;
   rawText: string;
   files: DownloadedTelegramTurnFile[];
+  promptFiles?: DownloadedTelegramTurnFile[];
+  handlerOutputs?: string[];
   readBinaryFile: (path: string) => Promise<Uint8Array>;
   inferImageMimeType: (path: string) => string | undefined;
 }
@@ -251,30 +301,50 @@ export type BuildTelegramPromptTurnRuntimeOptions = Omit<
   "readBinaryFile"
 >;
 
-export interface TelegramPromptTurnRuntimeBuilderDeps extends DownloadTelegramMessageFilesDeps {
+export interface TelegramPromptTurnRuntimeBuilderDeps<TContext = unknown>
+  extends DownloadTelegramMessageFilesDeps {
   allocateQueueOrder: () => number;
+  processAttachments?: (
+    files: DownloadedTelegramTurnFile[],
+    rawText: string,
+    ctx: TContext,
+  ) => Promise<{
+    rawText: string;
+    promptFiles?: DownloadedTelegramTurnFile[];
+    handlerOutputs?: string[];
+  }>;
 }
 
 export function createTelegramPromptTurnRuntimeBuilder<
   TMessage extends TelegramTurnMessage & TelegramMediaMessage,
+  TContext = unknown,
 >(
-  deps: TelegramPromptTurnRuntimeBuilderDeps,
+  deps: TelegramPromptTurnRuntimeBuilderDeps<TContext>,
 ): (
   messages: TMessage[],
   historyTurns?: PendingTelegramTurn[],
+  ctx?: TContext,
 ) => Promise<PendingTelegramTurn> {
-  return async (messages, historyTurns = []) =>
-    buildTelegramPromptTurnRuntime({
+  return async (messages, historyTurns = [], ctx) => {
+    const rawText = extractTelegramMessagesText(messages);
+    const files = await downloadTelegramMessageFiles(messages, {
+      downloadFile: deps.downloadFile,
+    });
+    const processed = deps.processAttachments
+      ? await deps.processAttachments(files, rawText, ctx as TContext)
+      : { rawText, promptFiles: files };
+    return buildTelegramPromptTurnRuntime({
       telegramPrefix: TELEGRAM_PREFIX,
       messages,
       historyTurns,
       queueOrder: deps.allocateQueueOrder(),
-      rawText: extractTelegramMessagesText(messages),
-      files: await downloadTelegramMessageFiles(messages, {
-        downloadFile: deps.downloadFile,
-      }),
+      rawText: processed.rawText,
+      files,
+      promptFiles: processed.promptFiles,
+      handlerOutputs: processed.handlerOutputs,
       inferImageMimeType: guessMediaType,
     });
+  };
 }
 
 export async function buildTelegramPromptTurn(
@@ -291,6 +361,8 @@ export async function buildTelegramPromptTurn(
         telegramPrefix: options.telegramPrefix,
         rawText: options.rawText,
         files: options.files,
+        promptFiles: options.promptFiles,
+        handlerOutputs: options.handlerOutputs,
         historyTurns: options.historyTurns,
       }),
     },
@@ -316,10 +388,15 @@ export async function buildTelegramPromptTurn(
     laneOrder: options.queueOrder,
     queuedAttachments: [],
     content,
-    historyText: formatTelegramHistoryText(options.rawText, options.files),
+    historyText: formatTelegramHistoryText(
+      options.rawText,
+      options.promptFiles ?? options.files,
+      options.handlerOutputs,
+    ),
     statusSummary: formatTelegramTurnStatusSummary(
       options.rawText,
-      options.files,
+      options.promptFiles ?? options.files,
+      options.handlerOutputs,
     ),
   };
 }

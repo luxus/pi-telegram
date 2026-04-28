@@ -79,8 +79,18 @@ function getRequiredMapValue<TKey, TValue>(
 
 function createCommandContext(
   notify: (message: string) => void = () => {},
+  confirm: () => Promise<boolean> | boolean = () => false,
 ): ExtensionCommandContext {
-  return { ui: { notify } } as unknown as ExtensionCommandContext;
+  return {
+    cwd: "/repo",
+    ui: {
+      notify,
+      confirm,
+      theme: {
+        fg: (_color: string, value: string) => value,
+      },
+    },
+  } as unknown as ExtensionCommandContext;
 }
 
 function createExtensionContext(): ExtensionContext {
@@ -209,6 +219,46 @@ test("Registration connect and disconnect commands reload config and control pol
     "stop",
     "update-status",
   ]);
+});
+
+test("Registration connect command can move singleton ownership after confirmation", async () => {
+  const harness = createRegistrationApiHarness();
+  const events: string[] = [];
+  registerTelegramCommands(harness.api, {
+    promptForConfig: async () => undefined,
+    getStatusLines: () => [],
+    reloadConfig: async () => {
+      events.push("reload");
+    },
+    hasBotToken: () => true,
+    startPolling: async (_ctx, options) => {
+      events.push(options?.force ? "start-force" : "start");
+      return options?.force
+        ? { ok: true, message: "connected" }
+        : { ok: false, canTakeover: true, message: "active elsewhere" };
+    },
+    stopPolling: async () => undefined,
+    updateStatus: () => {
+      events.push("update-status");
+    },
+  });
+  const notifications: string[] = [];
+  const ctx = createCommandContext(
+    (message) => {
+      notifications.push(message);
+    },
+    () => {
+      events.push("confirm");
+      return true;
+    },
+  );
+  const connectCommand = getRequiredMapValue(
+    harness.commands,
+    "telegram-connect",
+  );
+  await connectCommand.handler("", ctx);
+  assert.deepEqual(events, ["reload", "start", "confirm", "start-force", "update-status"]);
+  assert.deepEqual(notifications, ["connected"]);
 });
 
 test("Registration builds Telegram-aware system prompt suffixes", () => {

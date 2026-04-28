@@ -83,6 +83,7 @@ export interface TelegramRuntimeEventRecorderOptions {
 export interface TelegramBridgeStatusLineState {
   botUsername?: string;
   allowedUserId?: number;
+  lockState?: string;
   pollingActive: boolean;
   lastUpdateId?: number;
   activeSourceMessageIds?: number[];
@@ -148,6 +149,7 @@ export interface TelegramBridgeStatusRuntimeDeps<
   getQueuedItems: () => TQueueItem[];
   formatQueuedStatus: (items: TQueueItem[]) => string;
   getRecentRuntimeEvents: () => TelegramRuntimeEvent[];
+  getRuntimeLockState?: () => string;
 }
 
 export interface TelegramStatusRuntime<
@@ -350,6 +352,7 @@ export function createTelegramBridgeStatusRuntime<
       return {
         botUsername: config.botUsername,
         allowedUserId: config.allowedUserId,
+        lockState: deps.getRuntimeLockState?.(),
         pollingActive: deps.isPollingActive(),
         lastUpdateId: config.lastUpdateId,
         activeSourceMessageIds: deps.getActiveSourceMessageIds(),
@@ -404,6 +407,7 @@ export function buildTelegramBridgeStatusLines(
     "connection:",
     `- bot: ${state.botUsername ? `@${state.botUsername}` : "not configured"}`,
     `- allowed user: ${state.allowedUserId ?? "not paired"}`,
+    ...(state.lockState ? [`- owner: ${state.lockState}`] : []),
     "",
     "polling:",
     `- state: ${state.pollingActive ? "running" : "stopped"}`,

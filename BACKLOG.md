@@ -1,10 +1,8 @@
 # Project Backlog
 
-## Open Backlog
+## Active Backlog
 
-No open implementation, validation, or documentation items are scheduled right now.
-
-Completed delivery is recorded in [CHANGELOG.md](./CHANGELOG.md). Durable domain boundaries are documented in [AGENTS.md](./AGENTS.md) and [docs/architecture.md](./docs/architecture.md).
+_No active backlog items._
 
 ## Reopen Triggers
 

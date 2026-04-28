@@ -4,13 +4,37 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test, { mock } from "node:test";
+import testRoot, { mock, type TestContext } from "node:test";
 
-import telegramExtension from "../index.ts";
 import * as Runtime from "../lib/runtime.ts";
+
+type RuntimeTestHandler = (context: TestContext) => void | Promise<void>;
+type RuntimeTelegramExtension = typeof import("../index.ts")["default"];
+
+function test(name: string, fn: RuntimeTestHandler): void {
+  void testRoot(name, { concurrency: false }, fn);
+}
+
+let runtimeTelegramExtension: RuntimeTelegramExtension | undefined;
+let runtimeAgentDir: string | undefined;
+
+async function ensureRuntimeAgentDir(): Promise<string> {
+  if (!runtimeAgentDir) {
+    runtimeAgentDir = await mkdtemp(join(tmpdir(), "pi-telegram-runtime-agent-"));
+    process.env.PI_CODING_AGENT_DIR = runtimeAgentDir;
+  }
+  return runtimeAgentDir;
+}
+
+async function getRuntimeTelegramExtension(): Promise<RuntimeTelegramExtension> {
+  if (runtimeTelegramExtension) return runtimeTelegramExtension;
+  await ensureRuntimeAgentDir();
+  runtimeTelegramExtension = (await import("../index.ts")).default;
+  return runtimeTelegramExtension;
+}
 
 async function flushMicrotasks(iterations = 10): Promise<void> {
   for (let i = 0; i < iterations; i++) {
@@ -56,11 +80,12 @@ function setRuntimeTestFetch(fetchImpl: typeof fetch): () => void {
 }
 
 async function createRuntimeTelegramConfigFixture() {
-  const agentDir = join(homedir(), ".pi", "agent");
+  const agentDir = await ensureRuntimeAgentDir();
   const configPath = join(agentDir, "telegram.json");
   const previousConfig = await readFile(configPath, "utf8").catch(
     () => undefined,
   );
+  const isolated = process.env.PI_CODING_AGENT_DIR === agentDir;
   return {
     write: async (config: Record<string, unknown>) => {
       await mkdir(agentDir, { recursive: true });
@@ -71,6 +96,7 @@ async function createRuntimeTelegramConfigFixture() {
       );
     },
     restore: async () => {
+      if (isolated) return;
       if (previousConfig === undefined) {
         await rm(configPath, { force: true });
         return;
@@ -552,7 +578,7 @@ test("Extension runtime polls, pairs, and dispatches an inbound Telegram turn in
   });
   try {
     await telegramConfig.write({ botToken: "123:abc", lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const ctx = createRuntimeExtensionContext();
     await handlers.get("session_start")?.({}, ctx);
     await commands.get("telegram-connect")?.handler("", ctx);
@@ -632,7 +658,7 @@ test("Extension runtime finalizes a drafted preview into the final Telegram repl
   try {
     mock.timers.enable({ apis: ["setTimeout"] });
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const ctx = createRuntimeExtensionContext();
     await handlers.get("session_start")?.({}, ctx);
     await commands.get("telegram-connect")?.handler("", ctx);
@@ -729,7 +755,7 @@ test("Extension runtime carries queued follow-ups into history after an aborted 
   });
   try {
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const idleCtx = createRuntimeExtensionContext();
     let aborted = false;
     const activeCtx = createRuntimeExtensionContext({
@@ -862,7 +888,7 @@ test("Extension runtime runs queued status control before the next queued prompt
   });
   try {
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const baseCtx = createRuntimeExtensionContext({
       cwd: process.cwd(),
       sessionManager: {
@@ -990,7 +1016,7 @@ test("Extension runtime runs queued model control before the next queued prompt 
   });
   try {
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const baseCtx = createRuntimeExtensionContext({
       cwd: process.cwd(),
       model: modelA,
@@ -1115,7 +1141,7 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
   });
   try {
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const ctx = createRuntimeExtensionContext({
       compact: (hooks: {
         onComplete: () => void;
@@ -1211,7 +1237,7 @@ test("Extension runtime coalesces media-group updates into one delayed dispatch"
   try {
     mock.timers.enable({ apis: ["setTimeout"] });
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const ctx = createRuntimeExtensionContext();
     await handlers.get("session_start")?.({}, ctx);
     await commands.get("telegram-connect")?.handler("", ctx);
@@ -1283,7 +1309,7 @@ test("Extension runtime applies reaction priority and removal before the next di
   });
   try {
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const idleCtx = createRuntimeExtensionContext();
     const activeCtx = createRuntimeExtensionContext({
       isIdle: () => false,
@@ -1458,7 +1484,7 @@ test("Extension runtime applies idle model picks immediately and refreshes statu
       "--models=anthropic/claude-b:high",
     ];
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const ctx = createRuntimeModelContext({
       model: modelA,
       availableModels: [modelA, modelB],
@@ -1572,7 +1598,7 @@ test("Extension runtime switches model in flight and dispatches a continuation t
   });
   try {
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const ctx = createRuntimeModelContext({
       model: modelA,
       availableModels: [modelA, modelB],
@@ -1733,7 +1759,7 @@ test("Extension runtime delays model-switch abort until the active tool finishes
   });
   try {
     await telegramConfig.write({ botToken: "123:abc", allowedUserId: 77, lastUpdateId: 0 });
-    telegramExtension(pi);
+    (await getRuntimeTelegramExtension())(pi);
     const ctx = createRuntimeModelContext({
       model: modelA,
       availableModels: [modelA, modelB],

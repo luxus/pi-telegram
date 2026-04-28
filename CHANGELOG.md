@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0: Singleton Locks & Attachment Handlers
+
+- `[Locks]` Added the shared `locks.json` singleton ownership standard and documented it in `docs/locks.md`. Telegram polling ownership now lives under `@llblab/pi-telegram` in `~/.pi/agent/locks.json`, while `telegram.json` remains pure bot/user configuration. `/telegram-connect` acquires the lock, replaces stale locks, or moves live external owners here through an interactive confirmation; `/telegram-disconnect` releases it. Session initialization reads ownership state, active owners stop local polling when `locks.json` no longer points at their own `pid`/`cwd`, session replacement via `/new` suspends polling/watchers without touching explicit ownership before resuming in the new session, and a reopened pi process resumes a stale same-`cwd` lock automatically. Impact: runtime locks can be reset or moved without deleting Telegram configuration, finding the previous pi instance, or crashing on stale extension contexts.
+- `[Attachment Handlers]` Added `telegram.json` inbound attachment handlers with MIME/type matching, safe command placeholder substitution, local tool invocation, compact `[attachments] <directory>` plus `[outputs]` prompt sections, and quiet omission of empty or failed handler output. Impact: common flows such as Telegram voice transcription can happen before the agent sees the turn while keeping source attachment paths visible.
+- `[Refactor]` Extracted inbound route composition from `index.ts` into `/lib/routing.ts`, keeping paired update execution, callback menus, command-or-prompt dispatch, media grouping, prompt enqueueing, queued edits, and attachment-handler turn building behind one cohesive route wiring boundary. Impact: the entrypoint stays smaller while high-risk Telegram update flow remains covered by runtime and invariant tests.
+
 ## 0.3.0: Modular Runtime, Queue Controls, Diagnostics
 
 ### Runtime Architecture

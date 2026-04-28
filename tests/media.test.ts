@@ -92,6 +92,7 @@ test("Media helpers download collected file infos", async () => {
       fileName: "report.pdf",
       isImage: false,
       mimeType: "application/pdf",
+      kind: "document",
     },
   ]);
 });
@@ -109,8 +110,10 @@ test("Media helpers extract text, ids, and history summaries", () => {
   assert.equal(extractFirstTelegramMessageText(messages), "first");
   assert.deepEqual(collectTelegramMessageIds(messages), [1, 2]);
   assert.equal(
-    formatTelegramHistoryText("hello", [{ path: "/tmp/demo.txt" }]),
-    "hello\nAttachments:\n- /tmp/demo.txt",
+    formatTelegramHistoryText("hello", [{ path: "/tmp/demo.txt" }], [
+      "transcript",
+    ]),
+    "hello\n\n[attachments] /tmp\n- /demo.txt\n\n[outputs]\n- transcript",
   );
 });
 

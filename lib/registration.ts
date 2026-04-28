@@ -28,7 +28,7 @@ const SYSTEM_PROMPT_SUFFIX = `
 
 Telegram bridge extension is active.
 - Messages forwarded from Telegram are prefixed with "[telegram]".
-- [telegram] messages may include local temp file paths for Telegram attachments. Read those files as needed.
+- [telegram] messages may include [attachments] sections with a base directory plus relative local file entries. Resolve and read those files as needed.
 - Telegram is often read on narrow phone screens, so prefer narrow table columns when presenting tabular data; wide monospace tables can become unreadable.
 - If a [telegram] user asked for a file or generated artifact, use the telegram_attach tool with the local file path so the extension can send it with your next final reply.
 - Do not assume mentioning a local file path in plain text will send it to Telegram. Use telegram_attach.`;
@@ -96,14 +96,47 @@ export function registerTelegramAttachmentTool(
 
 // --- Command Registration ---
 
+export interface TelegramCommandStartPollingOptions {
+  force?: boolean;
+}
+
+export interface TelegramCommandStartPollingResult {
+  ok: boolean;
+  message?: string;
+  canTakeover?: boolean;
+  owner?: string;
+}
+
 export interface TelegramCommandRegistrationDeps {
   promptForConfig: (ctx: ExtensionCommandContext) => Promise<void>;
   getStatusLines: () => string[];
   reloadConfig: () => Promise<void>;
   hasBotToken: () => boolean;
-  startPolling: (ctx: ExtensionCommandContext) => void | Promise<void>;
-  stopPolling: () => Promise<void>;
+  startPolling: (
+    ctx: ExtensionCommandContext,
+    options?: TelegramCommandStartPollingOptions,
+  ) =>
+    | void
+    | Promise<void | TelegramCommandStartPollingResult>
+    | TelegramCommandStartPollingResult;
+  stopPolling: () => Promise<void | string>;
   updateStatus: (ctx: ExtensionCommandContext) => void;
+}
+
+function formatTelegramTakeoverTitle(ctx: ExtensionCommandContext): string {
+  return ctx.ui.theme.fg("accent", "pi-telegram");
+}
+
+function formatTelegramTakeoverPrompt(
+  ctx: ExtensionCommandContext,
+  owner?: string,
+): string {
+  const theme = ctx.ui.theme;
+  const action = theme.fg("warning", "move singleton lock here?");
+  const from = theme.fg("muted", "from:");
+  const to = theme.fg("muted", "to:");
+  const source = owner ?? "another pi instance";
+  return `${action}\n\n${from} ${source}\n${to} ${ctx.cwd}`;
 }
 
 export function registerTelegramCommands(
@@ -130,14 +163,30 @@ export function registerTelegramCommands(
         await deps.promptForConfig(ctx);
         return;
       }
-      await deps.startPolling(ctx);
+      let result = await deps.startPolling(ctx);
+      if (result && !result.ok && result.canTakeover) {
+        const confirmed = await ctx.ui.confirm(
+          formatTelegramTakeoverTitle(ctx),
+          formatTelegramTakeoverPrompt(ctx, result.owner),
+        );
+        if (!confirmed) {
+          ctx.ui.notify("Telegram bridge takeover cancelled.", "info");
+          deps.updateStatus(ctx);
+          return;
+        }
+        result = await deps.startPolling(ctx, { force: true });
+      }
+      if (result?.message) {
+        ctx.ui.notify(result.message, result.ok ? "info" : "warning");
+      }
       deps.updateStatus(ctx);
     },
   });
   pi.registerCommand("telegram-disconnect", {
     description: "Stop the Telegram bridge in this pi session",
     handler: async (_args, ctx) => {
-      await deps.stopPolling();
+      const message = await deps.stopPolling();
+      if (message) ctx.ui.notify(message, "info");
       deps.updateStatus(ctx);
     },
   });
@@ -223,6 +272,41 @@ export interface TelegramLifecycleRegistrationDeps {
     ctx: ExtensionContext,
   ) => Promise<void>;
   onAgentEnd: (event: AgentEndEvent, ctx: ExtensionContext) => Promise<void>;
+}
+
+export interface TelegramSessionLifecycleHooks {
+  onSessionStart: (event: SessionStartEvent, ctx: ExtensionContext) => Promise<void>;
+  onSessionShutdown: (
+    event: SessionShutdownEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void>;
+}
+
+export interface TelegramExtraLifecycleHooks {
+  onSessionStart?: (
+    event: SessionStartEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void>;
+  onSessionShutdown?: (
+    event: SessionShutdownEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void>;
+}
+
+export function appendTelegramLifecycleHooks(
+  base: TelegramSessionLifecycleHooks,
+  extra: TelegramExtraLifecycleHooks,
+): TelegramSessionLifecycleHooks {
+  return {
+    onSessionStart: async (event, ctx) => {
+      await base.onSessionStart(event, ctx);
+      await extra.onSessionStart?.(event, ctx);
+    },
+    onSessionShutdown: async (event, ctx) => {
+      await base.onSessionShutdown(event, ctx);
+      await extra.onSessionShutdown?.(event, ctx);
+    },
+  };
 }
 
 export function registerTelegramLifecycleHooks(

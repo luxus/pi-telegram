@@ -10,6 +10,7 @@ import {
   compactExtensionContext,
   createExtensionApiRuntimePorts,
   type ExtensionContext,
+  getExtensionContextCwd,
   getExtensionContextModel,
   hasExtensionContextPendingMessages,
   isExtensionContextIdle,
@@ -37,6 +38,10 @@ test("Pi API runtime ports bind methods without losing receiver context", async 
     sendUserMessage(content) {
       this.events.push(`send:${String(content)}`);
     },
+    async exec(command, args) {
+      this.events.push(`exec:${command}:${args.join(",")}`);
+      return { stdout: "ok", stderr: "", code: 0, killed: false };
+    },
     getThinkingLevel() {
       this.events.push("get-thinking");
       return "high";
@@ -51,11 +56,18 @@ test("Pi API runtime ports bind methods without losing receiver context", async 
   };
   const runtime = createExtensionApiRuntimePorts(api);
   runtime.sendUserMessage("hello");
+  assert.deepEqual(await runtime.exec("cmd", ["arg"]), {
+    stdout: "ok",
+    stderr: "",
+    code: 0,
+    killed: false,
+  });
   assert.equal(runtime.getThinkingLevel(), "high");
   runtime.setThinkingLevel("low");
   assert.equal(await runtime.setModel(createHarnessModel("gpt-5")), true);
   assert.deepEqual(api.events, [
     "send:hello",
+    "exec:cmd:arg",
     "get-thinking",
     "thinking:low",
     "model:gpt-5",
@@ -69,6 +81,7 @@ test("Pi context helpers expose model, idle, pending-message, and compact adapte
     model,
     isIdle: () => true,
     hasPendingMessages: () => false,
+    cwd: "/tmp/project",
     compact: (callbacks: { onComplete: () => void }) => {
       events.push("compact");
       callbacks.onComplete();
@@ -83,6 +96,7 @@ test("Pi context helpers expose model, idle, pending-message, and compact adapte
     },
   });
   assert.equal(getExtensionContextModel(ctx), model);
+  assert.equal(getExtensionContextCwd(ctx), "/tmp/project");
   assert.equal(isExtensionContextIdle(ctx), true);
   assert.equal(hasExtensionContextPendingMessages(ctx), false);
   assert.deepEqual(events, ["compact", "complete"]);

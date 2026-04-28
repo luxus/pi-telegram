@@ -18,7 +18,7 @@ This repository is an actively maintained fork of [`badlogic/pi-telegram`](https
 - **In-flight Model Switching**: Change the active model mid-generation. The agent gracefully pauses, applies the new model, and restarts its response without losing context.
 - **Smart Message Queue**: Messages sent while the agent is busy are queued and previewed in the pi status bar, and queued turns can be reprioritized or removed with Telegram reactions.
 - **Mobile-Optimized Rendering**: Tables and lists are formatted for narrow screens, table padding accounts for emoji grapheme and wide Unicode display width, and Telegram-originated runs prompt the assistant to prefer narrow table columns for phone readability. Markdown is correctly parsed and split to fit Telegram's limits without breaking HTML structures or code blocks, block spacing stays faithful to the original Markdown with readable heading separation, supported absolute links stay clickable, and unsupported link forms degrade safely.
-- **File Handling & Attachments**: Send images and files to the agent, or ask it to generate and return artifacts. Inbound downloads and outbound attachments are size-limited by default, and outbound files are delivered automatically via the `telegram_attach` tool.
+- **File Handling & Attachments**: Send images and files to the agent, transcribe or transform inbound files with configured attachment handlers, or ask pi to generate and return artifacts. Inbound downloads and outbound attachments are size-limited by default, and outbound files are delivered automatically via the `telegram_attach` tool.
 - **Streaming Responses**: Closed Markdown blocks stream back as rich Telegram HTML while pi is generating, and the still-growing tail stays readable until the final fully rendered reply lands.
 
 ## Install
@@ -60,7 +60,7 @@ Paste your bot token when prompted. If a bot token is already saved in `~/.pi/ag
 /telegram-connect
 ```
 
-The bridge is session-local. Only one pi session should be connected to the bot at a time.
+The bridge is session-local: only one pi instance polls Telegram at a time. `/telegram-connect` records polling ownership in `~/.pi/agent/locks.json`; live ownership moves require confirmation, while `/new` and same-`cwd` process restarts resume automatically.
 
 ### 4. Pair your account from Telegram
 
@@ -92,8 +92,8 @@ Run these inside pi, not Telegram:
 
 - **`/telegram-setup`**: Configure or update the Telegram bot token.
 - **`/telegram-status`**: Check bridge status, connection, polling, execution, queue, and recent redacted runtime/API failure events.
-- **`/telegram-connect`**: Start polling Telegram updates in the current pi session.
-- **`/telegram-disconnect`**: Stop polling in the current pi session.
+- **`/telegram-connect`**: Start polling Telegram updates in the current pi session, acquire the singleton lock, or interactively move ownership here from another live instance.
+- **`/telegram-disconnect`**: Stop polling in the current pi session and release the singleton lock.
 
 ### Queue, Reactions, and Media
 
@@ -102,8 +102,30 @@ Run these inside pi, not Telegram:
 - `👎` removes a waiting turn from the queue. Telegram Bot API does not expose ordinary DM message-deletion events through the polling path used here, so queue removal is bound to the dislike reaction.
 - For media groups, a reaction on any message in the group applies to the whole queued turn.
 - If you edit a Telegram message while it is still waiting in the queue, the queued turn is updated instead of creating a duplicate prompt. Edits after a turn has already started may not affect the active run.
-- Inbound images, albums, and files are saved to `~/.pi/agent/tmp/telegram`, local file paths are included in the prompt, and inbound images are forwarded to pi as image inputs. Inbound downloads default to a 50 MiB limit and can be adjusted with `PI_TELEGRAM_INBOUND_FILE_MAX_BYTES` or `TELEGRAM_MAX_FILE_SIZE_BYTES`.
+- Inbound images, albums, and files are saved to `~/.pi/agent/tmp/telegram`. Unhandled local file paths are included in the prompt, handled attachment output is injected into the prompt text, and inbound images are forwarded to pi as image inputs. Inbound downloads default to a 50 MiB limit and can be adjusted with `PI_TELEGRAM_INBOUND_FILE_MAX_BYTES` or `TELEGRAM_MAX_FILE_SIZE_BYTES`.
 - Queue reactions depend on Telegram delivering `message_reaction` updates for your bot and chat type.
+
+### Inbound Attachment Handlers
+
+`telegram.json` can define `attachmentHandlers` for common preprocessing such as voice transcription. The first matching handler runs after download and before the Telegram turn enters the pi queue.
+
+```json
+{
+  "attachmentHandlers": [
+    {
+      "mime": "audio/*",
+      "command": "/home/me/bin/transcribe {filename} ru"
+    },
+    {
+      "type": "voice",
+      "tool": "transcribe_groq",
+      "args": { "lang": "ru" }
+    }
+  ]
+}
+```
+
+Matching supports `mime`, `type`, or `match`; wildcards like `audio/*` are accepted. Command placeholders are substituted as argv, not shell text: `{filename}` and `{path}` are the downloaded file path, `{basename}` is the display filename, `{mime}` is the MIME type, and `{type}` is the Telegram attachment type. Tool handlers invoke a locally available tool by name, for example `transcribe_groq`; how that tool is provided is outside pi-telegram. Local attachments stay in the prompt under `[attachments] <directory>` with relative file entries; successful handler stdout is added under `[outputs]`; failed or empty handlers simply produce no output block.
 
 ### Requesting Files
 

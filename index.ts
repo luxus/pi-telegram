@@ -5,8 +5,9 @@
 
 import * as Api from "./lib/api.ts";
 import * as Attachments from "./lib/attachments.ts";
-import * as Commands from "./lib/commands.ts";
 import * as Config from "./lib/config.ts";
+import * as Handlers from "./lib/handlers.ts";
+import * as Locks from "./lib/locks.ts";
 import * as Media from "./lib/media.ts";
 import * as Menu from "./lib/menu.ts";
 import * as Model from "./lib/model.ts";
@@ -17,10 +18,9 @@ import * as Queue from "./lib/queue.ts";
 import * as Registration from "./lib/registration.ts";
 import * as Replies from "./lib/replies.ts";
 import * as Runtime from "./lib/runtime.ts";
+import * as Routing from "./lib/routing.ts";
 import * as Setup from "./lib/setup.ts";
 import * as Status from "./lib/status.ts";
-import * as Turns from "./lib/turns.ts";
-import * as Updates from "./lib/updates.ts";
 
 type ActivePiModel = NonNullable<Pi.ExtensionContext["model"]>;
 type RuntimeTelegramQueueItem = Queue.TelegramQueueItem<Pi.ExtensionContext>;
@@ -31,6 +31,7 @@ export default function (pi: Pi.ExtensionAPI) {
   const piRuntime = Pi.createExtensionApiRuntimePorts(pi);
   const bridgeRuntime = Runtime.createTelegramBridgeRuntime();
   const configStore = Config.createTelegramConfigStore();
+  const lockRuntime = Locks.createTelegramLockRuntime<Pi.ExtensionContext>();
   const activeTurnRuntime = Queue.createTelegramActiveTurnStore();
   const pendingModelSwitchStore =
     Model.createPendingModelSwitchStore<
@@ -63,6 +64,7 @@ export default function (pi: Pi.ExtensionAPI) {
       getQueuedItems: telegramQueueStore.getQueuedItems,
       formatQueuedStatus: Queue.formatQueuedTelegramItemsStatus,
       getRecentRuntimeEvents: runtimeEvents.getEvents,
+      getRuntimeLockState: lockRuntime.getStatusLabel,
     });
   const currentModelRuntime = Model.createCurrentModelRuntime<
     Pi.ExtensionContext,
@@ -79,6 +81,13 @@ export default function (pi: Pi.ExtensionAPI) {
       incrementNextPriorityReactionOrder:
         bridgeRuntime.queue.incrementNextPriorityReactionOrder,
       updateStatus,
+    });
+  const attachmentHandlerRuntime =
+    Handlers.createTelegramAttachmentHandlerRuntime<Pi.ExtensionContext>({
+      getHandlers: configStore.getAttachmentHandlers,
+      execCommand: piRuntime.exec,
+      getCwd: Pi.getExtensionContextCwd,
+      recordRuntimeEvent: runtimeEvents.record,
     });
 
   // --- Telegram API ---
@@ -202,158 +211,52 @@ export default function (pi: Pi.ExtensionAPI) {
     deleteWebhook,
     getUpdates,
     persistConfig: configStore.persist,
-    handleUpdate: Updates.createTelegramPairedUpdateRuntime<
+    handleUpdate: Routing.createTelegramInboundRouteRuntime<
+      Api.TelegramUpdate,
+      Api.TelegramMessage,
+      Api.TelegramCallbackQuery,
       Pi.ExtensionContext,
-      Api.TelegramUpdate
+      ActivePiModel
     >({
-      getAllowedUserId: configStore.getAllowedUserId,
-      setAllowedUserId: configStore.setAllowedUserId,
-      persistConfig: configStore.persist,
+      configStore,
+      bridgeRuntime,
+      activeTurnRuntime,
+      mediaGroupRuntime,
+      telegramQueueStore,
+      queueMutationRuntime,
+      modelMenuRuntime,
+      currentModelRuntime,
+      modelSwitchController,
+      menuActions,
+      attachmentHandlerRuntime,
       updateStatus,
-      removePendingMediaGroupMessages: mediaGroupRuntime.removeMessages,
-      removeQueuedTelegramTurnsByMessageIds:
-        queueMutationRuntime.removeByMessageIds,
-      clearQueuedTelegramTurnPriorityByMessageId:
-        queueMutationRuntime.clearPriorityByMessageId,
-      prioritizeQueuedTelegramTurnByMessageId:
-        queueMutationRuntime.prioritizeByMessageId,
+      dispatchNextQueuedTelegramTurn,
       answerCallbackQuery,
-      handleAuthorizedTelegramCallbackQuery:
-        Menu.createTelegramMenuCallbackHandlerForContext<
-          Api.TelegramCallbackQuery,
-          Pi.ExtensionContext,
-          ActivePiModel
-        >({
-          getStoredModelMenuState: modelMenuRuntime.getState,
-          getActiveModel: currentModelRuntime.get,
-          getThinkingLevel: piRuntime.getThinkingLevel,
-          setThinkingLevel: piRuntime.setThinkingLevel,
-          updateStatus,
-          updateModelMenuMessage: menuActions.updateModelMenuMessage,
-          updateThinkingMenuMessage: menuActions.updateThinkingMenuMessage,
-          updateStatusMessage: menuActions.updateStatusMessage,
-          answerCallbackQuery,
-          isIdle: Pi.isExtensionContextIdle,
-          hasActiveTelegramTurn: activeTurnRuntime.has,
-          hasAbortHandler: bridgeRuntime.abort.hasHandler,
-          getActiveToolExecutions:
-            bridgeRuntime.lifecycle.getActiveToolExecutions,
-          setModel: piRuntime.setModel,
-          setCurrentModel: currentModelRuntime.setCurrentModel,
-          stagePendingModelSwitch: modelSwitchController.stagePendingSwitch,
-          restartInterruptedTelegramTurn:
-            modelSwitchController.restartInterruptedTurn,
-        }),
       sendTextReply,
-      handleAuthorizedTelegramMessage:
-        Media.createTelegramMediaGroupDispatchRuntime<
-          Api.TelegramMessage,
-          Pi.ExtensionContext
-        >({
-          mediaGroups: mediaGroupRuntime,
-          dispatchMessages: Commands.createTelegramCommandOrPromptRuntime<
-            Api.TelegramMessage,
-            Pi.ExtensionContext
-          >({
-            extractRawText: Media.extractFirstTelegramMessageText,
-            handleCommand: Commands.createTelegramCommandHandlerTargetRuntime<
-              Api.TelegramMessage,
-              Pi.ExtensionContext
-            >({
-              hasAbortHandler: bridgeRuntime.abort.hasHandler,
-              clearPendingModelSwitch: modelSwitchController.clearPendingSwitch,
-              hasQueuedTelegramItems: telegramQueueStore.hasQueuedItems,
-              setPreserveQueuedTurnsAsHistory:
-                bridgeRuntime.lifecycle.setPreserveQueuedTurnsAsHistory,
-              abortCurrentTurn: bridgeRuntime.abort.abortTurn,
-              isIdle: Pi.isExtensionContextIdle,
-              hasPendingMessages: Pi.hasExtensionContextPendingMessages,
-              hasActiveTelegramTurn: activeTurnRuntime.has,
-              hasDispatchPending: bridgeRuntime.lifecycle.hasDispatchPending,
-              isCompactionInProgress:
-                bridgeRuntime.lifecycle.isCompactionInProgress,
-              setCompactionInProgress:
-                bridgeRuntime.lifecycle.setCompactionInProgress,
-              updateStatus,
-              dispatchNextQueuedTelegramTurn,
-              compact: Pi.compactExtensionContext,
-              allocateItemOrder: bridgeRuntime.queue.allocateItemOrder,
-              allocateControlOrder: bridgeRuntime.queue.allocateControlOrder,
-              appendControlItem: queueMutationRuntime.append,
-              showStatus: menuActions.sendStatusMessage,
-              openModelMenu: menuActions.openModelMenu,
-              getAllowedUserId: configStore.getAllowedUserId,
-              setAllowedUserId: configStore.setAllowedUserId,
-              setMyCommands,
-              persistConfig: configStore.persist,
-              sendTextReply,
-              recordRuntimeEvent: runtimeEvents.record,
-            }),
-            enqueueTurn: Queue.createTelegramPromptEnqueueController<
-              Api.TelegramMessage,
-              Pi.ExtensionContext
-            >({
-              ...telegramQueueStore,
-              getPreserveQueuedTurnsAsHistory:
-                bridgeRuntime.lifecycle.shouldPreserveQueuedTurnsAsHistory,
-              setPreserveQueuedTurnsAsHistory:
-                bridgeRuntime.lifecycle.setPreserveQueuedTurnsAsHistory,
-              createTurn:
-                Turns.createTelegramPromptTurnRuntimeBuilder<Api.TelegramMessage>(
-                  {
-                    allocateQueueOrder: bridgeRuntime.queue.allocateItemOrder,
-                    downloadFile: downloadTelegramBridgeFile,
-                  },
-                ),
-              updateStatus,
-              dispatchNextQueuedTelegramTurn,
-            }).enqueue,
-          }).dispatchMessages,
-        }).handleMessage,
-      handleAuthorizedTelegramEditedMessage:
-        Turns.createTelegramQueuedPromptEditRuntime<
-          Api.TelegramMessage,
-          Pi.ExtensionContext
-        >({
-          ...telegramQueueStore,
-          updateStatus,
-        }).updateFromEditedMessage,
+      setMyCommands,
+      downloadFile: downloadTelegramBridgeFile,
+      getThinkingLevel: piRuntime.getThinkingLevel,
+      setThinkingLevel: piRuntime.setThinkingLevel,
+      setModel: piRuntime.setModel,
+      isIdle: Pi.isExtensionContextIdle,
+      hasPendingMessages: Pi.hasExtensionContextPendingMessages,
+      compact: Pi.compactExtensionContext,
+      recordRuntimeEvent: runtimeEvents.record,
     }).handleUpdate,
     stopTypingLoop: bridgeRuntime.typing.stop,
     updateStatus,
     recordRuntimeEvent: runtimeEvents.record,
   });
-
-  // --- Extension Registration ---
-
-  Registration.registerTelegramAttachmentTool(pi, {
-    getActiveTurn: activeTurnRuntime.get,
-    recordRuntimeEvent: runtimeEvents.record,
-  });
-
-  Registration.registerTelegramCommands(pi, {
-    promptForConfig: Setup.createTelegramSetupPromptRuntime({
-      getConfig: configStore.get,
-      setConfig: configStore.set,
-      setupGuard: bridgeRuntime.setup,
-      getMe: Api.fetchTelegramBotIdentity,
-      persistConfig: configStore.persist,
-      startPolling: pollingRuntime.start,
-      updateStatus,
-      recordRuntimeEvent: runtimeEvents.record,
-    }),
-    getStatusLines,
-    reloadConfig: configStore.load,
+  const lockedPollingRuntime = Locks.createTelegramLockedPollingRuntime({
+    lock: lockRuntime,
     hasBotToken: configStore.hasBotToken,
     startPolling: pollingRuntime.start,
     stopPolling: pollingRuntime.stop,
     updateStatus,
+    recordRuntimeEvent: runtimeEvents.record,
   });
-
-  // --- Lifecycle Hooks ---
-
-  Registration.registerTelegramLifecycleHooks(pi, {
-    ...Queue.createTelegramSessionLifecycleRuntime<
+  const sessionLifecycleRuntime = Registration.appendTelegramLifecycleHooks(
+    Queue.createTelegramSessionLifecycleRuntime<
       Pi.ExtensionContext,
       RuntimeTelegramQueueItem,
       ActivePiModel
@@ -373,9 +276,42 @@ export default function (pi: Pi.ExtensionAPI) {
       clearPreview: previewRuntime.clear,
       clearActiveTurn: activeTurnRuntime.clear,
       clearAbort: bridgeRuntime.abort.clearHandler,
-      stopPolling: pollingRuntime.stop,
+      stopPolling: lockedPollingRuntime.suspend,
       recordRuntimeEvent: runtimeEvents.record,
     }),
+    { onSessionStart: lockedPollingRuntime.onSessionStart },
+  );
+
+  // --- Extension Registration ---
+
+  Registration.registerTelegramAttachmentTool(pi, {
+    getActiveTurn: activeTurnRuntime.get,
+    recordRuntimeEvent: runtimeEvents.record,
+  });
+
+  Registration.registerTelegramCommands(pi, {
+    promptForConfig: Setup.createTelegramSetupPromptRuntime({
+      getConfig: configStore.get,
+      setConfig: configStore.set,
+      setupGuard: bridgeRuntime.setup,
+      getMe: Api.fetchTelegramBotIdentity,
+      persistConfig: configStore.persist,
+      startPolling: lockedPollingRuntime.start,
+      updateStatus,
+      recordRuntimeEvent: runtimeEvents.record,
+    }),
+    getStatusLines,
+    reloadConfig: configStore.load,
+    hasBotToken: configStore.hasBotToken,
+    startPolling: lockedPollingRuntime.start,
+    stopPolling: lockedPollingRuntime.stop,
+    updateStatus,
+  });
+
+  // --- Lifecycle Hooks ---
+
+  Registration.registerTelegramLifecycleHooks(pi, {
+    ...sessionLifecycleRuntime,
     onBeforeAgentStart: Registration.createTelegramBeforeAgentStartHook(),
     onModelSelect: currentModelRuntime.onModelSelect,
     ...Queue.createTelegramAgentLifecycleHooks<
