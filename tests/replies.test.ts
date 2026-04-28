@@ -74,11 +74,21 @@ test("Reply delivery sends chunks and applies reply markup only to the last chun
       replyMarkup: {
         inline_keyboard: [[{ text: "ok", callback_data: "noop" }]],
       },
+      replyToMessageId: 42,
     },
   );
   assert.equal(messageId, 2);
   assert.deepEqual(sentBodies, [
-    { chat_id: 7, text: "one", parse_mode: undefined, reply_markup: undefined },
+    {
+      chat_id: 7,
+      text: "one",
+      parse_mode: undefined,
+      reply_markup: undefined,
+      reply_parameters: {
+        message_id: 42,
+        allow_sending_without_reply: true,
+      },
+    },
     {
       chat_id: 7,
       text: "two",

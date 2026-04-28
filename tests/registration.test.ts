@@ -149,6 +149,9 @@ test("Registration commands expose setup and status behaviors", async () => {
       events.push("reload");
     },
     hasBotToken: () => false,
+    handleVoiceCommand: async () => {
+      events.push("voice");
+    },
     startPolling: async () => {
       events.push("start");
     },
@@ -187,6 +190,9 @@ test("Registration connect and disconnect commands reload config and control pol
       events.push("reload");
     },
     hasBotToken: () => hasToken,
+    handleVoiceCommand: async () => {
+      events.push("voice");
+    },
     startPolling: async () => {
       events.push("start");
     },
@@ -231,6 +237,9 @@ test("Registration connect command can move singleton ownership after confirmati
       events.push("reload");
     },
     hasBotToken: () => true,
+    handleVoiceCommand: async () => {
+      events.push("voice");
+    },
     startPolling: async (_ctx, options) => {
       events.push(options?.force ? "start-force" : "start");
       return options?.force
@@ -396,6 +405,7 @@ test("Extension entrypoint wires registration domains into the pi API", () => {
       "telegram-status",
       "telegram-connect",
       "telegram-disconnect",
+      "telegram-voice",
     ],
   );
   assert.deepEqual(
