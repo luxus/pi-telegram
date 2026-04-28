@@ -71,8 +71,32 @@ export function buildTelegramTurnPrompt(options: {
   rawText: string;
   files: DownloadedTelegramTurnFile[];
   historyTurns?: Pick<PendingTelegramTurn, "historyText">[];
+  inputModality?: PendingTelegramTurn["inputModality"];
+  replyModality?: PendingTelegramTurn["replyModality"];
+  voiceFilePath?: string;
+  voiceTranscript?: string;
+  voiceTranscriptLanguage?: PendingTelegramTurn["voiceTranscriptLanguage"];
+  voiceTranscriptionError?: string;
 }): string {
   let prompt = options.telegramPrefix;
+  if (options.inputModality && options.inputModality !== "text") {
+    prompt += `\n\nInput modality: ${options.inputModality}`;
+  }
+  if (options.replyModality && options.replyModality !== "text") {
+    prompt += `\nReply modality: ${options.replyModality}`;
+  }
+  if (options.voiceFilePath) {
+    prompt += `\nOriginal voice file: ${options.voiceFilePath}`;
+  }
+  if (options.voiceTranscript) {
+    if (options.voiceTranscriptLanguage) {
+      prompt += `\nDetected voice language: ${options.voiceTranscriptLanguage}`;
+    }
+    prompt += `\n\nVoice transcript:\n${options.voiceTranscript}`;
+  }
+  if (options.voiceTranscriptionError) {
+    prompt += `\n\nVoice transcription failed: ${options.voiceTranscriptionError}`;
+  }
   if ((options.historyTurns?.length ?? 0) > 0) {
     prompt +=
       "\n\nEarlier Telegram messages arrived after an aborted turn. Treat them as prior user messages, in order:";
@@ -83,9 +107,14 @@ export function buildTelegramTurnPrompt(options: {
   }
   if (options.rawText.length > 0) {
     prompt +=
-      (options.historyTurns?.length ?? 0) > 0
+      (options.historyTurns?.length ?? 0) > 0 || options.voiceTranscript
         ? `\n${options.rawText}`
         : ` ${options.rawText}`;
+  } else if (
+    !options.voiceTranscript &&
+    (options.historyTurns?.length ?? 0) > 0
+  ) {
+    prompt += "\n(no text)";
   }
   if (options.files.length > 0) {
     prompt += "\n\nTelegram attachments were saved locally:";
@@ -116,7 +145,7 @@ function splitTelegramPromptAttachmentSuffix(prompt: string): {
     .split("\n")
     .map((line) => line.match(/^- (.+)$/)?.[1]?.trim())
     .filter((path): path is string => !!path)
-    .map((path) => ({ path, fileName: basename(path), isImage: false }));
+    .map((path) => ({ path, fileName: basename(path), isImage: false, kind: "document" as const }));
   return { promptWithoutAttachments, attachmentSuffix, attachmentFiles };
 }
 
@@ -244,6 +273,13 @@ export interface BuildTelegramPromptTurnOptions {
   files: DownloadedTelegramTurnFile[];
   readBinaryFile: (path: string) => Promise<Uint8Array>;
   inferImageMimeType: (path: string) => string | undefined;
+  inputModality?: PendingTelegramTurn["inputModality"];
+  replyModality?: PendingTelegramTurn["replyModality"];
+  voiceFilePath?: string;
+  voiceTranscript?: string;
+  voiceTranscriptLanguage?: string;
+  voiceTranscriptionError?: string;
+  explicitTextCopyRequested?: boolean;
 }
 
 export type BuildTelegramPromptTurnRuntimeOptions = Omit<
@@ -292,6 +328,12 @@ export async function buildTelegramPromptTurn(
         rawText: options.rawText,
         files: options.files,
         historyTurns: options.historyTurns,
+        inputModality: options.inputModality,
+        replyModality: options.replyModality,
+        voiceFilePath: options.voiceFilePath,
+        voiceTranscript: options.voiceTranscript,
+        voiceTranscriptLanguage: options.voiceTranscriptLanguage,
+        voiceTranscriptionError: options.voiceTranscriptionError,
       }),
     },
   ];
@@ -306,6 +348,7 @@ export async function buildTelegramPromptTurn(
       mimeType: mediaType,
     });
   }
+  const historyBaseText = options.rawText || options.voiceTranscript || "";
   return {
     kind: "prompt",
     chatId: firstMessage.chat.id,
@@ -316,11 +359,20 @@ export async function buildTelegramPromptTurn(
     laneOrder: options.queueOrder,
     queuedAttachments: [],
     content,
-    historyText: formatTelegramHistoryText(options.rawText, options.files),
+    historyText: formatTelegramHistoryText(historyBaseText, options.files),
     statusSummary: formatTelegramTurnStatusSummary(
-      options.rawText,
+      historyBaseText,
       options.files,
     ),
+    inputModality: options.inputModality,
+    replyModality: options.replyModality,
+    voiceFilePath: options.voiceFilePath,
+    voiceTranscript: options.voiceTranscript,
+    voiceTranscriptLanguage: options.voiceTranscriptLanguage,
+    voiceTranscriptionError: options.voiceTranscriptionError,
+    explicitTextCopyRequested: options.explicitTextCopyRequested,
+    skipFinalTextReply: false,
+    voiceReplyDelivered: false,
   };
 }
 

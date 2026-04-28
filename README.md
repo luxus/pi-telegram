@@ -19,6 +19,7 @@ This repository is an actively maintained fork of [`badlogic/pi-telegram`](https
 - **Smart Message Queue**: Messages sent while the agent is busy are queued and previewed in the pi status bar, and queued turns can be reprioritized or removed with Telegram reactions.
 - **Mobile-Optimized Rendering**: Tables and lists are formatted for narrow screens, table padding accounts for emoji grapheme and wide Unicode display width, and Telegram-originated runs prompt the assistant to prefer narrow table columns for phone readability. Markdown is correctly parsed and split to fit Telegram's limits without breaking HTML structures or code blocks, block spacing stays faithful to the original Markdown with readable heading separation, supported absolute links stay clickable, and unsupported link forms degrade safely.
 - **File Handling & Attachments**: Send images and files to the agent, or ask it to generate and return artifacts. Inbound downloads and outbound attachments are size-limited by default, and outbound files are delivered automatically via the `telegram_attach` tool.
+- **Voice Notes**: Telegram voice messages and audio can be transcribed through configurable voice providers, and pi can send real Telegram voice notes through `telegram_send_voice`.
 - **Streaming Responses**: Closed Markdown blocks stream back as rich Telegram HTML while pi is generating, and the still-growing tail stays readable until the final fully rendered reply lands.
 
 ## Install
@@ -94,6 +95,7 @@ Run these inside pi, not Telegram:
 - **`/telegram-status`**: Check bridge status, connection, polling, execution, queue, and recent redacted runtime/API failure events.
 - **`/telegram-connect`**: Start polling Telegram updates in the current pi session.
 - **`/telegram-disconnect`**: Stop polling in the current pi session.
+- **`/telegram-voice`**: Show or update voice transcription and voice-note reply settings.
 
 ### Queue, Reactions, and Media
 
@@ -108,6 +110,10 @@ Run these inside pi, not Telegram:
 ### Requesting Files
 
 If you ask pi for a file or generated artifact (e.g., _"generate a shell script and attach it"_), pi will call the `telegram_attach` tool, and the extension will send the file alongside its next Telegram reply. Outbound attachments default to a 50 MiB limit and can be adjusted with `PI_TELEGRAM_OUTBOUND_ATTACHMENT_MAX_BYTES` or `TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES`.
+
+### Voice Notes
+
+Voice support is configured with `/telegram-voice`. Incoming voice/audio files are saved with the turn, can be transcribed before prompting pi, and can make the final assistant reply prefer a Telegram voice note. During Telegram-owned turns, the assistant can call `telegram_send_voice` to send a real voice note instead of only text. See [docs/voice-test-plan.md](./docs/voice-test-plan.md) for manual validation coverage.
 
 ## Streaming
 

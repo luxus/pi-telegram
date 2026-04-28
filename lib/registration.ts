@@ -10,6 +10,8 @@ import {
   TELEGRAM_OUTBOUND_ATTACHMENT_MAX_BYTES,
   type TelegramAttachmentQueueTargetView,
 } from "./attachments.ts";
+import type { PendingTelegramTurn } from "./queue.ts";
+import type { ResolvedTelegramVoiceSettings } from "./voice.ts";
 import type {
   AgentEndEvent,
   AgentStartEvent,
@@ -31,7 +33,8 @@ Telegram bridge extension is active.
 - [telegram] messages may include local temp file paths for Telegram attachments. Read those files as needed.
 - Telegram is often read on narrow phone screens, so prefer narrow table columns when presenting tabular data; wide monospace tables can become unreadable.
 - If a [telegram] user asked for a file or generated artifact, use the telegram_attach tool with the local file path so the extension can send it with your next final reply.
-- Do not assume mentioning a local file path in plain text will send it to Telegram. Use telegram_attach.`;
+- Do not assume mentioning a local file path in plain text will send it to Telegram. Use telegram_attach.
+- When Telegram user asks for a spoken reply or sends a voice note while voice replies are preferred, use telegram_send_voice unless text only is clearly requested.`;
 
 // --- Tool Registration ---
 
@@ -94,6 +97,100 @@ export function registerTelegramAttachmentTool(
   });
 }
 
+export interface TelegramVoiceToolRegistrationDeps {
+  getActiveTurn: () => PendingTelegramTurn | undefined;
+  getProactiveChatId: () => number | undefined;
+  sendVoiceReply: (options: {
+    text: string;
+    voiceId?: string;
+    language?: string;
+    alsoSendText?: boolean;
+    proactiveChatId?: number;
+  }) => Promise<void>;
+  getDefaultVoiceSettings: () => ResolvedTelegramVoiceSettings;
+  shouldKeepTextReply: (
+    activeTurn: PendingTelegramTurn,
+    alsoSendText?: boolean,
+  ) => boolean;
+}
+
+export function registerTelegramVoiceTool(
+  pi: ExtensionAPI,
+  deps: TelegramVoiceToolRegistrationDeps,
+): void {
+  pi.registerTool({
+    name: "telegram_send_voice",
+    label: "Telegram Voice",
+    description:
+      "Send a real Telegram voice-note reply using the configured Telegram voice provider. Works during active Telegram turns and for paired proactive outbound messages.",
+    promptSnippet:
+      "telegram_send_voice(text, voiceId?, language?, alsoSendText?) -> send Telegram voice note",
+    promptGuidelines: [
+      "When Telegram user explicitly asks for a voice note or spoken reply, call telegram_send_voice instead of replying only in text.",
+      "Leave alsoSendText unset or false unless the user explicitly asked to receive both a voice note and a text copy/transcript.",
+    ],
+    parameters: Type.Object({
+      text: Type.String({ description: "Text to speak in the Telegram voice note." }),
+      voiceId: Type.Optional(
+        Type.String({ description: "Optional provider-specific voice id override, e.g. eve or ara." }),
+      ),
+      language: Type.Optional(
+        Type.String({ description: "Optional BCP-47 or short language code override." }),
+      ),
+      alsoSendText: Type.Optional(
+        Type.Boolean({ description: "Also send a normal text copy when the user explicitly requested both." }),
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      const activeTurn = deps.getActiveTurn();
+      const proactiveChatId = deps.getProactiveChatId();
+      if (!activeTurn && !proactiveChatId) {
+        throw new Error(
+          "telegram_send_voice requires an active Telegram turn or a paired Telegram user for proactive delivery",
+        );
+      }
+      const defaults = deps.getDefaultVoiceSettings();
+      const alsoSendText = activeTurn
+        ? deps.shouldKeepTextReply(activeTurn, params.alsoSendText)
+        : false;
+      try {
+        await deps.sendVoiceReply({
+          text: params.text,
+          voiceId: params.voiceId || defaults.defaultVoiceId,
+          language: params.language || defaults.defaultLanguage,
+          alsoSendText,
+          proactiveChatId,
+        });
+        return {
+          content: [{ type: "text", text: "Queued Telegram voice reply." }],
+          details: {
+            voiceId: params.voiceId || defaults.defaultVoiceId,
+            language: params.language || defaults.defaultLanguage,
+            alsoSendText,
+            error: undefined as string | undefined,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Telegram voice reply failed, continuing with normal text reply.\n${message}`,
+            },
+          ],
+          details: {
+            voiceId: params.voiceId || defaults.defaultVoiceId,
+            language: params.language || defaults.defaultLanguage,
+            alsoSendText: false,
+            error: message,
+          },
+        };
+      }
+    },
+  });
+}
+
 // --- Command Registration ---
 
 export interface TelegramCommandRegistrationDeps {
@@ -101,6 +198,10 @@ export interface TelegramCommandRegistrationDeps {
   getStatusLines: () => string[];
   reloadConfig: () => Promise<void>;
   hasBotToken: () => boolean;
+  handleVoiceCommand: (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ) => Promise<void>;
   startPolling: (ctx: ExtensionCommandContext) => void | Promise<void>;
   stopPolling: () => Promise<void>;
   updateStatus: (ctx: ExtensionCommandContext) => void;
@@ -139,6 +240,12 @@ export function registerTelegramCommands(
     handler: async (_args, ctx) => {
       await deps.stopPolling();
       deps.updateStatus(ctx);
+    },
+  });
+  pi.registerCommand("telegram-voice", {
+    description: "Configure Telegram voice transcription and voice-note replies",
+    handler: async (args, ctx) => {
+      await deps.handleVoiceCommand(args, ctx);
     },
   });
 }

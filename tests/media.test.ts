@@ -92,6 +92,7 @@ test("Media helpers download collected file infos", async () => {
       fileName: "report.pdf",
       isImage: false,
       mimeType: "application/pdf",
+      kind: "document",
     },
   ]);
 });

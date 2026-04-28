@@ -21,6 +21,7 @@ import * as Setup from "./lib/setup.ts";
 import * as Status from "./lib/status.ts";
 import * as Turns from "./lib/turns.ts";
 import * as Updates from "./lib/updates.ts";
+import * as VoiceRuntime from "./lib/voice-runtime.ts";
 
 type ActivePiModel = NonNullable<Pi.ExtensionContext["model"]>;
 type RuntimeTelegramQueueItem = Queue.TelegramQueueItem<Pi.ExtensionContext>;
@@ -84,6 +85,7 @@ export default function (pi: Pi.ExtensionAPI) {
   // --- Telegram API ---
 
   const {
+    call,
     callMultipart,
     deleteWebhook,
     getUpdates,
@@ -150,6 +152,25 @@ export default function (pi: Pi.ExtensionAPI) {
     sendMessage,
     editMessageText: editTelegramMessageText,
     ...replyTransport,
+  });
+
+  const voiceRuntime = VoiceRuntime.createTelegramVoiceRuntime<
+    Api.TelegramMessage,
+    Pi.ExtensionCommandContext
+  >({
+    getConfig: configStore.get,
+    setConfig: configStore.set,
+    updateConfig: configStore.update,
+    persistConfig: configStore.persist,
+    updateStatus,
+    call,
+    callMultipart,
+    getActiveTurn: activeTurnRuntime.get,
+    getProactiveChatId: configStore.getAllowedUserId,
+    clearPreview: previewRuntime.clear,
+    downloadFile: downloadTelegramBridgeFile,
+    allocateQueueOrder: bridgeRuntime.queue.allocateItemOrder,
+    cwd: process.cwd,
   });
 
   // --- Bridge Setup ---
@@ -298,13 +319,7 @@ export default function (pi: Pi.ExtensionAPI) {
                 bridgeRuntime.lifecycle.shouldPreserveQueuedTurnsAsHistory,
               setPreserveQueuedTurnsAsHistory:
                 bridgeRuntime.lifecycle.setPreserveQueuedTurnsAsHistory,
-              createTurn:
-                Turns.createTelegramPromptTurnRuntimeBuilder<Api.TelegramMessage>(
-                  {
-                    allocateQueueOrder: bridgeRuntime.queue.allocateItemOrder,
-                    downloadFile: downloadTelegramBridgeFile,
-                  },
-                ),
+              createTurn: voiceRuntime.createTurn,
               updateStatus,
               dispatchNextQueuedTelegramTurn,
             }).enqueue,
@@ -326,6 +341,14 @@ export default function (pi: Pi.ExtensionAPI) {
 
   // --- Extension Registration ---
 
+  Registration.registerTelegramVoiceTool(pi, {
+    getActiveTurn: activeTurnRuntime.get,
+    getProactiveChatId: configStore.getAllowedUserId,
+    sendVoiceReply: voiceRuntime.sendVoiceReply,
+    getDefaultVoiceSettings: voiceRuntime.getDefaultVoiceSettings,
+    shouldKeepTextReply: voiceRuntime.shouldKeepTextReply,
+  });
+
   Registration.registerTelegramAttachmentTool(pi, {
     getActiveTurn: activeTurnRuntime.get,
     recordRuntimeEvent: runtimeEvents.record,
@@ -345,6 +368,7 @@ export default function (pi: Pi.ExtensionAPI) {
     getStatusLines,
     reloadConfig: configStore.load,
     hasBotToken: configStore.hasBotToken,
+    handleVoiceCommand: voiceRuntime.handleVoiceCommand,
     startPolling: pollingRuntime.start,
     stopPolling: pollingRuntime.stop,
     updateStatus,
@@ -420,6 +444,7 @@ export default function (pi: Pi.ExtensionAPI) {
         sendTextReply,
         recordRuntimeEvent: runtimeEvents.record,
       }),
+      beforeFinalTextReply: voiceRuntime.beforeFinalTextReply,
       getActiveToolExecutions: bridgeRuntime.lifecycle.getActiveToolExecutions,
       setActiveToolExecutions: bridgeRuntime.lifecycle.setActiveToolExecutions,
       triggerPendingModelSwitchAbort: modelSwitchController.triggerPendingAbort,

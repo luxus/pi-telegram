@@ -48,6 +48,7 @@ export interface TelegramPreviewRuntimeDeps {
   getState: () => TelegramPreviewRuntimeState | undefined;
   setState: (state: TelegramPreviewRuntimeState | undefined) => void;
   clearScheduledFlush: (state: TelegramPreviewRuntimeState) => void;
+  getReplyToMessageId: () => number | undefined;
   maxMessageLength: number;
   renderPreviewText: (markdown: string) => string;
   getDraftSupport: () => TelegramDraftSupport;
@@ -61,7 +62,7 @@ export interface TelegramPreviewRuntimeDeps {
   sendMessage: (
     chatId: number,
     text: string,
-    options?: { parseMode?: "HTML" },
+    options?: { parseMode?: "HTML"; replyToMessageId?: number },
   ) => Promise<TelegramSentPreviewMessage>;
   editMessageText: (
     chatId: number,
@@ -344,6 +345,7 @@ export function createTelegramPreviewController(
       clearTimer(nextState.flushTimer);
       nextState.flushTimer = undefined;
     },
+    getReplyToMessageId: () => replyToMessageId ?? deps.getDefaultReplyToMessageId?.(),
     maxMessageLength,
     renderPreviewText: renderPreview,
     getDraftSupport: () => draftSupport,
@@ -360,7 +362,7 @@ export function createTelegramPreviewController(
         chatId,
         text,
         options,
-        replyToMessageId ?? deps.getDefaultReplyToMessageId?.(),
+        options?.replyToMessageId,
       ),
     editMessageText: deps.editMessageText,
     renderTelegramMessage: renderMessage,
@@ -544,6 +546,7 @@ async function performTelegramPreviewFlush(
   if (state.messageId === undefined) {
     const sent = await deps.sendMessage(chatId, snapshot.text, {
       parseMode: snapshot.parseMode,
+      replyToMessageId: deps.getReplyToMessageId(),
     });
     state.messageId = sent.message_id;
     state.mode = "message";

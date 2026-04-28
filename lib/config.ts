@@ -10,12 +10,27 @@ import { join } from "node:path";
 const AGENT_DIR = join(homedir(), ".pi", "agent");
 const CONFIG_PATH = join(AGENT_DIR, "telegram.json");
 
+export interface TelegramVoiceConfig {
+  enabled?: boolean;
+  provider?: string;
+  providerOptions?: Record<string, unknown>;
+  autoTranscribeIncoming?: boolean;
+  replyWithVoiceOnIncomingVoice?: boolean;
+  alsoSendTextReply?: boolean;
+  defaultVoiceId?: string;
+  defaultLanguage?: string;
+  sttLanguage?: string;
+  speechStyle?: "literal" | "rewrite-light" | "rewrite-tags" | "rewrite-strong";
+  speechPreparationPrompt?: string;
+}
+
 export interface TelegramConfig {
   botToken?: string;
   botUsername?: string;
   botId?: number;
   allowedUserId?: number;
   lastUpdateId?: number;
+  voice?: TelegramVoiceConfig;
 }
 
 export interface TelegramConfigStore {
