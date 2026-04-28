@@ -78,6 +78,10 @@ export interface TelegramInboundRouteRuntimeDeps<
     error: unknown,
     details?: Record<string, unknown>,
   ) => void;
+  createTurn?: Queue.TelegramPromptEnqueueControllerDeps<
+    TMessage,
+    TContext
+  >["createTurn"];
 }
 
 export function createTelegramInboundRouteRuntime<
@@ -112,6 +116,9 @@ export function createTelegramInboundRouteRuntime<
     updateModelMenuMessage: deps.menuActions.updateModelMenuMessage,
     updateThinkingMenuMessage: deps.menuActions.updateThinkingMenuMessage,
     updateStatusMessage: deps.menuActions.updateStatusMessage,
+    updateVoiceMenuMessage: deps.menuActions.updateVoiceMenuMessage,
+    getVoiceSettings: deps.menuActions.getVoiceSettings,
+    saveVoiceSetting: deps.menuActions.saveVoiceSetting,
     answerCallbackQuery: deps.answerCallbackQuery,
     isIdle: deps.isIdle,
     hasActiveTelegramTurn: deps.activeTurnRuntime.has,
@@ -166,14 +173,13 @@ export function createTelegramInboundRouteRuntime<
       deps.bridgeRuntime.lifecycle.shouldPreserveQueuedTurnsAsHistory,
     setPreserveQueuedTurnsAsHistory:
       deps.bridgeRuntime.lifecycle.setPreserveQueuedTurnsAsHistory,
-    createTurn: Turns.createTelegramPromptTurnRuntimeBuilder<
-      TMessage,
-      TContext
-    >({
-      allocateQueueOrder: deps.bridgeRuntime.queue.allocateItemOrder,
-      downloadFile: deps.downloadFile,
-      processAttachments: deps.attachmentHandlerRuntime.process,
-    }),
+    createTurn:
+      deps.createTurn ??
+      Turns.createTelegramPromptTurnRuntimeBuilder<TMessage, TContext>({
+        allocateQueueOrder: deps.bridgeRuntime.queue.allocateItemOrder,
+        downloadFile: deps.downloadFile,
+        processAttachments: deps.attachmentHandlerRuntime.process,
+      }),
     updateStatus: deps.updateStatus,
     dispatchNextQueuedTelegramTurn: deps.dispatchNextQueuedTelegramTurn,
   }).enqueue;

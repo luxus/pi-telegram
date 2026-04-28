@@ -19,6 +19,20 @@ function getConfigPath(): string {
   return join(getAgentDir(), "telegram.json");
 }
 
+export interface TelegramVoiceConfig {
+  enabled?: boolean;
+  provider?: string;
+  providerOptions?: Record<string, unknown>;
+  autoTranscribeIncoming?: boolean;
+  replyWithVoiceOnIncomingVoice?: boolean;
+  alsoSendTextReply?: boolean;
+  defaultVoiceId?: string;
+  defaultLanguage?: string;
+  sttLanguage?: string;
+  speechStyle?: "literal" | "rewrite-light" | "rewrite-tags" | "rewrite-strong";
+  speechPreparationPrompt?: string;
+}
+
 export interface TelegramConfig {
   botToken?: string;
   botUsername?: string;
@@ -26,6 +40,7 @@ export interface TelegramConfig {
   allowedUserId?: number;
   lastUpdateId?: number;
   attachmentHandlers?: TelegramAttachmentHandlerConfig[];
+  voice?: TelegramVoiceConfig;
 }
 
 export interface TelegramConfigStore {

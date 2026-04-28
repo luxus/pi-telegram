@@ -108,6 +108,8 @@ export type TelegramAttachmentKind =
   | "animation"
   | "sticker";
 
+export type TelegramInputModality = "text" | "voice" | "audio" | "mixed";
+
 export interface TelegramFileInfo {
   file_id: string;
   fileName: string;
@@ -237,6 +239,28 @@ export function collectTelegramMessageIds(
   messages: TelegramMediaMessage[],
 ): number[] {
   return [...new Set(messages.map((message) => message.message_id))];
+}
+
+export function detectTelegramInputModality(
+  messages: TelegramMediaMessage[],
+): TelegramInputModality {
+  const hasVoice = messages.some((message) => !!message.voice);
+  const hasAudio = messages.some((message) => !!message.audio);
+  const hasText = messages.some(
+    (message) => extractTelegramMessageText(message).length > 0,
+  );
+  const hasOtherMedia = messages.some(
+    (message) =>
+      (Array.isArray(message.photo) && message.photo.length > 0) ||
+      !!message.document ||
+      !!message.video ||
+      !!message.animation ||
+      !!message.sticker,
+  );
+  if (hasVoice && !hasText && !hasAudio && !hasOtherMedia) return "voice";
+  if (hasAudio && !hasText && !hasVoice && !hasOtherMedia) return "audio";
+  if (hasVoice || hasAudio) return "mixed";
+  return "text";
 }
 
 export function getTelegramMediaGroupKey(

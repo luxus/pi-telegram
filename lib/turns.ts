@@ -109,8 +109,32 @@ export function buildTelegramTurnPrompt(options: {
   promptFiles?: DownloadedTelegramTurnFile[];
   handlerOutputs?: string[];
   historyTurns?: Pick<PendingTelegramTurn, "historyText">[];
+  inputModality?: PendingTelegramTurn["inputModality"];
+  replyModality?: PendingTelegramTurn["replyModality"];
+  voiceFilePath?: string;
+  voiceTranscript?: string;
+  voiceTranscriptLanguage?: PendingTelegramTurn["voiceTranscriptLanguage"];
+  voiceTranscriptionError?: string;
 }): string {
   let prompt = options.telegramPrefix;
+  if (options.inputModality && options.inputModality !== "text") {
+    prompt += `\n\nInput modality: ${options.inputModality}`;
+  }
+  if (options.replyModality && options.replyModality !== "text") {
+    prompt += `\nReply modality: ${options.replyModality}`;
+  }
+  if (options.voiceFilePath) {
+    prompt += `\nOriginal voice file: ${options.voiceFilePath}`;
+  }
+  if (options.voiceTranscript) {
+    if (options.voiceTranscriptLanguage) {
+      prompt += `\nDetected voice language: ${options.voiceTranscriptLanguage}`;
+    }
+    prompt += `\n\nVoice transcript:\n${options.voiceTranscript}`;
+  }
+  if (options.voiceTranscriptionError) {
+    prompt += `\n\nVoice transcription failed: ${options.voiceTranscriptionError}`;
+  }
   if ((options.historyTurns?.length ?? 0) > 0) {
     prompt +=
       "\n\nEarlier Telegram messages arrived after an aborted turn. Treat them as prior user messages, in order:";
@@ -121,9 +145,14 @@ export function buildTelegramTurnPrompt(options: {
   }
   if (options.rawText.length > 0) {
     prompt =
-      (options.historyTurns?.length ?? 0) > 0
+      (options.historyTurns?.length ?? 0) > 0 || options.voiceTranscript
         ? `${prompt}\n${options.rawText}`
         : appendTelegramPromptText(prompt, options.rawText);
+  } else if (
+    !options.voiceTranscript &&
+    (options.historyTurns?.length ?? 0) > 0
+  ) {
+    prompt += "\n(no text)";
   }
   const promptFiles = options.promptFiles ?? options.files;
   prompt = appendTelegramAttachmentSection(prompt, promptFiles);
@@ -310,6 +339,13 @@ export interface BuildTelegramPromptTurnOptions {
   handlerOutputs?: string[];
   readBinaryFile: (path: string) => Promise<Uint8Array>;
   inferImageMimeType: (path: string) => string | undefined;
+  inputModality?: PendingTelegramTurn["inputModality"];
+  replyModality?: PendingTelegramTurn["replyModality"];
+  voiceFilePath?: string;
+  voiceTranscript?: string;
+  voiceTranscriptLanguage?: string;
+  voiceTranscriptionError?: string;
+  explicitTextCopyRequested?: boolean;
 }
 
 export type BuildTelegramPromptTurnRuntimeOptions = Omit<
@@ -389,6 +425,12 @@ export async function buildTelegramPromptTurn(
         promptFiles: options.promptFiles,
         handlerOutputs: options.handlerOutputs,
         historyTurns: options.historyTurns,
+        inputModality: options.inputModality,
+        replyModality: options.replyModality,
+        voiceFilePath: options.voiceFilePath,
+        voiceTranscript: options.voiceTranscript,
+        voiceTranscriptLanguage: options.voiceTranscriptLanguage,
+        voiceTranscriptionError: options.voiceTranscriptionError,
       }),
     },
   ];
@@ -403,6 +445,7 @@ export async function buildTelegramPromptTurn(
       mimeType: mediaType,
     });
   }
+  const historyBaseText = options.rawText || options.voiceTranscript || "";
   return {
     kind: "prompt",
     chatId: firstMessage.chat.id,
@@ -414,15 +457,24 @@ export async function buildTelegramPromptTurn(
     queuedAttachments: [],
     content,
     historyText: formatTelegramHistoryText(
-      options.rawText,
+      historyBaseText,
       options.promptFiles ?? options.files,
       options.handlerOutputs,
     ),
     statusSummary: formatTelegramTurnStatusSummary(
-      options.statusText ?? options.rawText,
+      options.statusText ?? historyBaseText,
       options.promptFiles ?? options.files,
       options.handlerOutputs,
     ),
+    inputModality: options.inputModality,
+    replyModality: options.replyModality,
+    voiceFilePath: options.voiceFilePath,
+    voiceTranscript: options.voiceTranscript,
+    voiceTranscriptLanguage: options.voiceTranscriptLanguage,
+    voiceTranscriptionError: options.voiceTranscriptionError,
+    explicitTextCopyRequested: options.explicitTextCopyRequested,
+    skipFinalTextReply: false,
+    voiceReplyDelivered: false,
   };
 }
 

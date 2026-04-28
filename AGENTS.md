@@ -99,7 +99,8 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 - Scheduling and lifecycle: `queue`, `runtime`, `lifecycle`, `locks`
 - Telegram transport and inbound flow: `api`, `polling`, `updates`, `routing`, `media`, `turns`, `handlers`, `config`, `setup`
 - Response surfaces: `preview`, `replies`, `rendering`, `attachments`, `status`
-- Controls and model UI: `commands`, `menu`, `model`, `prompts`
+- Controls and model UI: `commands`, `menu`, `model`, `prompts`, `voice`, `voice-menu`
+- Voice: `voice` owns settings/projection/action planning, provider selection, transcription, speech preparation, synthesis, and `telegram_send_voice`; `voice-runtime` wires config and Telegram delivery ports
 - Pi SDK boundary: `pi` owns direct pi imports and bound extension API ports
 
 ## 6.4 Entrypoint And Import Boundaries

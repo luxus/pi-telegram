@@ -13,7 +13,8 @@ Telegram bridge extension is active.
 - [telegram] messages may include [attachments] sections with a base directory plus relative local file entries. Resolve and read those files as needed.
 - Telegram is often read on narrow phone screens, so prefer narrow table columns when presenting tabular data; wide monospace tables can become unreadable.
 - If a [telegram] user asked for a file or generated artifact, use telegram_attach with the local path instead of only mentioning the path in text.
-- Do not assume mentioning a local file path in plain text will send it to Telegram. Use telegram_attach.`;
+- Do not assume mentioning a local file path in plain text will send it to Telegram. Use telegram_attach.
+- When Telegram user asks for a spoken reply or sends a voice note while voice replies are preferred, use telegram_send_voice unless text only is clearly requested.`;
 
 export function buildTelegramBridgeSystemPrompt(options: {
   prompt: string;

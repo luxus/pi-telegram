@@ -3,6 +3,8 @@
  * Owns queue items, queue mutations, dispatch and lifecycle planning, session resets, and queue-adjacent runtime helpers
  */
 
+import type { TelegramInputModality } from "./media.ts";
+
 // --- Queue Items ---
 
 export interface QueuedAttachment {
@@ -77,6 +79,15 @@ export interface PendingTelegramTurn extends TelegramQueueItemBase {
   queuedAttachments: QueuedAttachment[];
   content: TelegramPromptContent[];
   historyText: string;
+  inputModality?: TelegramInputModality;
+  replyModality?: "text" | "voice-preferred" | "voice-required";
+  voiceFilePath?: string;
+  voiceTranscript?: string;
+  voiceTranscriptLanguage?: string;
+  voiceTranscriptionError?: string;
+  explicitTextCopyRequested?: boolean;
+  skipFinalTextReply?: boolean;
+  voiceReplyDelivered?: boolean;
 }
 
 export interface PendingTelegramControlItem<
@@ -747,6 +758,7 @@ export interface TelegramAgentEndRuntimeDeps<
     text: string,
   ) => Promise<unknown>;
   sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+  beforeFinalTextReply?: (turn: TTurn, finalText: string) => Promise<void>;
 }
 
 export interface TelegramAgentEndHookRuntimeDeps<
@@ -768,6 +780,7 @@ export interface TelegramAgentEndHookRuntimeDeps<
   sendMarkdownReply: TelegramAgentEndRuntimeDeps<TTurn>["sendMarkdownReply"];
   sendTextReply: TelegramAgentEndRuntimeDeps<TTurn>["sendTextReply"];
   sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+  beforeFinalTextReply?: (turn: TTurn, finalText: string) => Promise<void>;
 }
 
 export interface TelegramAgentEndHookEvent<TMessage> {
@@ -865,6 +878,7 @@ export function createTelegramAgentEndHook<
       sendMarkdownReply: deps.sendMarkdownReply,
       sendTextReply: deps.sendTextReply,
       sendQueuedAttachments: deps.sendQueuedAttachments,
+      beforeFinalTextReply: deps.beforeFinalTextReply,
     });
   };
 }
@@ -900,8 +914,11 @@ export async function handleTelegramAgentEndRuntime<
     if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
     return;
   }
-  if (finalText) deps.setPreviewPendingText(finalText);
-  if (endPlan.kind === "text" && finalText) {
+  if (endPlan.kind === "text" && finalText && deps.beforeFinalTextReply) {
+    await deps.beforeFinalTextReply(turn, finalText);
+  }
+  if (finalText && !turn.skipFinalTextReply) deps.setPreviewPendingText(finalText);
+  if (endPlan.kind === "text" && finalText && !turn.skipFinalTextReply) {
     const finalized = await deps.finalizeMarkdownPreview(
       turn.chatId,
       finalText,
@@ -915,6 +932,8 @@ export async function handleTelegramAgentEndRuntime<
         finalText,
       );
     }
+  } else if (endPlan.kind === "text" && finalText && turn.skipFinalTextReply) {
+    await deps.clearPreview(turn.chatId);
   }
   if (endPlan.shouldSendAttachmentNotice) {
     await deps.sendTextReply(
@@ -1457,7 +1476,7 @@ export interface TelegramDispatchRuntimeDeps<TContext = unknown> {
       { kind: "control" }
     >["item"],
   ) => void;
-  onPromptDispatchStart: (chatId: number) => void;
+  onPromptDispatchStart: (item: PendingTelegramTurn) => void;
   sendUserMessage: (
     content: Extract<
       TelegramQueueDispatchAction,
@@ -1497,7 +1516,7 @@ export function executeTelegramQueueDispatchPlan<TContext = unknown>(
     deps.executeControlItem(plan.item);
     return;
   }
-  deps.onPromptDispatchStart(plan.item.chatId);
+  deps.onPromptDispatchStart(plan.item);
   try {
     deps.sendUserMessage(plan.item.content);
   } catch (error) {
@@ -1566,8 +1585,8 @@ export function createTelegramQueueDispatchController<TContext = unknown>(
             },
           });
         },
-        onPromptDispatchStart: (chatId) => {
-          deps.onPromptDispatchStart(ctx, chatId);
+        onPromptDispatchStart: (item) => {
+          deps.onPromptDispatchStart(ctx, item.chatId);
         },
         sendUserMessage: deps.sendUserMessage,
         onPromptDispatchFailure: (message) => {

@@ -48,6 +48,7 @@ export interface TelegramPreviewRuntimeDeps {
   getState: () => TelegramPreviewRuntimeState | undefined;
   setState: (state: TelegramPreviewRuntimeState | undefined) => void;
   clearScheduledFlush: (state: TelegramPreviewRuntimeState) => void;
+  getReplyToMessageId: () => number | undefined;
   maxMessageLength: number;
   renderPreviewText: (markdown: string) => string;
   getDraftSupport: () => TelegramDraftSupport;
@@ -61,7 +62,7 @@ export interface TelegramPreviewRuntimeDeps {
   sendMessage: (
     chatId: number,
     text: string,
-    options?: { parseMode?: "HTML" },
+    options?: { parseMode?: "HTML"; replyToMessageId?: number },
   ) => Promise<TelegramSentPreviewMessage>;
   editMessageText: (
     chatId: number,
@@ -86,6 +87,7 @@ export interface TelegramPreviewRuntimeDeps {
 
 export interface TelegramPreviewActiveTurn {
   chatId: number;
+  skipFinalTextReply?: boolean;
 }
 
 export interface TelegramAssistantMessagePreviewStartDeps<TMessage> {
@@ -344,6 +346,7 @@ export function createTelegramPreviewController(
       clearTimer(nextState.flushTimer);
       nextState.flushTimer = undefined;
     },
+    getReplyToMessageId: () => replyToMessageId ?? deps.getDefaultReplyToMessageId?.(),
     maxMessageLength,
     renderPreviewText: renderPreview,
     getDraftSupport: () => draftSupport,
@@ -360,7 +363,7 @@ export function createTelegramPreviewController(
         chatId,
         text,
         options,
-        replyToMessageId ?? deps.getDefaultReplyToMessageId?.(),
+        options?.replyToMessageId,
       ),
     editMessageText: deps.editMessageText,
     renderTelegramMessage: renderMessage,
@@ -425,7 +428,7 @@ export async function handleTelegramAssistantMessagePreviewStart<TMessage>(
   deps: TelegramAssistantMessagePreviewStartDeps<TMessage>,
 ): Promise<void> {
   const turn = deps.getActiveTurn();
-  if (!turn || !deps.isAssistantMessage(message)) return;
+  if (!turn || turn.skipFinalTextReply || !deps.isAssistantMessage(message)) return;
   const state = deps.getState();
   if (
     state &&
@@ -447,7 +450,7 @@ export async function handleTelegramAssistantMessagePreviewUpdate<TMessage>(
   deps: TelegramAssistantMessagePreviewUpdateDeps<TMessage>,
 ): Promise<void> {
   const turn = deps.getActiveTurn();
-  if (!turn || !deps.isAssistantMessage(message)) return;
+  if (!turn || turn.skipFinalTextReply || !deps.isAssistantMessage(message)) return;
   let state = deps.getState();
   if (!state) {
     state = deps.createPreviewState();
@@ -544,6 +547,7 @@ async function performTelegramPreviewFlush(
   if (state.messageId === undefined) {
     const sent = await deps.sendMessage(chatId, snapshot.text, {
       parseMode: snapshot.parseMode,
+      replyToMessageId: deps.getReplyToMessageId(),
     });
     state.messageId = sent.message_id;
     state.mode = "message";

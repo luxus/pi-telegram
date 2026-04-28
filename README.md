@@ -79,7 +79,7 @@ Use these inside the Telegram DM with your bot:
 
 - **`/start`**: Pair the first Telegram user when needed, register the bot command menu, and show help.
 - **`/help`**: Show the Telegram help text.
-- **`/status`**: View session stats, cost, and use inline buttons to change models.
+- **`/status`**: View session stats, cost, and use inline buttons to change models, thinking, and voice settings.
 - **`/model`**: Open the interactive model selector.
 - **`/compact`**: Start session compaction (only works when the session is idle).
 - **`/stop`**: Abort the active run and clear all waiting Telegram queue items.
@@ -92,6 +92,7 @@ Run these inside pi, not Telegram:
 
 - **`/telegram-setup`**: Configure or update the Telegram bot token.
 - **`/telegram-status`**: Check bridge status, connection, polling, execution, queue, and recent redacted runtime/API failure events.
+- **`/telegram-voice`**: Configure Telegram voice transcription, real voice-note replies, text-copy behavior, default voice, language, provider, and speech style.
 - **`/telegram-connect`**: Start polling Telegram updates in the current pi session, acquire the singleton lock, or interactively move ownership here from another live instance.
 - **`/telegram-disconnect`**: Stop polling in the current pi session and release the singleton lock.
 

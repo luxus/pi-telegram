@@ -39,8 +39,18 @@ test("Turn helpers build prompt text with history and attachments", () => {
     rawText: "current message",
     files: [{ path: "/tmp/demo.png", fileName: "demo.png", isImage: true }],
     historyTurns: [{ historyText: "older message" }],
+    inputModality: "voice",
+    replyModality: "voice-required",
+    voiceFilePath: "/tmp/voice.ogg",
+    voiceTranscript: "Hallo Welt",
+    voiceTranscriptLanguage: "de",
   });
   assert.match(prompt, /^\[telegram\]/);
+  assert.match(prompt, /Input modality: voice/);
+  assert.match(prompt, /Reply modality: voice-required/);
+  assert.match(prompt, /Original voice file: \/tmp\/voice\.ogg/);
+  assert.match(prompt, /Detected voice language: de/);
+  assert.match(prompt, /Voice transcript:\nHallo Welt/);
   assert.match(
     prompt,
     /Earlier Telegram messages arrived after an aborted turn/,
@@ -479,11 +489,13 @@ test("Turn helpers assemble prompt turns with text, ids, history, and image payl
     ],
     readBinaryFile: async () => new Uint8Array([1, 2, 3]),
     inferImageMimeType: () => undefined,
+    explicitTextCopyRequested: true,
   });
   assert.equal(turn.chatId, 99);
   assert.equal(turn.replyToMessageId, 10);
   assert.deepEqual(turn.sourceMessageIds, [10, 11]);
   assert.equal(turn.queueOrder, 7);
+  assert.equal(turn.explicitTextCopyRequested, true);
   assert.equal(turn.statusSummary, "current message");
   assert.equal(
     turn.historyText,

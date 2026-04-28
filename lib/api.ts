@@ -239,6 +239,8 @@ export interface TelegramBridgeApiRuntimeDeps {
   ) => void;
 }
 
+export type TelegramChatAction = "typing" | "record_voice";
+
 export interface TelegramBridgeApiRuntime {
   call: <TResponse>(
     method: string,
@@ -262,7 +264,7 @@ export interface TelegramBridgeApiRuntime {
   setMyCommands: (
     commands: readonly { command: string; description: string }[],
   ) => Promise<boolean>;
-  sendChatAction: (chatId: number, action: "typing") => Promise<boolean>;
+  sendChatAction: (chatId: number, action: TelegramChatAction) => Promise<boolean>;
   sendTypingAction: (chatId: number) => Promise<unknown>;
   sendMessageDraft: (
     chatId: number,

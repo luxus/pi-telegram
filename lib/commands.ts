@@ -72,6 +72,10 @@ export interface TelegramBridgeCommandRegistrationDeps {
   getStatusLines: () => string[];
   reloadConfig: () => Promise<void>;
   hasBotToken: () => boolean;
+  handleVoiceCommand?: (
+    args: string,
+    ctx: ExtensionCommandContext,
+  ) => Promise<void> | void;
   startPolling: (
     ctx: ExtensionCommandContext,
     options?: TelegramBridgeCommandStartPollingOptions,
@@ -150,6 +154,14 @@ export function registerTelegramBridgeCommands(
       deps.updateStatus(ctx);
     },
   });
+  if (deps.handleVoiceCommand) {
+    pi.registerCommand("telegram-voice", {
+      description: "Configure Telegram voice transcription and replies",
+      handler: async (args, ctx) => {
+        await deps.handleVoiceCommand?.(args, ctx);
+      },
+    });
+  }
 }
 
 export type TelegramCommandAction =

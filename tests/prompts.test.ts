@@ -67,4 +67,5 @@ test("Prompt helpers build before-agent-start hooks", () => {
   );
   assert.match(defaultSystemPrompt, /prefer narrow table columns/);
   assert.match(defaultSystemPrompt, /telegram_attach/);
+  assert.match(defaultSystemPrompt, /telegram_send_voice/);
 });

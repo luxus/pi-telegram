@@ -23,6 +23,8 @@ import * as Runtime from "./lib/runtime.ts";
 import * as Routing from "./lib/routing.ts";
 import * as Setup from "./lib/setup.ts";
 import * as Status from "./lib/status.ts";
+import * as Voice from "./lib/voice.ts";
+import * as VoiceRuntime from "./lib/voice-runtime.ts";
 
 type ActivePiModel = NonNullable<Pi.ExtensionContext["model"]>;
 type RuntimeTelegramQueueItem = Queue.TelegramQueueItem<Pi.ExtensionContext>;
@@ -95,10 +97,12 @@ export default function (pi: Pi.ExtensionAPI) {
   // --- Telegram API ---
 
   const {
+    call,
     callMultipart,
     deleteWebhook,
     getUpdates,
     setMyCommands,
+    sendChatAction,
     sendTypingAction,
     sendMessageDraft,
     sendMessage,
@@ -118,7 +122,13 @@ export default function (pi: Pi.ExtensionAPI) {
       lifecycle: bridgeRuntime.lifecycle,
       typing: bridgeRuntime.typing,
       getDefaultChatId: activeTurnRuntime.getChatId,
-      sendTypingAction,
+      sendTypingAction(chatId) {
+        const activeTurn = activeTurnRuntime.get();
+        return VoiceRuntime.getTelegramVoicePromptChatAction(activeTurn) ===
+          "record_voice"
+          ? sendChatAction(chatId, "record_voice")
+          : sendTypingAction(chatId);
+      },
       updateStatus,
       recordRuntimeEvent: runtimeEvents.record,
     });
@@ -162,6 +172,24 @@ export default function (pi: Pi.ExtensionAPI) {
     editMessageText: editTelegramMessageText,
     ...replyTransport,
   });
+  const voiceRuntime = VoiceRuntime.createTelegramVoiceRuntime<
+    Api.TelegramMessage,
+    Pi.ExtensionCommandContext
+  >({
+    getConfig: configStore.get,
+    setConfig: configStore.set,
+    updateConfig: configStore.update,
+    persistConfig: configStore.persist,
+    updateStatus,
+    call,
+    callMultipart,
+    getActiveTurn: activeTurnRuntime.get,
+    getProactiveChatId: configStore.getAllowedUserId,
+    clearPreview: previewRuntime.clear,
+    downloadFile: downloadTelegramBridgeFile,
+    allocateQueueOrder: bridgeRuntime.queue.allocateItemOrder,
+    cwd: process.cwd,
+  });
 
   // --- Bridge Setup ---
 
@@ -193,6 +221,15 @@ export default function (pi: Pi.ExtensionAPI) {
     buildStatusHtml: Status.createTelegramStatusHtmlBuilder({
       getActiveModel: currentModelRuntime.get,
     }),
+    getVoiceSettings() {
+      return Voice.resolveTelegramVoiceMenuSettings(
+        voiceRuntime.getDefaultVoiceSettings(),
+      );
+    },
+    async saveVoiceSetting(command) {
+      configStore.set(Voice.updateTelegramVoiceConfig(configStore.get(), command));
+      await configStore.persist();
+    },
     storeModelMenuState: modelMenuRuntime.storeState,
     isIdle: Pi.isExtensionContextIdle,
     canOfferInFlightModelSwitch: modelSwitchController.canOfferInFlightSwitch,
@@ -244,6 +281,7 @@ export default function (pi: Pi.ExtensionAPI) {
       hasPendingMessages: Pi.hasExtensionContextPendingMessages,
       compact: Pi.compactExtensionContext,
       recordRuntimeEvent: runtimeEvents.record,
+      createTurn: voiceRuntime.createTurn,
     }).handleUpdate,
     stopTypingLoop: bridgeRuntime.typing.stop,
     updateStatus,
@@ -286,6 +324,14 @@ export default function (pi: Pi.ExtensionAPI) {
 
   // --- Extension API Bindings ---
 
+  Voice.registerTelegramVoiceTool(pi, {
+    getActiveTurn: activeTurnRuntime.get,
+    getProactiveChatId: configStore.getAllowedUserId,
+    sendVoiceReply: voiceRuntime.sendVoiceReply,
+    getDefaultVoiceSettings: voiceRuntime.getDefaultVoiceSettings,
+    shouldKeepTextReply: voiceRuntime.shouldKeepTextReply,
+  });
+
   Attachments.registerTelegramAttachmentTool(pi, {
     getActiveTurn: activeTurnRuntime.get,
     recordRuntimeEvent: runtimeEvents.record,
@@ -305,6 +351,7 @@ export default function (pi: Pi.ExtensionAPI) {
     getStatusLines,
     reloadConfig: configStore.load,
     hasBotToken: configStore.hasBotToken,
+    handleVoiceCommand: voiceRuntime.handleVoiceCommand,
     startPolling: lockedPollingRuntime.start,
     stopPolling: lockedPollingRuntime.stop,
     updateStatus,
@@ -358,6 +405,7 @@ export default function (pi: Pi.ExtensionAPI) {
         sendTextReply,
         recordRuntimeEvent: runtimeEvents.record,
       }),
+      beforeFinalTextReply: voiceRuntime.beforeFinalTextReply,
       getActiveToolExecutions: bridgeRuntime.lifecycle.getActiveToolExecutions,
       setActiveToolExecutions: bridgeRuntime.lifecycle.setActiveToolExecutions,
       triggerPendingModelSwitchAbort: modelSwitchController.triggerPendingAbort,

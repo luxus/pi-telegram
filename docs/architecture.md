@@ -34,6 +34,7 @@ Current runtime areas use these ownership boundaries:
 | `queue`                             | Queue item contracts, lane admission/order, stores, mutations, dispatch readiness/runtime, prompt/control enqueueing, session and agent/tool lifecycle sequencing |
 | `runtime`                           | Session-local coordination primitives: counters, lifecycle flags, setup guard, abort handler, typing-loop timers, prompt-dispatch flags, agent-end reset binding  |
 | `model` / `menu` / `commands`       | Model identity/thinking levels, scoped model resolution, in-flight switching, inline status/model/thinking UI, slash commands, bot command registration           |
+| `voice` / `voice-menu` / `voice-runtime` | Voice settings/projection/action planning, provider selection, transcription, speech preparation, synthesis, voice-note tool registration, Telegram voice UI, runtime port binding |
 | `preview` / `replies` / `rendering` | Preview lifecycle/transports, final reply delivery and reply parameters, Telegram HTML Markdown rendering, chunking, stable-preview snapshots                     |
 | `attachments`                       | `telegram_attach` registration, outbound attachment queueing, stat/limit checks, photo/document delivery classification                                           |
 | `status`                            | Status-bar/status-message rendering, queue-lane status views, redacted runtime event ring, grouped pi diagnostics                                                 |

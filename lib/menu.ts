@@ -15,6 +15,17 @@ import {
   THINKING_LEVELS,
   type ThinkingLevel,
 } from "./model.ts";
+import {
+  buildTelegramVoiceMenuRenderPayload,
+  handleTelegramVoiceMenuCallbackAction as handleTelegramVoiceMenuAction,
+  type TelegramVoiceMenuCallbackDeps,
+} from "./voice-menu.ts";
+import {
+  getDefaultTelegramVoiceMenuSettings,
+  getTelegramVoiceMenuStatusSummary,
+  type TelegramVoiceMenuCommand,
+  type TelegramVoiceMenuSettings,
+} from "./voice.ts";
 const TELEGRAM_MODEL_MENU_CACHE_TTL_MS = 5000;
 const TELEGRAM_MODEL_MENU_STATE_TTL_MS = 10 * 60 * 1000;
 const MAX_STORED_TELEGRAM_MODEL_MENUS = 50;
@@ -29,7 +40,7 @@ export interface TelegramModelMenuState<TModel extends MenuModel = MenuModel> {
   scopedModels: ScopedTelegramModel<TModel>[];
   allModels: ScopedTelegramModel<TModel>[];
   note?: string;
-  mode: "status" | "model" | "thinking";
+  mode: "status" | "model" | "thinking" | "voice";
 }
 
 export interface StoredTelegramModelMenuState<
@@ -134,6 +145,7 @@ export interface TelegramMenuEffectPort<TModel extends MenuModel = MenuModel> {
   ) => Promise<void>;
   updateModelMenuMessage: () => Promise<void>;
   updateThinkingMenuMessage: () => Promise<void>;
+  updateVoiceMenuMessage?: () => Promise<void>;
   updateStatusMessage: () => Promise<void>;
   setModel: (model: TModel) => Promise<boolean>;
   setCurrentModel: (model: TModel) => void;
@@ -149,7 +161,10 @@ export type TelegramStatusMenuCallbackDeps<
   TModel extends MenuModel = MenuModel,
 > = Pick<
   TelegramMenuEffectPort<TModel>,
-  "updateModelMenuMessage" | "updateThinkingMenuMessage" | "answerCallbackQuery"
+  | "updateModelMenuMessage"
+  | "updateThinkingMenuMessage"
+  | "updateVoiceMenuMessage"
+  | "answerCallbackQuery"
 >;
 
 export type TelegramThinkingMenuCallbackDeps<
@@ -179,6 +194,7 @@ export type TelegramModelMenuCallbackDeps<
 export interface TelegramMenuCallbackEntryDeps {
   handleStatusAction: () => Promise<boolean>;
   handleThinkingAction: () => Promise<boolean>;
+  handleVoiceAction?: () => Promise<boolean>;
   handleModelAction: () => Promise<boolean>;
   answerCallbackQuery: (
     callbackQueryId: string,
@@ -202,6 +218,9 @@ export interface StoredTelegramMenuCallbackDeps<
     state: TelegramModelMenuState<TModel>,
   ) => Promise<boolean>;
   handleThinkingAction: (
+    state: TelegramModelMenuState<TModel>,
+  ) => Promise<boolean>;
+  handleVoiceAction?: (
     state: TelegramModelMenuState<TModel>,
   ) => Promise<boolean>;
   handleModelAction: (
@@ -236,6 +255,12 @@ export interface TelegramMenuCallbackRuntimeDeps<
     state: TelegramModelMenuState<TModel>,
     ctx: TContext,
   ) => Promise<void>;
+  updateVoiceMenuMessage?: (
+    state: TelegramModelMenuState<TModel>,
+    ctx: TContext,
+  ) => Promise<void>;
+  getVoiceSettings?: () => TelegramVoiceMenuSettings;
+  saveVoiceSetting?: (command: TelegramVoiceMenuCommand) => Promise<void>;
   answerCallbackQuery: (
     callbackQueryId: string,
     text?: string,
@@ -270,6 +295,7 @@ export interface TelegramStatusMenuOpenDeps<
     statusHtml: string,
     activeModel: TModel | undefined,
     thinkingLevel: ThinkingLevel,
+    voiceSummary: string | undefined,
   ) => Promise<number | undefined>;
   storeModelMenuState: (state: TelegramModelMenuState<TModel>) => void;
 }
@@ -301,6 +327,8 @@ export interface TelegramMenuActionRuntimeDeps<
   getActiveModel: (ctx: TContext) => TModel | undefined;
   getThinkingLevel: () => ThinkingLevel;
   buildStatusHtml: (ctx: TContext) => string;
+  getVoiceSettings?: () => TelegramVoiceMenuSettings;
+  saveVoiceSetting?: (command: TelegramVoiceMenuCommand) => Promise<void>;
   storeModelMenuState: (state: TelegramModelMenuState<TModel>) => void;
   isIdle: (ctx: TContext) => boolean;
   canOfferInFlightModelSwitch: (ctx: TContext) => boolean;
@@ -327,6 +355,12 @@ export interface TelegramMenuActionRuntime<
     state: TelegramModelMenuState<TModel>,
     ctx: TContext,
   ) => Promise<void>;
+  updateVoiceMenuMessage?: (
+    state: TelegramModelMenuState<TModel>,
+    ctx: TContext,
+  ) => Promise<void>;
+  getVoiceSettings?: () => TelegramVoiceMenuSettings;
+  saveVoiceSetting?: (command: TelegramVoiceMenuCommand) => Promise<void>;
   sendStatusMessage: (
     chatId: number,
     replyToMessageId: number,
@@ -340,7 +374,6 @@ export interface TelegramMenuActionRuntime<
 }
 
 export const TELEGRAM_MODEL_PAGE_SIZE = 6;
-
 export function pruneStoredTelegramModelMenus<
   TModel extends MenuModel = MenuModel,
 >(
@@ -499,8 +532,22 @@ export interface BuildTelegramModelMenuStateParams<
 
 export type TelegramMenuCallbackAction =
   | { kind: "ignore" }
-  | { kind: "status"; action: "model" | "thinking" }
+  | { kind: "status"; action: "model" | "thinking" | "voice" }
   | { kind: "thinking:set"; level: string }
+  | {
+      kind: "voice";
+      action:
+        | "noop"
+        | "back"
+        | "toggle"
+        | "reply"
+        | "transcribe"
+        | "text"
+        | "style"
+        | "voice"
+        | "lang";
+      value?: string;
+    }
   | {
       kind: "model";
       action: "noop" | "scope" | "page" | "pick";
@@ -670,11 +717,30 @@ export function parseTelegramMenuCallbackAction(
   if (data === "status:thinking") {
     return { kind: "status", action: "thinking" };
   }
+  if (data === "status:voice") {
+    return { kind: "status", action: "voice" };
+  }
   if (data?.startsWith("thinking:set:")) {
     return {
       kind: "thinking:set",
       level: data.slice("thinking:set:".length),
     };
+  }
+  if (data?.startsWith("voice:")) {
+    const [, action, value] = data.split(":");
+    if (
+      action === "noop" ||
+      action === "back" ||
+      action === "toggle" ||
+      action === "reply" ||
+      action === "transcribe" ||
+      action === "text" ||
+      action === "style" ||
+      action === "voice" ||
+      action === "lang"
+    ) {
+      return { kind: "voice", action, value };
+    }
   }
   if (data?.startsWith("model:")) {
     const [, action, value] = data.split(":");
@@ -813,6 +879,7 @@ export async function openTelegramStatusMenu<
     deps.buildStatusHtml(),
     deps.getActiveModel(),
     deps.getThinkingLevel(),
+    undefined,
   );
   if (messageId === undefined) return;
   state.messageId = messageId;
@@ -859,6 +926,7 @@ export async function handleTelegramMenuCallbackEntry(
   const handled =
     (await deps.handleStatusAction()) ||
     (await deps.handleThinkingAction()) ||
+    (deps.handleVoiceAction ? await deps.handleVoiceAction() : false) ||
     (await deps.handleModelAction());
   if (!handled) {
     await deps.answerCallbackQuery(callbackQueryId);
@@ -880,6 +948,10 @@ export async function handleStoredTelegramMenuCallback<
     handleThinkingAction: async () => {
       if (!state) return false;
       return deps.handleThinkingAction(state);
+    },
+    handleVoiceAction: async () => {
+      if (!state || !deps.handleVoiceAction) return false;
+      return deps.handleVoiceAction(state);
     },
     handleModelAction: async () => {
       if (!state) return false;
@@ -912,6 +984,12 @@ export interface TelegramMenuCallbackRuntimeAdapterDeps<
     state: TelegramModelMenuState<TModel>,
     ctx: TContext,
   ) => Promise<void>;
+  updateVoiceMenuMessage?: (
+    state: TelegramModelMenuState<TModel>,
+    ctx: TContext,
+  ) => Promise<void>;
+  getVoiceSettings?: () => TelegramVoiceMenuSettings;
+  saveVoiceSetting?: (command: TelegramVoiceMenuCommand) => Promise<void>;
   answerCallbackQuery: (
     callbackQueryId: string,
     text?: string,
@@ -958,6 +1036,9 @@ export function createTelegramMenuCallbackHandlerForContext<
     updateModelMenuMessage: deps.updateModelMenuMessage,
     updateThinkingMenuMessage: deps.updateThinkingMenuMessage,
     updateStatusMessage: deps.updateStatusMessage,
+    updateVoiceMenuMessage: deps.updateVoiceMenuMessage,
+    getVoiceSettings: deps.getVoiceSettings,
+    saveVoiceSetting: deps.saveVoiceSetting,
     answerCallbackQuery: deps.answerCallbackQuery,
     isIdle: deps.isIdle,
     hasActiveTelegramTurn: deps.hasActiveTelegramTurn,
@@ -990,6 +1071,9 @@ export async function handleTelegramMenuCallbackRuntime<
           updateModelMenuMessage: () => deps.updateModelMenuMessage(state, ctx),
           updateThinkingMenuMessage: () =>
             deps.updateThinkingMenuMessage(state, ctx),
+          updateVoiceMenuMessage: deps.updateVoiceMenuMessage
+            ? () => deps.updateVoiceMenuMessage!(state, ctx)
+            : undefined,
           answerCallbackQuery: deps.answerCallbackQuery,
         },
       ),
@@ -1008,6 +1092,17 @@ export async function handleTelegramMenuCallbackRuntime<
           answerCallbackQuery: deps.answerCallbackQuery,
         },
       ),
+    handleVoiceAction: async (state) =>
+      handleTelegramVoiceMenuCallbackAction(query.id, query.data, {
+        getVoiceSettings: deps.getVoiceSettings ?? getDefaultTelegramVoiceMenuSettings,
+        saveVoiceSetting: deps.saveVoiceSetting ?? (async () => {}),
+        updateVoiceMenuMessage: () =>
+          deps.updateVoiceMenuMessage
+            ? deps.updateVoiceMenuMessage(state, ctx)
+            : deps.updateStatusMessage(state, ctx),
+        updateStatusMessage: () => deps.updateStatusMessage(state, ctx),
+        answerCallbackQuery: deps.answerCallbackQuery,
+      }),
     handleModelAction: async (state) => {
       try {
         return await handleTelegramModelMenuCallbackAction(
@@ -1117,6 +1212,16 @@ export async function handleTelegramStatusMenuCallbackAction(
     await deps.answerCallbackQuery(callbackQueryId);
     return true;
   }
+  if (action.kind === "status" && action.action === "voice") {
+    if (deps.updateVoiceMenuMessage) {
+      await deps.updateVoiceMenuMessage();
+    } else {
+      await deps.answerCallbackQuery(callbackQueryId, "Voice menu unavailable.");
+      return true;
+    }
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
   if (!(action.kind === "status" && action.action === "thinking")) {
     return false;
   }
@@ -1130,6 +1235,18 @@ export async function handleTelegramStatusMenuCallbackAction(
   await deps.updateThinkingMenuMessage();
   await deps.answerCallbackQuery(callbackQueryId);
   return true;
+}
+
+export async function handleTelegramVoiceMenuCallbackAction(
+  callbackQueryId: string,
+  data: string | undefined,
+  deps: TelegramVoiceMenuCallbackDeps,
+): Promise<boolean> {
+  return handleTelegramVoiceMenuAction(
+    callbackQueryId,
+    parseTelegramMenuCallbackAction(data),
+    deps,
+  );
 }
 
 export async function handleTelegramThinkingMenuCallbackAction(
@@ -1245,6 +1362,7 @@ export function buildThinkingMenuReplyMarkup(
 export function buildStatusReplyMarkup(
   activeModel: MenuModel | undefined,
   currentThinkingLevel: ThinkingLevel,
+  voiceSummary?: string,
 ): TelegramReplyMarkup {
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   rows.push([
@@ -1264,6 +1382,12 @@ export function buildStatusReplyMarkup(
       },
     ]);
   }
+  rows.push([
+    {
+      text: formatStatusButtonLabel("Voice", voiceSummary ?? "settings"),
+      callback_data: "status:voice",
+    },
+  ]);
   return { inline_keyboard: rows };
 }
 
@@ -1299,12 +1423,13 @@ export function buildTelegramStatusMenuRenderPayload(
   statusText: string,
   activeModel: MenuModel | undefined,
   currentThinkingLevel: ThinkingLevel,
+  voiceSummary?: string,
 ): TelegramMenuRenderPayload {
   return {
     nextMode: "status",
     text: statusText,
     mode: "html",
-    replyMarkup: buildStatusReplyMarkup(activeModel, currentThinkingLevel),
+    replyMarkup: buildStatusReplyMarkup(activeModel, currentThinkingLevel, voiceSummary),
   };
 }
 
@@ -1333,6 +1458,8 @@ export function createTelegramMenuActionRuntimeWithStateBuilder<
     getActiveModel: deps.getActiveModel,
     getThinkingLevel: deps.getThinkingLevel,
     buildStatusHtml: deps.buildStatusHtml,
+    getVoiceSettings: deps.getVoiceSettings,
+    saveVoiceSetting: deps.saveVoiceSetting,
     storeModelMenuState: deps.storeModelMenuState,
     isIdle: deps.isIdle,
     canOfferInFlightModelSwitch: deps.canOfferInFlightModelSwitch,
@@ -1358,12 +1485,23 @@ export function createTelegramMenuActionRuntime<
         deps.getThinkingLevel(),
         deps,
       ),
+    updateVoiceMenuMessage: (state) =>
+      updateTelegramVoiceMenuMessage(
+        state,
+        (deps.getVoiceSettings ?? getDefaultTelegramVoiceMenuSettings)(),
+        deps,
+      ),
+    getVoiceSettings: deps.getVoiceSettings,
+    saveVoiceSetting: deps.saveVoiceSetting,
     updateStatusMessage: (state, ctx) =>
       updateTelegramStatusMessage(
         state,
         deps.buildStatusHtml(ctx),
         deps.getActiveModel(ctx),
         deps.getThinkingLevel(),
+        getTelegramVoiceMenuStatusSummary(
+          (deps.getVoiceSettings ?? getDefaultTelegramVoiceMenuSettings)(),
+        ),
         deps,
       ),
     sendStatusMessage: (chatId, replyToMessageId, ctx) =>
@@ -1386,6 +1524,9 @@ export function createTelegramMenuActionRuntime<
             statusHtml,
             activeModel,
             thinkingLevel,
+            getTelegramVoiceMenuStatusSummary(
+              (deps.getVoiceSettings ?? getDefaultTelegramVoiceMenuSettings)(),
+            ),
             deps,
           ),
         storeModelMenuState: deps.storeModelMenuState,
@@ -1480,19 +1621,50 @@ export async function updateTelegramThinkingMenuMessage(
   );
 }
 
+export async function updateTelegramVoiceMenuMessage(
+  state: TelegramModelMenuState,
+  settings: TelegramVoiceMenuSettings,
+  deps: TelegramMenuMessageRuntimeDeps,
+): Promise<void> {
+  await editTelegramMenuMessage(
+    state,
+    buildTelegramVoiceMenuRenderPayload(settings),
+    deps,
+  );
+}
+
 export async function updateTelegramStatusMessage(
   state: TelegramModelMenuState,
   statusText: string,
   activeModel: MenuModel | undefined,
   currentThinkingLevel: ThinkingLevel,
   deps: TelegramMenuMessageRuntimeDeps,
+): Promise<void>;
+export async function updateTelegramStatusMessage(
+  state: TelegramModelMenuState,
+  statusText: string,
+  activeModel: MenuModel | undefined,
+  currentThinkingLevel: ThinkingLevel,
+  voiceSummary: string | undefined,
+  deps: TelegramMenuMessageRuntimeDeps,
+): Promise<void>;
+export async function updateTelegramStatusMessage(
+  state: TelegramModelMenuState,
+  statusText: string,
+  activeModel: MenuModel | undefined,
+  currentThinkingLevel: ThinkingLevel,
+  voiceSummaryOrDeps: string | undefined | TelegramMenuMessageRuntimeDeps,
+  maybeDeps?: TelegramMenuMessageRuntimeDeps,
 ): Promise<void> {
+  const voiceSummary = typeof voiceSummaryOrDeps === "string" ? voiceSummaryOrDeps : undefined;
+  const deps = maybeDeps ?? (voiceSummaryOrDeps as TelegramMenuMessageRuntimeDeps);
   await editTelegramMenuMessage(
     state,
     buildTelegramStatusMenuRenderPayload(
       statusText,
       activeModel,
       currentThinkingLevel,
+      voiceSummary,
     ),
     deps,
   );
@@ -1504,13 +1676,32 @@ export function sendTelegramStatusMessage(
   activeModel: MenuModel | undefined,
   currentThinkingLevel: ThinkingLevel,
   deps: TelegramMenuMessageRuntimeDeps,
+): Promise<number | undefined>;
+export function sendTelegramStatusMessage(
+  state: TelegramModelMenuState,
+  statusText: string,
+  activeModel: MenuModel | undefined,
+  currentThinkingLevel: ThinkingLevel,
+  voiceSummary: string | undefined,
+  deps: TelegramMenuMessageRuntimeDeps,
+): Promise<number | undefined>;
+export function sendTelegramStatusMessage(
+  state: TelegramModelMenuState,
+  statusText: string,
+  activeModel: MenuModel | undefined,
+  currentThinkingLevel: ThinkingLevel,
+  voiceSummaryOrDeps: string | undefined | TelegramMenuMessageRuntimeDeps,
+  maybeDeps?: TelegramMenuMessageRuntimeDeps,
 ): Promise<number | undefined> {
+  const voiceSummary = typeof voiceSummaryOrDeps === "string" ? voiceSummaryOrDeps : undefined;
+  const deps = maybeDeps ?? (voiceSummaryOrDeps as TelegramMenuMessageRuntimeDeps);
   return sendTelegramMenuMessage(
     state,
     buildTelegramStatusMenuRenderPayload(
       statusText,
       activeModel,
       currentThinkingLevel,
+      voiceSummary,
     ),
     deps,
   );

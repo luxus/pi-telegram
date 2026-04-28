@@ -825,6 +825,68 @@ test("Menu callback handler captures runtime ports", async () => {
   assert.deepEqual(events, ["model-menu", "answer:"]);
 });
 
+test("Menu callback adapter forwards voice menu ports", async () => {
+  const events: string[] = [];
+  const state: TelegramModelMenuState = createMenuState(2);
+  const handleCallback = createTelegramMenuCallbackHandlerForContext<
+    { id: string; data?: string; message?: { message_id?: number } },
+    { idle: boolean }
+  >({
+    getStoredModelMenuState: () => state,
+    getActiveModel: () => createMenuModel("openai", "gpt-5"),
+    getThinkingLevel: () => "medium",
+    setThinkingLevel: () => {},
+    updateStatus: () => {},
+    updateModelMenuMessage: async () => {},
+    updateThinkingMenuMessage: async () => {},
+    updateStatusMessage: async () => {
+      events.push("status-menu");
+    },
+    updateVoiceMenuMessage: async () => {
+      events.push("voice-menu");
+    },
+    getVoiceSettings: () => ({
+      enabled: true,
+      provider: "xai",
+      replyWithVoiceOnIncomingVoice: true,
+      autoTranscribeIncoming: true,
+      alsoSendTextReply: false,
+      voiceId: "eve",
+      language: "auto",
+      speechStyle: "literal",
+    }),
+    saveVoiceSetting: async (command) => {
+      events.push(`save:${command.action}`);
+    },
+    answerCallbackQuery: async (_id, text) => {
+      events.push(`answer:${text ?? ""}`);
+    },
+    isIdle: () => true,
+    hasActiveTelegramTurn: () => false,
+    hasAbortHandler: () => false,
+    getActiveToolExecutions: () => 0,
+    setModel: async () => true,
+    setCurrentModel: () => {},
+    stagePendingModelSwitch: () => {},
+    restartInterruptedTelegramTurn: () => false,
+  });
+  await handleCallback(
+    { id: "callback", data: "status:voice", message: { message_id: 2 } },
+    { idle: true },
+  );
+  await handleCallback(
+    { id: "callback", data: "voice:text:on", message: { message_id: 2 } },
+    { idle: true },
+  );
+  assert.deepEqual(events, [
+    "voice-menu",
+    "answer:",
+    "save:text",
+    "voice-menu",
+    "answer:Text copy on",
+  ]);
+});
+
 test("Menu callback adapter converts active tool count into runtime booleans", async () => {
   const events: string[] = [];
   let activeToolExecutions = 1;
@@ -1312,7 +1374,8 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
     true,
   );
   const statusMarkup = buildStatusReplyMarkup(modelA, "medium");
-  assert.equal(statusMarkup.inline_keyboard.length, 2);
+  assert.equal(statusMarkup.inline_keyboard.length, 3);
+  assert.equal(statusMarkup.inline_keyboard.at(-1)?.[0]?.callback_data, "status:voice");
   const noReasoningMarkup = buildStatusReplyMarkup(modelB, "medium");
-  assert.equal(noReasoningMarkup.inline_keyboard.length, 1);
+  assert.equal(noReasoningMarkup.inline_keyboard.length, 2);
 });

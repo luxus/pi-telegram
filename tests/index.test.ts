@@ -23,7 +23,7 @@ type RegisteredIndexHandler = (
 ) => Promise<unknown> | unknown;
 
 function createIndexApiHarness() {
-  let tool: RegisteredIndexTool | undefined;
+  const tools: RegisteredIndexTool[] = [];
   const commands = new Map<string, RegisteredIndexCommand>();
   const handlers = new Map<string, RegisteredIndexHandler>();
   const api = {
@@ -31,13 +31,13 @@ function createIndexApiHarness() {
       handlers.set(event, handler);
     },
     registerTool: (definition: RegisteredIndexTool) => {
-      tool = definition;
+      tools.push(definition);
     },
     registerCommand: (name: string, definition: RegisteredIndexCommand) => {
       commands.set(name, definition);
     },
   } as unknown as ExtensionAPI;
-  return { tool: () => tool, commands, handlers, api };
+  return { tools, commands, handlers, api };
 }
 
 function getRequiredIndexHandler(
@@ -63,7 +63,10 @@ function assertSystemPromptResult(
 test("Extension entrypoint wires domain bindings into the pi API", () => {
   const harness = createIndexApiHarness();
   telegramExtension(harness.api);
-  assert.equal(harness.tool()?.name, "telegram_attach");
+  assert.deepEqual(
+    harness.tools.map((tool) => tool.name),
+    ["telegram_send_voice", "telegram_attach"],
+  );
   assert.deepEqual(
     [...harness.commands.keys()],
     [
@@ -71,6 +74,7 @@ test("Extension entrypoint wires domain bindings into the pi API", () => {
       "telegram-status",
       "telegram-connect",
       "telegram-disconnect",
+      "telegram-voice",
     ],
   );
   assert.deepEqual(
