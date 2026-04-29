@@ -807,10 +807,6 @@ export function buildTelegramModelCallbackPlan<
 export async function openTelegramStatusMenu<
   TModel extends MenuModel = MenuModel,
 >(deps: TelegramStatusMenuOpenDeps<TModel>): Promise<void> {
-  if (!deps.isIdle()) {
-    await deps.sendBusyMessage();
-    return;
-  }
   const state = await deps.getModelMenuState();
   const messageId = await deps.sendStatusMenu(
     state,

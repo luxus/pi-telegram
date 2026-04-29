@@ -487,6 +487,24 @@ test("Queue mutation helpers apply and clear prompt priority without touching co
   assert.equal(cleared.items[1]?.queueLane, "control");
 });
 
+test("Queue priority reactions apply to attachment-only prompt turns", () => {
+  const attachmentPrompt: TelegramQueueItem = createQueueTestPromptTurn({
+    sourceMessageIds: [21],
+    queuedAttachments: [{ path: "/tmp/voice.ogg", fileName: "voice.ogg" }],
+    content: [{ type: "text", text: "[telegram] voice transcript" }],
+    historyText: "voice transcript",
+    statusSummary: "📎 voice.ogg",
+  });
+  const prioritized = prioritizeTelegramQueuePrompt(
+    [attachmentPrompt],
+    21,
+    0,
+  );
+  assert.equal(prioritized.changed, true);
+  assert.equal(prioritized.items[0]?.queueLane, "priority");
+  assert.equal(prioritized.items[0]?.statusSummary, "📎 voice.ogg");
+});
+
 test("Queued status formatting marks priority prompts in the pi status bar", () => {
   const priorityPrompt: TelegramQueueItem = createQueueTestPromptTurn({
     replyToMessageId: 1,
@@ -821,6 +839,15 @@ test("Agent end hook binds assistant extraction and runtime ports", async () => 
     "preview:final",
     "finalize:final",
     "attachments",
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(events, [
+    "extract:a,b",
+    "reset",
+    "status:ctx",
+    "preview:final",
+    "finalize:final",
+    "attachments",
     "dispatch:ctx",
   ]);
 });
@@ -1061,6 +1088,26 @@ test("Agent lifecycle hooks bind start, end, and tool lifecycle ports", async ()
   hooks.onToolExecutionStart();
   hooks.onToolExecutionEnd(undefined, "ctx");
   await hooks.onAgentEnd({ messages: [] }, "ctx");
+  assert.deepEqual(events, [
+    "abort:set:ctx",
+    "tools:reset",
+    "switch:reset",
+    "queued:0",
+    "dispatch:clear",
+    "active:7",
+    "preview:create",
+    "typing:ctx",
+    "status:ctx",
+    "tools:1",
+    "tools:0",
+    "switch:abort:ctx",
+    "runtime:reset",
+    "status:ctx",
+    "pending:done",
+    "preview:clear",
+    "markdown:done",
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(events, [
     "abort:set:ctx",
     "tools:reset",

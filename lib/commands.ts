@@ -1,9 +1,10 @@
 /**
  * Telegram command routing helpers
- * Owns slash-command normalization and command side-effect branching behind runtime ports
+ * Owns Telegram slash-command normalization, bot command metadata, and pi-side command registration behind runtime ports
  */
 
 import { pairTelegramUserIfNeeded } from "./config.ts";
+import type { ExtensionAPI, ExtensionCommandContext } from "./pi.ts";
 import {
   createTelegramControlItemBuilder,
   createTelegramControlQueueController,
@@ -52,22 +53,115 @@ export function createTelegramBotCommandRegistrar(
   return () => registerTelegramBotCommands(deps);
 }
 
+export interface TelegramBridgeCommandStartPollingOptions {
+  force?: boolean;
+}
+
+export interface TelegramBridgeCommandStartPollingResult {
+  ok: boolean;
+  message?: string;
+  canTakeover?: boolean;
+  owner?: string;
+}
+
+export interface TelegramBridgeCommandRegistrationDeps {
+  promptForConfig: (ctx: ExtensionCommandContext) => Promise<void>;
+  getStatusLines: () => string[];
+  reloadConfig: () => Promise<void>;
+  hasBotToken: () => boolean;
+  startPolling: (
+    ctx: ExtensionCommandContext,
+    options?: TelegramBridgeCommandStartPollingOptions,
+  ) =>
+    | void
+    | Promise<void | TelegramBridgeCommandStartPollingResult>
+    | TelegramBridgeCommandStartPollingResult;
+  stopPolling: () => Promise<void | string>;
+  updateStatus: (ctx: ExtensionCommandContext) => void;
+}
+
+function formatTelegramTakeoverTitle(ctx: ExtensionCommandContext): string {
+  return ctx.ui.theme.fg("accent", "pi-telegram");
+}
+
+function formatTelegramTakeoverPrompt(
+  ctx: ExtensionCommandContext,
+  owner?: string,
+): string {
+  const theme = ctx.ui.theme;
+  const action = theme.fg("warning", "move singleton lock here?");
+  const from = theme.fg("muted", "from:");
+  const to = theme.fg("muted", "to:");
+  const source = owner ?? "another pi instance";
+  return `${action}\n\n${from} ${source}\n${to} ${ctx.cwd}`;
+}
+
+export function registerTelegramBridgeCommands(
+  pi: ExtensionAPI,
+  deps: TelegramBridgeCommandRegistrationDeps,
+): void {
+  pi.registerCommand("telegram-setup", {
+    description: "Configure Telegram bot token",
+    handler: async (_args, ctx) => {
+      await deps.promptForConfig(ctx);
+    },
+  });
+  pi.registerCommand("telegram-status", {
+    description: "Show Telegram bridge status",
+    handler: async (_args, ctx) => {
+      ctx.ui.notify(deps.getStatusLines().join("\n"), "info");
+    },
+  });
+  pi.registerCommand("telegram-connect", {
+    description: "Start the Telegram bridge in this pi session",
+    handler: async (_args, ctx) => {
+      await deps.reloadConfig();
+      if (!deps.hasBotToken()) {
+        await deps.promptForConfig(ctx);
+        return;
+      }
+      let result = await deps.startPolling(ctx);
+      if (result && !result.ok && result.canTakeover) {
+        const confirmed = await ctx.ui.confirm(
+          formatTelegramTakeoverTitle(ctx),
+          formatTelegramTakeoverPrompt(ctx, result.owner),
+        );
+        if (!confirmed) {
+          ctx.ui.notify("Telegram bridge takeover cancelled.", "info");
+          deps.updateStatus(ctx);
+          return;
+        }
+        result = await deps.startPolling(ctx, { force: true });
+      }
+      if (result?.message) {
+        ctx.ui.notify(result.message, result.ok ? "info" : "warning");
+      }
+      deps.updateStatus(ctx);
+    },
+  });
+  pi.registerCommand("telegram-disconnect", {
+    description: "Stop the Telegram bridge in this pi session",
+    handler: async (_args, ctx) => {
+      const message = await deps.stopPolling();
+      if (message) ctx.ui.notify(message, "info");
+      deps.updateStatus(ctx);
+    },
+  });
+}
+
 export type TelegramCommandAction =
   | { kind: "ignore"; executionMode: "ignored" }
   | { kind: "stop"; executionMode: "immediate" }
   | { kind: "compact"; executionMode: "immediate" }
-  | { kind: "status"; executionMode: "control-queue" }
-  | { kind: "model"; executionMode: "control-queue" }
+  | { kind: "status"; executionMode: "immediate" }
+  | { kind: "model"; executionMode: "immediate" }
   | {
       kind: "help";
       commandName: "help" | "start";
       executionMode: "immediate";
     };
 
-export type TelegramCommandExecutionMode =
-  | "ignored"
-  | "immediate"
-  | "control-queue";
+export type TelegramCommandExecutionMode = "ignored" | "immediate";
 
 export interface TelegramCommandActionDeps<TMessage, TContext> {
   handleStop: (message: TMessage, ctx: TContext) => Promise<void>;
@@ -99,8 +193,7 @@ export interface TelegramRuntimeEventRecorderPort {
   ) => void;
 }
 
-export interface TelegramCompactCommandDeps
-  extends TelegramRuntimeEventRecorderPort {
+export interface TelegramCompactCommandDeps extends TelegramRuntimeEventRecorderPort {
   isIdle: () => boolean;
   hasPendingMessages: () => boolean;
   hasActiveTelegramTurn: () => boolean;
@@ -129,14 +222,6 @@ export interface TelegramHelpCommandDeps {
 
 export type TelegramControlCommandType =
   PendingTelegramControlItem<unknown>["controlType"];
-
-export interface TelegramQueuedControlCommandDeps<TContext> {
-  enqueueControlItem: (
-    controlType: TelegramControlCommandType,
-    statusSummary: string,
-    execute: (ctx: TContext) => Promise<void>,
-  ) => void;
-}
 
 export interface TelegramCommandRuntimeMessage {
   chat: { id: number };
@@ -380,9 +465,9 @@ export function buildTelegramCommandAction(
     case "compact":
       return { kind: "compact", executionMode: "immediate" };
     case "status":
-      return { kind: "status", executionMode: "control-queue" };
+      return { kind: "status", executionMode: "immediate" };
     case "model":
-      return { kind: "model", executionMode: "control-queue" };
+      return { kind: "model", executionMode: "immediate" };
     case "help":
     case "start":
       return { kind: "help", commandName, executionMode: "immediate" };
@@ -483,20 +568,18 @@ export async function handleTelegramHelpCommand(
   });
 }
 
-export async function handleTelegramStatusCommand<TContext>(
-  deps: TelegramQueuedControlCommandDeps<TContext> & {
-    showStatus: (ctx: TContext) => Promise<void>;
-  },
-): Promise<void> {
-  deps.enqueueControlItem("status", "⚡ status", deps.showStatus);
+export async function handleTelegramStatusCommand<TContext>(deps: {
+  ctx: TContext;
+  showStatus: (ctx: TContext) => Promise<void>;
+}): Promise<void> {
+  await deps.showStatus(deps.ctx);
 }
 
-export async function handleTelegramModelCommand<TContext>(
-  deps: TelegramQueuedControlCommandDeps<TContext> & {
-    openModelMenu: (ctx: TContext) => Promise<void>;
-  },
-): Promise<void> {
-  deps.enqueueControlItem("model", "⚡ model", deps.openModelMenu);
+export async function handleTelegramModelCommand<TContext>(deps: {
+  ctx: TContext;
+  openModelMenu: (ctx: TContext) => Promise<void>;
+}): Promise<void> {
+  await deps.openModelMenu(deps.ctx);
 }
 
 export async function executeTelegramCommandAction<TMessage, TContext>(
@@ -644,21 +727,6 @@ async function handleTelegramCommandRuntime<
     deps.sendTextReply(nextMessage, text);
   const updateStatusFor = (commandCtx: TContext) => () =>
     deps.updateStatus(commandCtx);
-  const enqueueControlFor =
-    (nextMessage: TMessage, commandCtx: TContext) =>
-    (
-      controlType: TelegramControlCommandType,
-      statusSummary: string,
-      execute: (ctx: TContext) => Promise<void>,
-    ) => {
-      deps.enqueueControlItem(
-        nextMessage,
-        commandCtx,
-        controlType,
-        statusSummary,
-        execute,
-      );
-    };
   return executeTelegramCommandAction(
     buildTelegramCommandAction(commandName),
     message,
@@ -694,13 +762,13 @@ async function handleTelegramCommandRuntime<
       },
       handleStatus: async (nextMessage, commandCtx) => {
         await handleTelegramStatusCommand<TContext>({
-          enqueueControlItem: enqueueControlFor(nextMessage, commandCtx),
+          ctx: commandCtx,
           showStatus: (controlCtx) => deps.showStatus(nextMessage, controlCtx),
         });
       },
       handleModel: async (nextMessage, commandCtx) => {
         await handleTelegramModelCommand<TContext>({
-          enqueueControlItem: enqueueControlFor(nextMessage, commandCtx),
+          ctx: commandCtx,
           openModelMenu: (controlCtx) =>
             deps.openModelMenu(nextMessage, controlCtx),
         });

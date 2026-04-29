@@ -108,6 +108,7 @@ export interface TelegramStatusBarState {
   paired: boolean;
   compactionInProgress: boolean;
   processing: boolean;
+  processingStatus?: string;
   queuedStatus: string;
   error?: string;
 }
@@ -333,6 +334,10 @@ export function createTelegramBridgeStatusRuntime<
     getStatusBarState: (_ctx, error) => {
       const config = deps.getConfig();
       const queuedItems = deps.getQueuedItems();
+      const hasActiveTurn = deps.hasActiveTurn();
+      const hasPendingDispatch = deps.hasDispatchPending();
+      const hasPendingModelSwitch = deps.hasPendingModelSwitch();
+      const activeToolExecutions = deps.getActiveToolExecutions();
       const compactionInProgress = deps.isCompactionInProgress();
       return {
         hasBotToken: !!config.botToken,
@@ -340,9 +345,14 @@ export function createTelegramBridgeStatusRuntime<
         paired: !!config.allowedUserId,
         compactionInProgress,
         processing:
-          deps.hasActiveTurn() ||
-          deps.hasDispatchPending() ||
-          queuedItems.length > 0,
+          hasActiveTurn || hasPendingDispatch || queuedItems.length > 0,
+        processingStatus: getTelegramStatusBarProcessingStatus({
+          hasActiveTurn,
+          hasPendingDispatch,
+          hasPendingModelSwitch,
+          activeToolExecutions,
+          queuedItems: queuedItems.length,
+        }),
         queuedStatus: deps.formatQueuedStatus(queuedItems),
         error,
       };
@@ -367,6 +377,21 @@ export function createTelegramBridgeStatusRuntime<
   });
 }
 
+export function getTelegramStatusBarProcessingStatus(state: {
+  hasActiveTurn: boolean;
+  hasPendingDispatch: boolean;
+  hasPendingModelSwitch: boolean;
+  activeToolExecutions: number;
+  queuedItems: number;
+}): string | undefined {
+  if (state.hasPendingModelSwitch) return "model";
+  if (state.activeToolExecutions > 0) return "tool running";
+  if (state.hasActiveTurn) return "active";
+  if (state.hasPendingDispatch) return "dispatching";
+  if (state.queuedItems > 0) return "queued";
+  return undefined;
+}
+
 export function buildTelegramStatusBarText(
   theme: TelegramStatusBarTheme,
   state: TelegramStatusBarState,
@@ -386,7 +411,7 @@ export function buildTelegramStatusBarText(
     return `${label} ${theme.fg("accent", "compacting")}${queued}`;
   }
   if (state.processing) {
-    return `${label} ${theme.fg("accent", "processing")}${queued}`;
+    return `${label} ${theme.fg("accent", state.processingStatus ?? "processing")}${queued}`;
   }
   return `${label} ${theme.fg("success", "connected")}`;
 }

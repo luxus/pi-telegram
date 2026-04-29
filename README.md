@@ -13,7 +13,7 @@ This repository is an actively maintained fork of [`badlogic/pi-telegram`](https
 
 ## Key Features
 
-- **Priority Command Queue**: Control commands such as `/status` and `/model` use a high-priority control queue, so they do not get stuck behind normal queued prompts when pi is busy.
+- **Immediate Telegram Controls**: `/status` and `/model` respond immediately from Telegram, while model-switch continuation turns still use the control lane when a restart needs to resume safely.
 - **Interactive UI**: Manage your session directly from Telegram. Inline buttons allow you to switch models and adjust reasoning (thinking) levels on the fly.
 - **In-flight Model Switching**: Change the active model mid-generation. The agent gracefully pauses, applies the new model, and restarts its response without losing context.
 - **Smart Message Queue**: Messages sent while the agent is busy are queued and previewed in the pi status bar, and queued turns can be reprioritized or removed with Telegram reactions.
@@ -84,7 +84,7 @@ Use these inside the Telegram DM with your bot:
 - **`/compact`**: Start session compaction (only works when the session is idle).
 - **`/stop`**: Abort the active run.
 
-Telegram command admission is explicit: `/compact`, `/stop`, `/help`, and `/start` execute immediately; `/status` and `/model` enter the high-priority control lane so they can run before normal queued prompts when pi becomes safe to dispatch.
+Telegram command admission is explicit: `/compact`, `/stop`, `/help`, `/start`, `/status`, and `/model` execute immediately. Synthetic model-switch continuation turns still enter the high-priority control lane so they can resume before normal queued prompts when pi becomes safe to dispatch.
 
 ### Pi Commands
 
@@ -100,32 +100,41 @@ Run these inside pi, not Telegram:
 - If you send more Telegram messages while pi is busy, they enter the default prompt queue and are processed in order.
 - `👍` moves a waiting prompt into the priority prompt queue, behind control actions but ahead of default prompts. Removing `👍` sends it back to its normal queue position, and adding `👍` again gives it a fresh priority position.
 - `👎` removes a waiting turn from the queue. Telegram Bot API does not expose ordinary DM message-deletion events through the polling path used here, so queue removal is bound to the dislike reaction.
-- For media groups, a reaction on any message in the group applies to the whole queued turn.
+- Reactions apply to any waiting Telegram turn, including text, voice, files, images, and media groups. For media groups, a reaction on any message in the group applies to the whole queued turn.
 - If you edit a Telegram message while it is still waiting in the queue, the queued turn is updated instead of creating a duplicate prompt. Edits after a turn has already started may not affect the active run.
 - Inbound images, albums, and files are saved to `~/.pi/agent/tmp/telegram`. Unhandled local file paths are included in the prompt, handled attachment output is injected into the prompt text, and inbound images are forwarded to pi as image inputs. Inbound downloads default to a 50 MiB limit and can be adjusted with `PI_TELEGRAM_INBOUND_FILE_MAX_BYTES` or `TELEGRAM_MAX_FILE_SIZE_BYTES`.
 - Queue reactions depend on Telegram delivering `message_reaction` updates for your bot and chat type.
 
 ### Inbound Attachment Handlers
 
-`telegram.json` can define `attachmentHandlers` for common preprocessing such as voice transcription. The first matching handler runs after download and before the Telegram turn enters the pi queue.
+`telegram.json` can define ordered `attachmentHandlers` for common preprocessing such as voice transcription. Matching handlers run after download and before the Telegram turn enters the pi queue. If a matching handler fails, the next matching handler is tried as a fallback.
 
 ```json
 {
   "attachmentHandlers": [
     {
-      "mime": "audio/*",
-      "command": "/home/me/bin/transcribe {filename} ru"
+      "type": "voice",
+      "template": "~/.pi/agent/skills/mistral-stt/scripts/transcribe.mjs {file} {lang} {model}",
+      "args": ["file", "lang", "model"],
+      "defaults": {
+        "lang": "ru",
+        "model": "voxtral-mini-latest"
+      }
     },
     {
-      "type": "voice",
-      "tool": "transcribe_groq",
-      "args": { "lang": "ru" }
+      "mime": "audio/*",
+      "template": "~/.pi/agent/skills/groq-stt/scripts/transcribe.mjs {file} {lang} {model}",
+      "args": ["file", "lang", "model"],
+      "defaults": {
+        "lang": "ru",
+        "model": "whisper-large-v3-turbo"
+      }
     }
   ]
 }
 ```
 
-Matching supports `mime`, `type`, or `match`; wildcards like `audio/*` are accepted. Command placeholders are substituted as argv, not shell text: `{filename}` and `{path}` are the downloaded file path, `{basename}` is the display filename, `{mime}` is the MIME type, and `{type}` is the Telegram attachment type. Tool handlers invoke a locally available tool by name, for example `transcribe_groq`; how that tool is provided is outside pi-telegram. Local attachments stay in the prompt under `[attachments] <directory>` with relative file entries; successful handler stdout is added under `[outputs]`; failed or empty handlers simply produce no output block.
+Matching supports `mime`, `type`, or `match`; wildcards like `audio/*` are accepted. Template placeholders are substituted into command args, not shell text: `{file}` is the downloaded file path, `{mime}` is the MIME type, `{type}` is the Telegram attachment type, and `defaults` can provide additional values such as `{lang}` or `{model}`. Local attachments stay in the prompt under `[attachments] <directory>` with relative file entries; successful handler stdout is added under `[outputs]`; failed handlers record diagnostics and fall back to the next matching handler. The portable command-template contract is documented in [`docs/command-templates.md`](./docs/command-templates.md); Telegram-specific handler config is documented in [`docs/attachment-handlers.md`](./docs/attachment-handlers.md).
 
 ### Requesting Files
 
@@ -139,10 +148,10 @@ Rich previews are sent through editable messages because Telegram drafts are tex
 
 ## Status bar
 
-The pi status bar shows queued Telegram turns as compact previews, for example:
+The pi status bar shows the current bridge state plus queued Telegram turns as compact previews. Busy labels distinguish states such as `active`, `dispatching`, `queued`, `tool running`, `model`, and `compacting`.
 
 ```text
-+3: [⬆ write a shell script…, summarize this image…, 📎 2 attachments]
+telegram queued +3: [⬆ write a shell script…, summarize this image…, 📎 2 attachments]
 ```
 
 ## Notes

@@ -13,11 +13,13 @@ import {
   createTelegramQueuedAttachmentSender,
   getTelegramAttachmentByteLimitFromEnv,
   queueTelegramAttachments,
+  registerTelegramAttachmentTool,
   sendQueuedTelegramAttachments,
   TELEGRAM_OUTBOUND_ATTACHMENT_DEFAULT_MAX_BYTES,
   type TelegramAttachmentQueueTargetView,
   type TelegramQueuedAttachmentTurnView,
 } from "../lib/attachments.ts";
+import type { ExtensionAPI } from "../lib/pi.ts";
 
 function createAttachmentQueueTarget(
   queuedAttachments: TelegramAttachmentQueueTargetView["queuedAttachments"] = [],
@@ -30,6 +32,14 @@ function createAttachmentTurn(
 ): TelegramQueuedAttachmentTurnView {
   return { chatId: 1, replyToMessageId: 2, queuedAttachments };
 }
+
+type RegisteredAttachmentTool = {
+  name?: string;
+  execute: (
+    toolCallId: string,
+    params: { paths: string[] },
+  ) => Promise<{ details: { paths: string[] } }>;
+};
 
 test("Attachment byte-limit helpers own the outbound file default", () => {
   assert.equal(
@@ -60,6 +70,28 @@ test("Attachment byte-limit helpers own the outbound file default", () => {
   );
 });
 
+test("Attachment tool registration delegates queueing", async () => {
+  let tool: RegisteredAttachmentTool | undefined;
+  const api = {
+    registerTool: (definition: RegisteredAttachmentTool) => {
+      tool = definition;
+    },
+  } as unknown as ExtensionAPI;
+  const activeTurn = createAttachmentQueueTarget();
+  registerTelegramAttachmentTool(api, {
+    maxAttachmentsPerTurn: 2,
+    getActiveTurn: () => activeTurn,
+    statPath: async () => ({ isFile: () => true }),
+  });
+  assert.equal(tool?.name, "telegram_attach");
+  assert.ok(tool);
+  const result = await tool.execute("tool-call", { paths: ["/tmp/report.md"] });
+  assert.deepEqual(activeTurn.queuedAttachments, [
+    { path: "/tmp/report.md", fileName: "report.md" },
+  ]);
+  assert.deepEqual(result.details.paths, ["/tmp/report.md"]);
+});
+
 test("Attachment queueing adds files to the active Telegram turn", async () => {
   const activeTurn = createAttachmentQueueTarget();
   const result = await queueTelegramAttachments({
@@ -72,6 +104,7 @@ test("Attachment queueing adds files to the active Telegram turn", async () => {
     { path: "/tmp/demo.txt", fileName: "demo.txt" },
   ]);
   assert.deepEqual(result.details.paths, ["/tmp/demo.txt"]);
+  assert.equal(result.content[0]?.text, "\nQueued 1 Telegram attachment(s).");
 });
 
 test("Attachment queueing uses the domain stat fallback", async () => {

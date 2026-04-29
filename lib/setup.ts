@@ -86,7 +86,11 @@ const TELEGRAM_BOT_TOKEN_ENV_VARS = [
 function isTelegramPollingStartResult(
   value: unknown,
 ): value is TelegramPollingStartResult {
-  return !!value && typeof value === "object" && typeof (value as { ok?: unknown }).ok === "boolean";
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as { ok?: unknown }).ok === "boolean"
+  );
 }
 
 export function getTelegramBotTokenInputDefault(

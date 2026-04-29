@@ -1,12 +1,17 @@
 /**
  * Telegram attachment domain helpers
- * Owns attachment queueing and attachment delivery so Telegram file output stays in one domain module
+ * Owns telegram_attach registration, attachment queueing, and attachment delivery so Telegram file output stays in one domain module
  */
 
 import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 
+import { Type } from "@sinclair/typebox";
+
+import type { ExtensionAPI } from "./pi.ts";
 import { buildTelegramMultipartReplyParameters } from "./replies.ts";
+
+const MAX_ATTACHMENTS_PER_TURN = 10;
 
 export const TELEGRAM_OUTBOUND_ATTACHMENT_DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
 
@@ -33,6 +38,21 @@ export const TELEGRAM_OUTBOUND_ATTACHMENT_MAX_BYTES =
 export interface TelegramAttachmentToolResult {
   content: Array<{ type: "text"; text: string }>;
   details: { paths: string[] };
+}
+
+export interface TelegramAttachmentRuntimeEventRecorderPort {
+  recordRuntimeEvent?: (
+    category: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
+}
+
+export interface TelegramAttachmentToolRegistrationDeps extends TelegramAttachmentRuntimeEventRecorderPort {
+  maxAttachmentsPerTurn?: number;
+  maxAttachmentSizeBytes?: number;
+  getActiveTurn: () => TelegramAttachmentQueueTargetView | undefined;
+  statPath?: (path: string) => Promise<{ isFile(): boolean; size?: number }>;
 }
 
 export interface TelegramQueuedAttachmentView {
@@ -67,6 +87,54 @@ function formatTelegramAttachmentSizeLimitError(
 ): string {
   const message = `Attachment exceeds size limit (${size} bytes > ${maxSize} bytes)`;
   return path ? `${message}: ${path}` : message;
+}
+
+function formatTelegramAttachmentToolResultText(count: number): string {
+  // Pi's compact tool rows need an empty first line to visually separate header and result
+  return ["", `Queued ${count} Telegram attachment(s).`].join("\n");
+}
+
+export function registerTelegramAttachmentTool(
+  pi: ExtensionAPI,
+  deps: TelegramAttachmentToolRegistrationDeps,
+): void {
+  const maxAttachmentsPerTurn =
+    deps.maxAttachmentsPerTurn ?? MAX_ATTACHMENTS_PER_TURN;
+  const maxAttachmentSizeBytes =
+    deps.maxAttachmentSizeBytes ?? TELEGRAM_OUTBOUND_ATTACHMENT_MAX_BYTES;
+  pi.registerTool({
+    name: "telegram_attach",
+    label: "Telegram Attach",
+    description:
+      "Queue one or more local files to be sent with the next Telegram reply.",
+    promptSnippet: "Queue local files to be sent with the next Telegram reply.",
+    promptGuidelines: [
+      "When handling a [telegram] message and the user asked for a file or generated artifact, call telegram_attach with the local path instead of only mentioning the path in text.",
+    ],
+    parameters: Type.Object({
+      paths: Type.Array(
+        Type.String({ description: "Local file path to attach" }),
+        { minItems: 1, maxItems: maxAttachmentsPerTurn },
+      ),
+    }),
+    async execute(_toolCallId, params) {
+      try {
+        return await queueTelegramAttachments({
+          activeTurn: deps.getActiveTurn(),
+          paths: params.paths,
+          maxAttachmentsPerTurn,
+          maxAttachmentSizeBytes,
+          statPath: deps.statPath,
+        });
+      } catch (error) {
+        deps.recordRuntimeEvent?.("attachment", error, {
+          phase: "queue",
+          count: params.paths.length,
+        });
+        throw error;
+      }
+    },
+  });
 }
 
 export interface TelegramQueuedAttachmentDeliveryDeps {
@@ -141,7 +209,7 @@ export async function queueTelegramAttachments(options: {
     content: [
       {
         type: "text",
-        text: `Queued ${added.length} Telegram attachment(s).`,
+        text: formatTelegramAttachmentToolResultText(added.length),
       },
     ],
     details: { paths: added },

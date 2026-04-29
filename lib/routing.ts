@@ -116,7 +116,8 @@ export function createTelegramInboundRouteRuntime<
     isIdle: deps.isIdle,
     hasActiveTelegramTurn: deps.activeTurnRuntime.has,
     hasAbortHandler: deps.bridgeRuntime.abort.hasHandler,
-    getActiveToolExecutions: deps.bridgeRuntime.lifecycle.getActiveToolExecutions,
+    getActiveToolExecutions:
+      deps.bridgeRuntime.lifecycle.getActiveToolExecutions,
     setModel: deps.setModel,
     setCurrentModel: deps.currentModelRuntime.setCurrentModel,
     stagePendingModelSwitch: deps.modelSwitchController.stagePendingSwitch,
@@ -138,7 +139,8 @@ export function createTelegramInboundRouteRuntime<
     hasActiveTelegramTurn: deps.activeTurnRuntime.has,
     hasDispatchPending: deps.bridgeRuntime.lifecycle.hasDispatchPending,
     isCompactionInProgress: deps.bridgeRuntime.lifecycle.isCompactionInProgress,
-    setCompactionInProgress: deps.bridgeRuntime.lifecycle.setCompactionInProgress,
+    setCompactionInProgress:
+      deps.bridgeRuntime.lifecycle.setCompactionInProgress,
     updateStatus: deps.updateStatus,
     dispatchNextQueuedTelegramTurn: deps.dispatchNextQueuedTelegramTurn,
     compact: deps.compact,
