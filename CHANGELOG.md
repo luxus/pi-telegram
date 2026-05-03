@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2: Telegram Reply Context
+
+- `[Telegram Replies]` Normal Telegram prompts now include quoted Telegram `reply_to_message` text/caption as a bounded `[reply]` context block. Impact: replying to an earlier Telegram message gives the agent the quoted context instead of only the new message text. Inspired by external PR #4 from @maphim.
+- `[Command Safety]` Slash-command parsing still uses only the new message text/caption, and reply context is injected only while building or editing queued prompt turns. Impact: replying with `/status`, `/model`, `/stop`, and other commands still executes the command instead of becoming a normal prompt.
+- `[Docs & Tests]` Updated README, architecture/context notes, package metadata, and media/turn regressions for reply-context forwarding, truncation, queued edits, and command-safe raw text extraction. Impact: the feature is documented and covered without weakening the existing queue/command split.
+
 ## 0.5.1: Stop Queue Reset Hotfix
 
 - `[Queue Safety]` Telegram `/stop` now clears all waiting Telegram queue items, resets pending model-switch/abort-history preservation state, and then aborts the active run when possible. Impact: queued priority/default/control turns can no longer leave the bridge stopped after an abort; the next Telegram message starts from a clean queue like a fresh TUI prompt.

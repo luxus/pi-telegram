@@ -130,6 +130,30 @@ test("Turn runtime builder extracts text, downloads files, and allocates order",
   );
 });
 
+test("Turn runtime builder injects Telegram reply context into prompt turns", async () => {
+  const buildTurn = createTelegramPromptTurnRuntimeBuilder({
+    allocateQueueOrder: () => 1,
+    downloadFile: async (_fileId, fileName) => `/tmp/${fileName}`,
+  });
+  const turn = await buildTurn([
+    {
+      message_id: 12,
+      chat: { id: 5 },
+      text: "Not yet",
+      reply_to_message: { text: "Have you seen the latest Claude update?" },
+    },
+  ]);
+  assert.equal(turn.statusSummary, "Not yet");
+  assert.equal(
+    turn.historyText,
+    "Not yet\n\n[reply] Have you seen the latest Claude update?",
+  );
+  assert.equal(
+    (turn.content[0] as { type: "text"; text: string }).text,
+    "[telegram] Not yet\n\n[reply] Have you seen the latest Claude update?",
+  );
+});
+
 test("Turn runtime builder routes attachment handler output into prompt text", async () => {
   const buildTurn = createTelegramPromptTurnRuntimeBuilder<
     {
@@ -282,6 +306,52 @@ test("Turn edit runtime binds queued prompt updates to status", () => {
     "[telegram] edited",
   );
   assert.deepEqual(events, ["items:1", "status:ctx"]);
+});
+
+test("Turn edit runtime keeps reply context prompt-only when queued messages change", () => {
+  let items = [
+    {
+      kind: "prompt" as const,
+      chatId: 99,
+      replyToMessageId: 10,
+      sourceMessageIds: [10],
+      queueOrder: 1,
+      queueLane: "default" as const,
+      laneOrder: 1,
+      queuedAttachments: [],
+      content: [{ type: "text" as const, text: "[telegram] old" }],
+      historyText: "old",
+      statusSummary: "old",
+    },
+  ];
+  const runtime = createTelegramQueuedPromptEditRuntime<
+    {
+      message_id: number;
+      text?: string;
+      reply_to_message?: { text?: string };
+    },
+    string
+  >({
+    getQueuedItems: () => items,
+    setQueuedItems: (nextItems) => {
+      items = nextItems as typeof items;
+    },
+    updateStatus: () => {},
+  });
+  runtime.updateFromEditedMessage(
+    {
+      message_id: 10,
+      text: "edited",
+      reply_to_message: { text: "quoted" },
+    },
+    "ctx",
+  );
+  assert.equal(
+    (items[0]?.content[0] as { text: string }).text,
+    "[telegram] edited\n\n[reply] quoted",
+  );
+  assert.equal(items[0]?.historyText, "edited\n\n[reply] quoted");
+  assert.equal(items[0]?.statusSummary, "edited");
 });
 
 test("Turn helpers preserve queued prompt attachments when captions are edited", () => {
