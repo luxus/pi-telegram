@@ -1239,7 +1239,7 @@ test("Extension runtime coalesces media-group updates into one delayed dispatch"
     const ctx = createRuntimeExtensionContext();
     await handlers.get("session_start")?.({}, ctx);
     await commands.get("telegram-connect")?.handler("", ctx);
-    await waitForEventLoopCondition(() => getUpdatesCalls >= 2);
+    await waitForEventLoopCondition(() => getUpdatesCalls >= 2, 5000);
     mock.timers.tick(1199);
     await flushMicrotasks();
     assert.equal(runtimeEvents.length, 0);

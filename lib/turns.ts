@@ -11,7 +11,10 @@ import {
   type DownloadedTelegramMessageFile,
   type DownloadTelegramMessageFilesDeps,
   downloadTelegramMessageFiles,
+  extractTelegramMessagesPromptText,
   extractTelegramMessagesText,
+  appendTelegramReplyContext,
+  extractTelegramReplyContextText,
   formatTelegramHistoryText,
   guessMediaType,
   type TelegramMediaMessage,
@@ -94,6 +97,11 @@ function appendTelegramAttachmentSection(
   return `${prefix}${header}\n${items.map((item) => `- ${item}`).join("\n")}`;
 }
 
+function appendTelegramPromptText(prompt: string, rawText: string): string {
+  if (!rawText) return prompt;
+  return `${prompt} ${rawText}`;
+}
+
 export function buildTelegramTurnPrompt(options: {
   telegramPrefix: string;
   rawText: string;
@@ -112,10 +120,10 @@ export function buildTelegramTurnPrompt(options: {
     prompt += "\n\nCurrent Telegram message:";
   }
   if (options.rawText.length > 0) {
-    prompt +=
+    prompt =
       (options.historyTurns?.length ?? 0) > 0
-        ? `\n${options.rawText}`
-        : ` ${options.rawText}`;
+        ? `${prompt}\n${options.rawText}`
+        : appendTelegramPromptText(prompt, options.rawText);
   }
   const promptFiles = options.promptFiles ?? options.files;
   prompt = appendTelegramAttachmentSection(prompt, promptFiles);
@@ -193,12 +201,11 @@ function buildEditedTelegramPromptText(options: {
       attachmentFiles,
     };
   }
-  const promptText =
-    options.rawText.length > 0
-      ? `${options.telegramPrefix} ${options.rawText}`
-      : options.telegramPrefix;
   return {
-    text: `${promptText}${attachmentSuffix}`,
+    text: `${appendTelegramPromptText(
+      options.telegramPrefix,
+      options.rawText,
+    )}${attachmentSuffix}`,
     attachmentFiles,
   };
 }
@@ -207,6 +214,7 @@ export function updateTelegramPromptTurnText(options: {
   turn: PendingTelegramTurn;
   telegramPrefix: string;
   rawText: string;
+  statusText?: string;
 }): PendingTelegramTurn {
   let attachmentFiles: DownloadedTelegramTurnFile[] = [];
   const nextContent = options.turn.content.map((block, index) => {
@@ -227,7 +235,7 @@ export function updateTelegramPromptTurnText(options: {
     content: nextContent,
     historyText: formatTelegramHistoryText(options.rawText, attachmentFiles),
     statusSummary: formatTelegramTurnStatusSummary(
-      options.rawText,
+      options.statusText ?? options.rawText,
       attachmentFiles,
     ),
   };
@@ -240,6 +248,7 @@ export function updateQueuedTelegramPromptTurnText<
   sourceMessageId: number | undefined;
   telegramPrefix: string;
   rawText: string;
+  statusText?: string;
 }): { items: TelegramQueueItem<TContext>[]; changed: boolean } {
   if (options.sourceMessageId === undefined) {
     return { items: options.items, changed: false };
@@ -257,6 +266,7 @@ export function updateQueuedTelegramPromptTurnText<
       turn: item,
       telegramPrefix: options.telegramPrefix,
       rawText: options.rawText,
+      statusText: options.statusText,
     });
   });
   return { items, changed };
@@ -278,7 +288,8 @@ export function createTelegramQueuedPromptEditRuntime<
         items: deps.getQueuedItems(),
         sourceMessageId: message.message_id,
         telegramPrefix: TELEGRAM_PREFIX,
-        rawText: extractTelegramMessagesText([message]),
+        rawText: extractTelegramMessagesPromptText([message]),
+        statusText: extractTelegramMessagesText([message]),
       });
       deps.setQueuedItems(items);
       if (changed) deps.updateStatus(ctx);
@@ -293,6 +304,7 @@ export interface BuildTelegramPromptTurnOptions {
   historyTurns?: PendingTelegramTurn[];
   queueOrder: number;
   rawText: string;
+  statusText?: string;
   files: DownloadedTelegramTurnFile[];
   promptFiles?: DownloadedTelegramTurnFile[];
   handlerOutputs?: string[];
@@ -332,18 +344,26 @@ export function createTelegramPromptTurnRuntimeBuilder<
 ) => Promise<PendingTelegramTurn> {
   return async (messages, historyTurns = [], ctx) => {
     const rawText = extractTelegramMessagesText(messages);
+    const replyContext = messages[0]
+      ? extractTelegramReplyContextText(messages[0])
+      : "";
     const files = await downloadTelegramMessageFiles(messages, {
       downloadFile: deps.downloadFile,
     });
     const processed = deps.processAttachments
       ? await deps.processAttachments(files, rawText, ctx as TContext)
       : { rawText, promptFiles: files };
+    const promptText = appendTelegramReplyContext(
+      processed.rawText,
+      replyContext,
+    );
     return buildTelegramPromptTurnRuntime({
       telegramPrefix: TELEGRAM_PREFIX,
       messages,
       historyTurns,
       queueOrder: deps.allocateQueueOrder(),
-      rawText: processed.rawText,
+      rawText: promptText,
+      statusText: processed.rawText,
       files,
       promptFiles: processed.promptFiles,
       handlerOutputs: processed.handlerOutputs,
@@ -399,7 +419,7 @@ export async function buildTelegramPromptTurn(
       options.handlerOutputs,
     ),
     statusSummary: formatTelegramTurnStatusSummary(
-      options.rawText,
+      options.statusText ?? options.rawText,
       options.promptFiles ?? options.files,
       options.handlerOutputs,
     ),
