@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1: Stop Queue Reset Hotfix
+
+- `[Queue Safety]` Telegram `/stop` now clears all waiting Telegram queue items, resets pending model-switch/abort-history preservation state, and then aborts the active run when possible. Impact: queued priority/default/control turns can no longer leave the bridge stopped after an abort; the next Telegram message starts from a clean queue like a fresh TUI prompt.
+- `[Docs & Tests]` Updated README, architecture notes, agent context, and queue/runtime/command regressions for the new stop/reset contract. Impact: the hotfix behavior is documented and covered by the high-risk stop plus queue path.
+
 ## 0.5.0: Command Templates, Domain Boundaries & Queue UX
 
 - `[Queue UX]` Telegram `/status` and `/model` now execute immediately, post-agent-end queue dispatch retries after pi settles idle state, and the status bar shows specific busy labels (`active`, `dispatching`, `queued`, `tool running`, `model`). Reaction priority remains local and applies to text, voice, file, image, and media-group turns without introducing pi steering semantics. Impact: controls do not get stuck behind generation, queued work no longer needs a later Telegram update to unstick, and attachment turns keep predictable ordering.

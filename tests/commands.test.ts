@@ -83,7 +83,10 @@ test("Command helpers expose Telegram bot command definitions", () => {
     },
     { command: "model", description: "Open the interactive model selector" },
     { command: "compact", description: "Compact the current pi session" },
-    { command: "stop", description: "Abort the current pi task" },
+    {
+      command: "stop",
+      description: "Abort the current pi task and clear queued turns",
+    },
   ]);
 });
 
@@ -451,17 +454,20 @@ test("Command helpers run stop command side effects", async () => {
   await handleTelegramStopCommand({
     hasAbortHandler: () => false,
     clearPendingModelSwitch: () => {
-      events.push("unexpected:clear");
+      events.push("clear");
     },
-    hasQueuedTelegramItems: () => false,
-    setPreserveQueuedTurnsAsHistory: () => {
-      events.push("unexpected:preserve");
+    clearQueuedTelegramItems: () => {
+      events.push("clear-queue:2");
+      return 2;
+    },
+    setPreserveQueuedTurnsAsHistory: (preserve) => {
+      events.push(`preserve:${preserve}`);
     },
     abortCurrentTurn: () => {
       events.push("unexpected:abort");
     },
     updateStatus: () => {
-      events.push("unexpected:status");
+      events.push("status");
     },
     sendTextReply: async (text) => {
       events.push(`reply:${text}`);
@@ -472,7 +478,10 @@ test("Command helpers run stop command side effects", async () => {
     clearPendingModelSwitch: () => {
       events.push("clear");
     },
-    hasQueuedTelegramItems: () => true,
+    clearQueuedTelegramItems: () => {
+      events.push("clear-queue:1");
+      return 1;
+    },
     setPreserveQueuedTurnsAsHistory: (preserve) => {
       events.push(`preserve:${preserve}`);
     },
@@ -487,12 +496,17 @@ test("Command helpers run stop command side effects", async () => {
     },
   });
   assert.deepEqual(events, [
-    "reply:No active turn.",
     "clear",
-    "preserve:true",
+    "clear-queue:2",
+    "preserve:false",
+    "status",
+    "reply:No active turn. Cleared 2 queued turns.",
+    "clear",
+    "clear-queue:1",
+    "preserve:false",
     "abort",
     "status",
-    "reply:Aborted current turn.",
+    "reply:Aborted current turn. Cleared 1 queued turn.",
   ]);
 });
 
@@ -739,6 +753,7 @@ test("Command handler target runtime binds command targets into command handling
     hasAbortHandler: () => false,
     clearPendingModelSwitch: () => {},
     hasQueuedTelegramItems: () => false,
+    clearQueuedTelegramItems: () => 0,
     setPreserveQueuedTurnsAsHistory: () => {},
     abortCurrentTurn: () => {},
     isIdle: () => true,
@@ -787,8 +802,12 @@ test("Command runtime routes commands through runtime ports", async () => {
       events.push("clear-switch");
     },
     hasQueuedTelegramItems: () => false,
-    setPreserveQueuedTurnsAsHistory: () => {
-      events.push("preserve");
+    clearQueuedTelegramItems: () => {
+      events.push("clear-queue");
+      return 0;
+    },
+    setPreserveQueuedTurnsAsHistory: (preserve: boolean) => {
+      events.push(`preserve:${preserve}`);
     },
     abortCurrentTurn: () => {
       events.push("abort");
@@ -874,6 +893,8 @@ test("Command runtime routes commands through runtime ports", async () => {
     "dispatch",
     "reply:99:Compaction completed.",
     "clear-switch",
+    "clear-queue",
+    "preserve:false",
     "abort",
     "status",
     "reply:99:Aborted current turn.",

@@ -15,6 +15,7 @@ import {
   buildTelegramSessionShutdownState,
   buildTelegramSessionStartState,
   canDispatchTelegramTurnState,
+  clearTelegramQueueItemsRuntime,
   clearTelegramQueuePromptPriority,
   clearTelegramQueuePromptPriorityRuntime,
   compareTelegramQueueItems,
@@ -382,7 +383,9 @@ test("Queue mutation controller binds queue accessors to runtime mutations", () 
   assert.equal(nextPriorityOrder, 8);
   assert.equal(controller.clearPriorityByMessageId(11, "c"), true);
   assert.equal(controller.removeByMessageIds([11], "d"), 1);
-  assert.deepEqual(events, ["a", "append", "b", "c", "d"]);
+  assert.equal(controller.clear("e"), 2);
+  assert.deepEqual(queuedItems, []);
+  assert.deepEqual(events, ["a", "append", "b", "c", "d", "e"]);
 });
 
 test("Queue mutation runtime removes, sorts, and reprioritizes prompts", () => {
@@ -450,6 +453,9 @@ test("Queue mutation runtime removes, sorts, and reprioritizes prompts", () => {
     queuedItems.map((item) => item.statusSummary),
     ["control", "priority"],
   );
+  assert.equal(clearTelegramQueueItemsRuntime<string>(deps), 2);
+  assert.deepEqual(queuedItems, []);
+  assert.equal(clearTelegramQueueItemsRuntime<string>(deps), 0);
   assert.deepEqual(events, [
     "items:prompt,control,priority",
     "items:control,prompt,priority",
@@ -459,6 +465,8 @@ test("Queue mutation runtime removes, sorts, and reprioritizes prompts", () => {
     "items:control,prompt,priority",
     "status:ctx",
     "items:control,priority",
+    "status:ctx",
+    "items:",
     "status:ctx",
   ]);
 });

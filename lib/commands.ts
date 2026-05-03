@@ -32,7 +32,10 @@ export const TELEGRAM_BOT_COMMANDS: readonly TelegramBotCommandDefinition[] = [
   },
   { command: "model", description: "Open the interactive model selector" },
   { command: "compact", description: "Compact the current pi session" },
-  { command: "stop", description: "Abort the current pi task" },
+  {
+    command: "stop",
+    description: "Abort the current pi task and clear queued turns",
+  },
 ];
 
 export interface TelegramBotCommandRegistrationDeps {
@@ -178,7 +181,7 @@ export interface TelegramCommandActionDeps<TMessage, TContext> {
 export interface TelegramStopCommandDeps {
   hasAbortHandler: () => boolean;
   clearPendingModelSwitch: () => void;
-  hasQueuedTelegramItems: () => boolean;
+  clearQueuedTelegramItems: () => number;
   setPreserveQueuedTurnsAsHistory: (preserve: boolean) => void;
   abortCurrentTurn: () => void;
   updateStatus: () => void;
@@ -408,6 +411,7 @@ export interface TelegramCommandRuntimeDeps<
   hasAbortHandler: () => boolean;
   clearPendingModelSwitch: () => void;
   hasQueuedTelegramItems: () => boolean;
+  clearQueuedTelegramItems: (ctx: TContext) => number;
   setPreserveQueuedTurnsAsHistory: (preserve: boolean) => void;
   abortCurrentTurn: () => void;
   isIdle: (ctx: TContext) => boolean;
@@ -439,7 +443,7 @@ export interface TelegramCommandRuntimeDeps<
 }
 
 export const TELEGRAM_HELP_TEXT =
-  "Send me a message and I will forward it to pi. Commands: /status, /model, /compact, /stop.";
+  "Send me a message and I will forward it to pi. Commands: /status, /model, /compact, /stop. /stop aborts the current run and clears queued Telegram turns.";
 
 function getTelegramCommandErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -482,20 +486,32 @@ export function getTelegramCommandExecutionMode(
   return action.executionMode;
 }
 
+function formatTelegramQueuedTurnCount(count: number): string {
+  return count === 1 ? "1 queued turn" : `${count} queued turns`;
+}
+
 export async function handleTelegramStopCommand(
   deps: TelegramStopCommandDeps,
 ): Promise<void> {
-  if (!deps.hasAbortHandler()) {
-    await deps.sendTextReply("No active turn.");
-    return;
-  }
   deps.clearPendingModelSwitch();
-  if (deps.hasQueuedTelegramItems()) {
-    deps.setPreserveQueuedTurnsAsHistory(true);
+  const clearedCount = deps.clearQueuedTelegramItems();
+  deps.setPreserveQueuedTurnsAsHistory(false);
+  if (!deps.hasAbortHandler()) {
+    const clearedSuffix =
+      clearedCount > 0
+        ? ` Cleared ${formatTelegramQueuedTurnCount(clearedCount)}.`
+        : "";
+    if (clearedCount > 0) deps.updateStatus();
+    await deps.sendTextReply(`No active turn.${clearedSuffix}`);
+    return;
   }
   deps.abortCurrentTurn();
   deps.updateStatus();
-  await deps.sendTextReply("Aborted current turn.");
+  const clearedSuffix =
+    clearedCount > 0
+      ? ` Cleared ${formatTelegramQueuedTurnCount(clearedCount)}.`
+      : "";
+  await deps.sendTextReply(`Aborted current turn.${clearedSuffix}`);
 }
 
 export async function handleTelegramCompactCommand(
@@ -656,6 +672,7 @@ export function createTelegramCommandHandlerTargetRuntime<
     hasAbortHandler: deps.hasAbortHandler,
     clearPendingModelSwitch: deps.clearPendingModelSwitch,
     hasQueuedTelegramItems: deps.hasQueuedTelegramItems,
+    clearQueuedTelegramItems: deps.clearQueuedTelegramItems,
     setPreserveQueuedTurnsAsHistory: deps.setPreserveQueuedTurnsAsHistory,
     abortCurrentTurn: deps.abortCurrentTurn,
     isIdle: deps.isIdle,
@@ -736,7 +753,8 @@ async function handleTelegramCommandRuntime<
         await handleTelegramStopCommand({
           hasAbortHandler: deps.hasAbortHandler,
           clearPendingModelSwitch: deps.clearPendingModelSwitch,
-          hasQueuedTelegramItems: deps.hasQueuedTelegramItems,
+          clearQueuedTelegramItems: () =>
+            deps.clearQueuedTelegramItems(commandCtx),
           setPreserveQueuedTurnsAsHistory: deps.setPreserveQueuedTurnsAsHistory,
           abortCurrentTurn: deps.abortCurrentTurn,
           updateStatus: updateStatusFor(commandCtx),
