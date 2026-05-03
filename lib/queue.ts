@@ -1061,6 +1061,7 @@ export interface TelegramQueueMutationControllerDeps<
 export interface TelegramQueueMutationController<TContext> {
   append: (item: TelegramQueueItem<TContext>, ctx: TContext) => void;
   reorder: (ctx: TContext) => void;
+  clear: (ctx: TContext) => number;
   removeByMessageIds: (messageIds: number[], ctx: TContext) => number;
   clearPriorityByMessageId: (messageId: number, ctx: TContext) => boolean;
   prioritizeByMessageId: (messageId: number, ctx: TContext) => boolean;
@@ -1262,6 +1263,7 @@ export function createTelegramQueueMutationController<TContext>(
     append: (item, ctx) =>
       appendTelegramQueueItemRuntime(item, buildRuntimeDeps(ctx)),
     reorder: (ctx) => reorderTelegramQueueItemsRuntime(buildRuntimeDeps(ctx)),
+    clear: (ctx) => clearTelegramQueueItemsRuntime(buildRuntimeDeps(ctx)),
     removeByMessageIds: (messageIds, ctx) =>
       removeTelegramQueueItemsByMessageIdsRuntime(
         messageIds,
@@ -1289,6 +1291,16 @@ export function reorderTelegramQueueItemsRuntime<TContext>(
     [...deps.getQueuedItems()].sort(compareTelegramQueueItems),
   );
   deps.updateStatus(deps.ctx);
+}
+
+export function clearTelegramQueueItemsRuntime<TContext>(
+  deps: TelegramQueueMutationRuntimeDeps<TContext>,
+): number {
+  const removedCount = deps.getQueuedItems().length;
+  if (removedCount === 0) return 0;
+  deps.setQueuedItems([]);
+  deps.updateStatus(deps.ctx);
+  return removedCount;
 }
 
 export function removeTelegramQueueItemsByMessageIdsRuntime<TContext>(

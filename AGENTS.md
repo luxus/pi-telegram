@@ -57,6 +57,7 @@
 - Queued items have explicit kinds and lanes so prompt turns and synthetic control actions can share one ordering model
 - Keep queue admission contract explicit and validated: immediate commands execute without entering the queue, control commands enter the `control` lane, normal prompts enter the `default` lane, reaction-promoted prompts enter the `priority` lane, and queue append/planning paths should reject invalid kind/lane pairings predictably
 - Dispatch must still respect active turns, pending prompt dispatch, unsettled control-item execution, compaction, and pi pending-message state
+- Telegram `/stop` is a queue-reset command: clear pending model-switch state, all queued Telegram items, and aborted-turn history preservation before aborting the active run so the next Telegram message starts from a clean queue.
 - Long-lived timers, pollers, and ownership watchers must not depend on live pi context objects after session replacement. Snapshot primitive identity such as `cwd` when installing a watcher, stop local timers during session shutdown, and catch stale-context status updates during async cleanup.
 - Prompt items should remain in the queue until `agent_start` consumes the dispatched turn; removing them earlier breaks active-turn binding, preview delivery, and end-of-turn follow-up behavior
 - In-flight `/model` switching is supported only for Telegram-owned active turns and is implemented as set-model plus synthetic continuation turn plus abort

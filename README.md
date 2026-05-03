@@ -82,7 +82,7 @@ Use these inside the Telegram DM with your bot:
 - **`/status`**: View session stats, cost, and use inline buttons to change models.
 - **`/model`**: Open the interactive model selector.
 - **`/compact`**: Start session compaction (only works when the session is idle).
-- **`/stop`**: Abort the active run.
+- **`/stop`**: Abort the active run and clear all waiting Telegram queue items.
 
 Telegram command admission is explicit: `/compact`, `/stop`, `/help`, `/start`, `/status`, and `/model` execute immediately. Synthetic model-switch continuation turns still enter the high-priority control lane so they can resume before normal queued prompts when pi becomes safe to dispatch.
 

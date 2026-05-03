@@ -92,7 +92,7 @@ Admission contract:
 
 | Admission             | Examples                                             | Queue shape                                                          | Dispatch rank |
 | --------------------- | ---------------------------------------------------- | -------------------------------------------------------------------- | ------------- |
-| Immediate execution   | `/compact`, `/stop`, `/help`, `/start`               | Does not enter the Telegram queue                                    | N/A           |
+| Immediate execution   | `/compact`, `/stop`, `/help`, `/start`               | Does not enter the Telegram queue; `/stop` also clears queued items  | N/A           |
 | Control queue         | Model-switch continuation turns and future deferred controls | `queueLane: control`; accepts control items and continuation prompts | 0             |
 | Priority prompt queue | A waiting prompt promoted by `👍`                    | `kind: prompt`, `queueLane: priority`                                | 1             |
 | Default prompt queue  | Normal Telegram text/media turns                     | `kind: prompt`, `queueLane: default`                                 | 2             |
@@ -113,7 +113,7 @@ This prevents queue races around rapid follow-ups, `/compact`, and mixed local p
 
 ### Abort Behavior
 
-When `/stop` aborts an active Telegram turn, queued follow-up Telegram messages can be preserved as prior-user history for the next turn. This keeps later Telegram input from being silently dropped after an interrupted run.
+When `/stop` runs from Telegram, it clears pending model-switch state, clears every waiting Telegram queue item, resets aborted-turn history preservation, and then aborts the active Telegram turn when an abort handler exists. This intentionally favors recovery over preservation: priority/default/control queue items are dropped so the next Telegram message can enter a clean queue and dispatch like a fresh TUI prompt after an interrupted run.
 
 ## Rendering Model
 
@@ -162,7 +162,7 @@ Current operator controls include:
 - Inline status buttons for model and thinking adjustments, applying idle selections immediately while still respecting busy-run restart rules; model-menu inputs are cached briefly and stored inline-menu states are pruned by TTL/LRU so old keyboards expire predictably
 - `/model` for interactive model selection, executed immediately from Telegram and supporting in-flight restart of the active Telegram-owned run on a newly selected model
 - `/compact` for Telegram-triggered pi session compaction when the bridge is idle
-- `/stop` for aborting the active Telegram-owned run
+- `/stop` for aborting the active Telegram-owned run and clearing waiting Telegram queue items
 - `/telegram-status` for pi-side diagnostics as grouped line-by-line sections separated by blank lines: connection, polling, execution, queue, and the recent redacted runtime/API event ring. These sections include polling state, last update id, active turn source ids, pending dispatch, compaction state, active tool count, pending model-switch state, total queue depth, and queue-lane counts. The event ring records transport/API, polling/update, prompt-dispatch, control-action, typing, compaction, setup, session-lifecycle, and attachment queue/delivery failures; benign unchanged edit responses and unsupported empty draft-clear attempts are filtered out so expected preview transport noise does not obscure real failures
 - Queue reactions using `👍` and `👎` apply to waiting text, voice, file, image, and media-group turns by matching the turn's source Telegram message ids; `👎` acts as the canonical queue-removal path because ordinary Telegram DM message deletions are not exposed through the Bot API polling path this bridge uses
 

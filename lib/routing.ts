@@ -131,6 +131,7 @@ export function createTelegramInboundRouteRuntime<
     hasAbortHandler: deps.bridgeRuntime.abort.hasHandler,
     clearPendingModelSwitch: deps.modelSwitchController.clearPendingSwitch,
     hasQueuedTelegramItems: deps.telegramQueueStore.hasQueuedItems,
+    clearQueuedTelegramItems: deps.queueMutationRuntime.clear,
     setPreserveQueuedTurnsAsHistory:
       deps.bridgeRuntime.lifecycle.setPreserveQueuedTurnsAsHistory,
     abortCurrentTurn: deps.bridgeRuntime.abort.abortTurn,

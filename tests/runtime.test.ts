@@ -702,7 +702,7 @@ test("Extension runtime finalizes a drafted preview into the final Telegram repl
   }
 });
 
-test("Extension runtime carries queued follow-ups into history after an aborted turn", async () => {
+test("Extension runtime clears queued follow-ups after a Telegram stop", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
   const sentMessages: RuntimeHarnessMessage[] = [];
   let firstDispatchResolved = false;
@@ -823,14 +823,12 @@ test("Extension runtime carries queued follow-ups into history after an aborted 
       () => sentMessages.length === dispatchCountBeforeNextTurn + 1,
     );
     const promptText = getRuntimeHarnessTextBlock(sentMessages.at(-1)).text ?? "";
-    assert.match(promptText, /^\[telegram\]/);
-    assert.match(
-      promptText,
-      /Earlier Telegram messages arrived after an aborted turn/,
+    assert.equal(promptText, "[telegram] new request");
+    assert.equal(promptText.includes("follow up"), false);
+    assert.equal(
+      sendTexts.includes("Aborted current turn. Cleared 1 queued turn."),
+      true,
     );
-    assert.match(promptText, /1\. follow up/);
-    assert.match(promptText, /Current Telegram message:\nnew request/);
-    assert.equal(sendTexts.includes("Aborted current turn."), true);
     await handlers.get("session_shutdown")?.({}, idleCtx);
   } finally {
     restoreFetch();
