@@ -838,7 +838,7 @@ test("Extension runtime carries queued follow-ups into history after an aborted 
   }
 });
 
-test("Extension runtime runs queued status control before the next queued prompt after agent end", async () => {
+test("Extension runtime handles immediate status before queued prompt after agent end", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
   const runtimeEvents: string[] = [];
   let firstDispatchResolved = false;
@@ -964,7 +964,7 @@ test("Extension runtime runs queued status control before the next queued prompt
   }
 });
 
-test("Extension runtime runs queued model control before the next queued prompt after agent end", async () => {
+test("Extension runtime opens immediate model menu before queued prompt after agent end", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();
   const runtimeEvents: string[] = [];
   const modelA = createRuntimeModel("openai", "gpt-a", true);

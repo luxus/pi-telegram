@@ -23,7 +23,7 @@
 ## 3. Project Topology
 
 - `/index.ts`: Main extension entrypoint and runtime composition layer for the bridge
-- `/lib/*.ts`: Flat domain modules for reusable runtime logic. Favor domain files such as queueing/runtime, replies, polling, updates, attachments, registration/hooks, pi SDK adapter, Telegram API, config, turns, media, setup, rendering, menu/status/model-resolution support, and other cohesive bridge subsystems; use `shared` only when a type or constant truly spans multiple domains
+- `/lib/*.ts`: Flat domain modules for reusable runtime logic. Favor domain files such as queueing/runtime, replies, polling, updates, attachments, commands, lifecycle hooks, prompts, pi SDK adapter, Telegram API, config, turns, media, setup, rendering, menu/status/model-resolution support, and other cohesive bridge subsystems; use `shared` only when a type or constant truly spans multiple domains
 - `/tests/*.test.ts`: Domain-mirrored regression suites that follow the same flat naming as `/lib`
 - `/docs/README.md`: Documentation index for technical project docs
 - `/docs/architecture.md`: Runtime and subsystem overview for the bridge
@@ -31,7 +31,6 @@
 - `/AGENTS.md`: Durable engineering and runtime conventions
 - `/BACKLOG.md`: Canonical open work
 - `/CHANGELOG.md`: Completed delivery history
-- [Repository-local context-evolution skill](./.agents/skills/evolve-context/README.md): Skill reference used by validation tooling
 
 ## 4. Core Entities
 
@@ -86,19 +85,20 @@
 - Keep comments and user-facing docs in English unless the surrounding file already follows another convention
 - Each project `.ts` file should start with a short multi-line responsibility header comment that explains the file boundary to future maintainers
 - Name extracted `/lib` modules and mirrored `/tests` suites by bare domain when the repository already supplies the Telegram scope; prefer `api.ts`, `queue.ts`, `updates.ts`, and `queue.test.ts` over redundant `telegram-*` filename prefixes
+- Keep test helpers with the mirrored domain suite by default because test files mirror module-domain boundaries; introduce shared `tests/fixtures` only when multiple domain suites truly reuse the same setup
 - Prefer targeted edits, keeping `index.ts` as the orchestration layer and moving reusable logic into flat `/lib` domain modules when a subsystem becomes large enough to earn extraction
 - Keep composition wiring DRY with small local adapters or owning-domain contracts when repetition appears, but do not hide live mutable session state behind broad facades just to reduce repeated closures
 - Keep interface contracts consistent for the same runtime entity: prefer the owning domain's exported contract when multiple modules mean the same entity, and use local structural `*Like`/view contracts only for deliberate narrow projections that avoid real coupling without duplicating source-of-truth shapes
 
 ## 6.3 Current Domain Ownership Snapshot
 
-- Queue owns scheduling/lifecycle semantics: lane contracts, queue and active-turn stores, mutations, dispatch readiness/runtime, control/prompt enqueueing, session state appliers, and agent/tool lifecycle hooks; model owns model identity/thinking-level contracts, scoped resolution and CLI pattern parsing, current-model state/runtime helpers, in-flight switch state, restart eligibility, delayed abort decisions, Telegram-prefix-defaulted continuation prompt construction/queueing, and controller runtime binding over queue turns
-- Runtime owns session-local primitives and timers; locks owns shared `locks.json` singleton ownership, interactive takeover, stale same-`cwd` restart resume, session-replacement suspension, and ownership-drift shutdown; pi owns direct SDK imports and bound extension API ports; config owns persisted bot/session pairing state, single-user authorization, first-user pairing side effects, and inbound attachment handler config; API owns Bot API transport shapes/helpers, temp-dir/inbound-limit/runtime-error helpers, and runtime-bound chat actions
-- Preview owns streaming preview lifecycle and transports, defaulting reply metadata through the replies-domain helper when callers do not override it; replies owns final rendered-message delivery and reply parameters; rendering owns Telegram HTML Markdown/block/chunk/preview-snapshot formatting
-- Polling owns long-poll controller state/activity/loop wiring; updates owns callback/message/edit/reaction classification/execution; routing owns inbound update composition across menus, commands, media grouping, prompt queueing, edits, and paired authorization; handlers owns inbound attachment handler matching, command/tool invocation, prompt-text injection, and fallback behavior; registration owns pi tool/command/lifecycle-hook binding
-- Commands own slash-command parsing, execution-mode contracts, command target/control queue adapters, bot-command metadata/registration, and stop/compact/status/model/help side effects
-- Menu owns inline menu state/cache/building, callback/action runtimes, status/thinking/model UI support, and selection planning; status owns bridge status rendering, grouped pi-side diagnostic lines, and recent-event state
-- Turns own Telegram prompt turn-building/editing, prompt-prefix identity, and attachment-handler output handoff into prompt content; media owns inbound text/file/media-group extraction and download assembly; attachments own outbound file queueing, narrow structural attachment turn targets, stat checks, limits, and delivery classification; setup owns token prompt, env fallback, and validation flow
+The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/architecture.md). Keep this section as a compact agent-facing index, not a second copy of the full map.
+
+- Scheduling and lifecycle: `queue`, `runtime`, `lifecycle`, `locks`
+- Telegram transport and inbound flow: `api`, `polling`, `updates`, `routing`, `media`, `turns`, `handlers`, `config`, `setup`
+- Response surfaces: `preview`, `replies`, `rendering`, `attachments`, `status`
+- Controls and model UI: `commands`, `menu`, `model`, `prompts`
+- Pi SDK boundary: `pi` owns direct pi imports and bound extension API ports
 
 ## 6.4 Entrypoint And Import Boundaries
 
@@ -126,6 +126,7 @@
 - For `/telegram-setup`, prefer the locally saved bot token over environment variables on repeat setup runs; env vars are the bootstrap path when no local token exists
 - Status/model/thinking controls are driven through Telegram inline keyboards and callback queries
 - Inbound files may become pi image inputs or configured attachment-handler text before queueing; outbound files must flow through `telegram_attach`
+- Inbound attachment handlers use command templates as the standard integration contract; do not couple handler execution to another extension's private registry or config format unless pi exposes a public extension-callable `executeTool(name, args)` API
 
 ## 9. Pre-Task Preparation Protocol
 

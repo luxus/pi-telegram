@@ -14,6 +14,7 @@ import {
   createTelegramRuntimeEventRecorder,
   createTelegramStatusHtmlBuilder,
   createTelegramStatusRuntime,
+  getTelegramStatusBarProcessingStatus,
   recordStructuredTelegramRuntimeEvent,
   recordTelegramRuntimeEvent,
   type TelegramRuntimeEvent,
@@ -44,6 +45,18 @@ test("Status bar text renders bridge connection and queue states", () => {
       queuedStatus: " +1: [next]",
     }),
     "<accent>telegram</accent> <accent>processing</accent><muted> +1: [next]</muted>",
+  );
+  assert.equal(
+    buildTelegramStatusBarText(theme, {
+      hasBotToken: true,
+      pollingActive: true,
+      paired: true,
+      compactionInProgress: false,
+      processing: true,
+      processingStatus: "dispatching",
+      queuedStatus: " +1: [next]",
+    }),
+    "<accent>telegram</accent> <accent>dispatching</accent><muted> +1: [next]</muted>",
   );
   assert.equal(
     buildTelegramStatusBarText(theme, {
@@ -107,6 +120,49 @@ test("Status runtime updates the status bar and exposes bridge lines", () => {
   ]);
 });
 
+test("Status bar processing labels prefer the most specific live state", () => {
+  assert.equal(
+    getTelegramStatusBarProcessingStatus({
+      hasActiveTurn: true,
+      hasPendingDispatch: true,
+      hasPendingModelSwitch: true,
+      activeToolExecutions: 1,
+      queuedItems: 1,
+    }),
+    "model",
+  );
+  assert.equal(
+    getTelegramStatusBarProcessingStatus({
+      hasActiveTurn: false,
+      hasPendingDispatch: false,
+      hasPendingModelSwitch: false,
+      activeToolExecutions: 1,
+      queuedItems: 1,
+    }),
+    "tool running",
+  );
+  assert.equal(
+    getTelegramStatusBarProcessingStatus({
+      hasActiveTurn: false,
+      hasPendingDispatch: true,
+      hasPendingModelSwitch: false,
+      activeToolExecutions: 0,
+      queuedItems: 1,
+    }),
+    "dispatching",
+  );
+  assert.equal(
+    getTelegramStatusBarProcessingStatus({
+      hasActiveTurn: false,
+      hasPendingDispatch: false,
+      hasPendingModelSwitch: false,
+      activeToolExecutions: 0,
+      queuedItems: 1,
+    }),
+    "queued",
+  );
+});
+
 test("Bridge status runtime builds status state from live ports", () => {
   const events: string[] = [];
   const runtime = createTelegramBridgeStatusRuntime({
@@ -142,7 +198,7 @@ test("Bridge status runtime builds status state from live ports", () => {
   });
   assert.equal(
     events[0],
-    "telegram:<accent>telegram</accent> <accent>processing</accent><muted> +1: [⚡ status]</muted>",
+    "telegram:<accent>telegram</accent> <accent>model</accent><muted> +1: [⚡ status]</muted>",
   );
   assert.deepEqual(runtime.getStatusLines(), [
     "connection:",

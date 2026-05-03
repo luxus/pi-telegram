@@ -21,37 +21,33 @@ Interface consistency rule: when two modules mean the same runtime entity, they 
 
 Naming rule: because the repository already scopes this codebase to Telegram, extracted module and test filenames use bare domain names such as `api.ts`, `queue.ts`, `updates.ts`, and `queue.test.ts` rather than repeating `telegram-*` in every filename.
 
-Current runtime areas include:
+Current runtime areas use these ownership boundaries:
 
-- Telegram Bot API concrete transport shapes live with Telegram API helpers in `/lib/api.ts`, while persisted bot/session pairing state lives in `/lib/config.ts`; domain-owned runtime state types stay with their owners, such as queued/active turn state in `/lib/queue.ts` and preview state in `/lib/preview.ts`, while domain helpers prefer local structural `*Like` contracts instead of importing concrete wire DTOs
-- Direct pi SDK imports are centralized in `/lib/pi.ts`, which exposes concrete pi SDK type exports, bound extension API runtime ports, and narrow bridge-facing helpers such as settings-manager creation plus context model/idle/pending-message/compaction adapters; `index.ts` uses this adapter namespace instead of importing `@mariozechner/pi-coding-agent` directly
-- Session-local runtime primitives such as queue/control/priority ordering counters, lifecycle/dispatch flags, setup guard state, abort-handler storage/binding, typing-loop timer lifecycle, typing-loop starter binding, prompt-dispatch lifecycle/runtime adapters, and agent-end reset sequencing in `/lib/runtime.ts`; the runtime domain's essence is mutable cross-domain session coordination rather than business behavior. It exposes a grouped bridge runtime facade with named queue/lifecycle/setup/abort/typing ports that bind those primitives to one session state while remaining a cohesive state/runtime boundary, and `index.ts` still wires live Telegram API calls and status updates into those helpers. Preview-specific state, draft-support detection, and draft-id allocation live in `/lib/preview.ts`.
-- Constants live in their owning domains instead of a shared constants module: API paths/inbound limits and inbound file-size env parsing in `/lib/api.ts`, outbound attachment limits and outbound attachment-size env parsing in `/lib/attachments.ts`, media-group debounce in `/lib/media.ts`, attachment-handler timeout and local tool lookup defaults in `/lib/handlers.ts`, menu cache/state bounds in `/lib/menu.ts`, preview throttle/draft bounds in `/lib/preview.ts`, typing cadence in `/lib/runtime.ts`, diagnostic ring limits in `/lib/status.ts`, Telegram prompt prefix in `/lib/turns.ts`, and system-prompt guidance in `/lib/registration.ts`.
-- Queueing, narrow Telegram prompt content contracts, queue-store contracts/state helpers, active-turn state helpers, dispatch-readiness adapters, queue append/mutation runtime/controller adapters, control enqueue controllers, queue dispatch readiness/controller/runtime adapters, prompt enqueue/history planning/runtime/controllers, queue-runtime, session state appliers plus lifecycle/runtime sequencing, session start/shutdown sequencing plus hook binding, agent-start/agent-end lifecycle handling plus hook/runtime binding, and tool lifecycle handling plus tool-execution hook/runtime binding in `/lib/queue.ts`
-- Model identity/thinking-level contracts, scoped model-pattern parsing/resolution/sorting, current-model store/update/runtime helpers, in-flight model-switch state helpers, restart eligibility, delayed abort decisions, Telegram-prefix defaulted continuation prompt construction, continuation queue adapters, and model-switch controller/runtime binding over queue-owned turns in `/lib/model.ts`
-- Preview transport-selection, assistant-message preview lifecycle hook binding/handling, preview-finalization, preview controller state/reset helpers, preview Bot API message/rendered-chunk transport adapters, preview-controller/assistant-preview runtime binding, reply-metadata defaulting through the replies-domain helper, and preview-runtime helpers in `/lib/preview.ts`
-- Reply-transport, rendered-message delivery runtime/binding, structural assistant-message extraction, reply-parameter construction over API-owned transport shapes, and plain/Markdown final-reply helpers in `/lib/replies.ts`
-- Preview appearance and snapshot derivation stay in `/lib/rendering.ts`, while `/lib/preview.ts` owns transport and lifecycle decisions, so richer preview strategies can evolve without entangling Markdown formatting with Telegram delivery state
-- Polling request, start/stop controller state orchestration, polling activity readers, stop-condition, structural config contract, long-poll loop helpers, and poll-loop/controller runtime wiring over Telegram transport ports in `/lib/polling.ts`
-- Telegram persisted config shape, config-path defaults, config file read/write helpers, mutable config-store accessors, single-user authorization, and first-user pairing side effects/runtime adapters in `/lib/config.ts`
-- Telegram API helpers, concrete Bot API transport shapes including reply parameters and send/edit message bodies, typed/default Bot API runtime helpers, bot identity fetch transport, chat-action sender adapters/runtime-bound typing action, lazy bot-token client wrappers, API runtime error-recording wrappers, temp paths, inbound file-size limits, and runtime-bound temp-directory preparation/default cleanup in `/lib/api.ts`
-- Telegram turn-building helpers, runtime turn-builder wiring over media download ports and media-owned downloaded-file metadata contracts, inbound attachment handler processing, queued-prompt edit runtime binding, and Node-backed image-file reads for pi image inputs in `/lib/turns.ts`
-- Telegram media/text extraction, file-info normalization, downloaded-message-file metadata contracts, inbound file download assembly, media-group debounce helpers, media-group controller state, and media-group-aware authorized-message dispatch adapter wiring in `/lib/media.ts`
-- Telegram inbound attachment handler matching, command placeholder substitution, local tool invocation, handler-output collection, and quiet failure handling in `/lib/handlers.ts`
-- Telegram slash-command parsing, command-message target helpers/adapters, command control-enqueue adapters/runtime binding, command-action routing, command-handler/target-runtime and command-or-prompt dispatch binding, command runtime port orchestration, shared command-runtime reply/status/control adapter closures, stop/compact/status/model/help command side-effect branching, bound Bot API command registration, and Bot API command metadata helpers in `/lib/commands.ts`
-- Telegram updates extraction, authorization classification, execution-planning, authorized reaction priority/removal handling, direct execute-from-update routing, and runtime helpers in `/lib/updates.ts`
-- Inbound route composition across paired update execution, callback menus, command-or-prompt dispatch, media grouping, prompt enqueueing, queued edits, and attachment-handler turn building in `/lib/routing.ts`
-- Telegram attachment queueing, narrow structural attachment turn targets, queued-attachment sender runtime binding, delivery helpers, Node-backed file stat checks, outbound photo-vs-document classification, and outbound attachment limits/env parsing in `/lib/attachments.ts`
-- Telegram tool, command, before-agent prompt, and lifecycle-hook registration helpers in `/lib/registration.ts`
-- Setup/token prompt, environment fallback, guarded setup runtime adapter wiring, structural setup config contract, token validation, config persistence orchestration, and setup notification helpers in `/lib/setup.ts`
-- Markdown block scanning/rendering, inline-token/style rendering, text-piece rendering, stable-preview block scanning, final rendered-block chunk balancing, preview-snapshot derivation, HTML escaping, raw HTML tag-preserving chunking, and Telegram message rendering helpers in `/lib/rendering.ts`
-- Status-bar rendering/runtime adapters, bridge status state adapters, status-message rendering and status-HTML binding, structural queue-lane status view contracts, structured redacted runtime-event recording, recent-event recorder state, recent-event line formatting, and grouped pi-side diagnostics helpers in `/lib/status.ts`
-- Menu settings/model-registry access through structural ports, menu-state construction, menu runtime state/cache controller, menu-state storage pruning/refresh helpers, command open-flow branching, action runtime/state-builder adapters, menu callback handler adapters, stored callback entry/runtime routing, model-menu input-cache/state-building resolution, pure menu-page derivation, pure menu render-payload builders, menu-message runtime, callback parsing, callback mutation helpers, full model-callback planning and execution, interface-polished callback effect ports, status-thinking callback handling, and UI helpers in `/lib/menu.ts`
-- Telegram API-bound transport adapters and top-level runtime registration stay in `index.ts`; broader inbound event-side orchestration lives in `/lib/routing.ts`; direct Node file-operation imports stay in the owning domains rather than the entrypoint
-- Remaining `index.ts` wiring is intentionally cross-domain adapter code that closes over live extension state, pi callbacks, Telegram API ports, and status updates; keep repeated wiring DRY through small local adapter helpers or owning-domain contracts when that reduces duplication without obscuring live state, and extract more only when a boundary can move cohesive behavior into an owning domain instead of relocating one-off closures
-- Additional domains can be extracted into `/lib/*.ts` as the bridge grows, while keeping `index.ts` as the single entrypoint
-- `index.ts` uses namespace imports for local bridge domains so orchestration reads as domain-scoped calls such as `Queue.*`, `Turns.*`, and `Rendering.*` instead of long flat import lists
-- Mirrored domain regression coverage lives in `/tests/*.test.ts` using the same bare domain naming scheme, and architecture-invariant coverage in `/tests/invariants.test.ts` checks that the local `index.ts` plus `/lib/*.ts` import graph stays acyclic, shared bucket domains such as `lib/constants.ts` or `lib/types.ts` are not reintroduced, empty interface-extension shells stay collapsed into clearer type aliases, direct pi SDK imports stay centralized, `index.ts` source code stays free of direct Node runtime imports, local helper declarations, local arrow adapters, direct `process.env`, and direct `pi.*` receiver access, `/lib/runtime.ts` stays free of local domain imports, structural leaf domains stay free of local nominal imports, the menu domain stays on structural ports without re-exporting model, API transport stays decoupled from persisted config defaults, structural update/media domains stay decoupled from concrete API transport shapes, and attachment delivery stays decoupled from queue/inbound media/API helpers
+| Domain | Owns |
+| ------ | ---- |
+| `index.ts` | Single composition root for live pi/Telegram ports, session state, API-bound transport adapters, and status updates |
+| `api` | Bot API transport shapes/helpers, retries, file download, temp-dir lifecycle, inbound limits, chat actions, lazy bot-token clients, runtime error recording |
+| `config` / `setup` | Persisted bot/session pairing state, authorization, first-user pairing, token prompting, env fallback, validation, config persistence |
+| `locks` / `polling` | Singleton `locks.json` ownership, takeover/restart semantics, long-poll controller state, update offset persistence, poll-loop runtime wiring |
+| `updates` / `routing` | Update classification/execution planning, paired authorization, reactions, edits, callbacks, and inbound route composition |
+| `media` / `turns` / `handlers` | Text/media extraction, media-group debounce, inbound downloads, turn building/editing, image reads, attachment-handler matching/execution/fallback output |
+| `queue` | Queue item contracts, lane admission/order, stores, mutations, dispatch readiness/runtime, prompt/control enqueueing, session and agent/tool lifecycle sequencing |
+| `runtime` | Session-local coordination primitives: counters, lifecycle flags, setup guard, abort handler, typing-loop timers, prompt-dispatch flags, agent-end reset binding |
+| `model` / `menu` / `commands` | Model identity/thinking levels, scoped model resolution, in-flight switching, inline status/model/thinking UI, slash commands, bot command registration |
+| `preview` / `replies` / `rendering` | Preview lifecycle/transports, final reply delivery and reply parameters, Telegram HTML Markdown rendering, chunking, stable-preview snapshots |
+| `attachments` | `telegram_attach` registration, outbound attachment queueing, stat/limit checks, photo/document delivery classification |
+| `status` | Status-bar/status-message rendering, queue-lane status views, redacted runtime event ring, grouped pi diagnostics |
+| `lifecycle` / `prompts` / `pi` | pi hook registration, Telegram-specific before-agent prompt injection, centralized direct pi SDK imports and context adapters |
+
+Boundary invariants:
+
+- Constants and state types live with their owning domains; do not reintroduce shared buckets such as `lib/constants.ts` or `lib/types.ts`
+- Domain helpers use narrow structural projections when that avoids importing concrete wire DTOs or broader runtime objects unnecessarily
+- Preview appearance stays in `rendering`; preview transport/lifecycle stays in `preview`
+- Direct `node:*` file-operation imports stay in owning domains, not in `index.ts`
+- `index.ts` uses namespace imports for local bridge domains so orchestration reads as `Queue.*`, `Turns.*`, and `Rendering.*`
+- Architecture-invariant tests guard the acyclic import graph, pi SDK centralization, entrypoint purity, runtime-domain isolation, structural leaf-domain isolation, menu/model boundaries, API/config separation, media/update/API separation, and attachment boundary isolation
+- Mirrored domain regression coverage lives in `/tests/*.test.ts`; test helpers stay local to the mirrored suite by default, and shared fixture folders are justified only by reuse across multiple domain suites
 
 ## Configuration UX
 
@@ -76,11 +72,12 @@ Telegram bot configuration stays in `~/.pi/agent/telegram.json`; singleton runti
 3. The bridge filters to the paired private user
 4. Media groups are coalesced into a single Telegram turn when needed
 5. Files are streamed into `~/.pi/agent/tmp/telegram` with a default 50 MiB size limit, partial-download cleanup on failures, and stale temp cleanup on session start; operators can tune the limit with `PI_TELEGRAM_INBOUND_FILE_MAX_BYTES` or `TELEGRAM_MAX_FILE_SIZE_BYTES`
-6. Configured inbound attachment handlers may run on downloaded files by MIME wildcard, Telegram attachment type, or generic match selector; command handlers receive safe argv substitution for `{filename}`/`{path}`/`{basename}`/`{mime}`/`{type}`, and tool handlers invoke locally available tools by name
-7. Local attachments stay visible under `[attachments] <directory>` with relative file entries, and handler stdout is appended under `[outputs]` before the agent sees the turn; failed or empty handlers simply omit handler output while keeping the attachment entry
-8. A `PendingTelegramTurn` is created and queued locally
-9. Telegram `edited_message` updates are routed separately and update a matching queued turn when the original message has not been dispatched yet
-10. The queue dispatcher sends the turn into pi only when dispatch is safe
+6. Configured inbound attachment handlers may run on downloaded files by MIME wildcard, Telegram attachment type, or generic match selector; command templates receive safe command-arg substitution for `{file}`/`{mime}`/`{type}`
+7. Matching handlers are tried in config order: a non-zero exit records diagnostics and falls back to the next matching handler, while the first successful handler stops the chain
+8. Local attachments stay visible under `[attachments] <directory>` with relative file entries, and handler stdout is appended under `[outputs]` before the agent sees the turn; failed handlers omit output while keeping the attachment entry
+9. A `PendingTelegramTurn` is created and queued locally
+10. Telegram `edited_message` updates are routed separately and update a matching queued turn when the original message has not been dispatched yet
+11. The queue dispatcher sends the turn into pi only when dispatch is safe
 
 ### Queue Safety Model
 
@@ -96,11 +93,11 @@ Admission contract:
 | Admission             | Examples                                             | Queue shape                                                          | Dispatch rank |
 | --------------------- | ---------------------------------------------------- | -------------------------------------------------------------------- | ------------- |
 | Immediate execution   | `/compact`, `/stop`, `/help`, `/start`               | Does not enter the Telegram queue                                    | N/A           |
-| Control queue         | `/status`, `/model`, model-switch continuation turns | `queueLane: control`; accepts control items and continuation prompts | 0             |
+| Control queue         | Model-switch continuation turns and future deferred controls | `queueLane: control`; accepts control items and continuation prompts | 0             |
 | Priority prompt queue | A waiting prompt promoted by `👍`                    | `kind: prompt`, `queueLane: priority`                                | 1             |
 | Default prompt queue  | Normal Telegram text/media turns                     | `kind: prompt`, `queueLane: default`                                 | 2             |
 
-The command action itself carries its execution mode, and the queue domain exposes lane contracts for admission mode, dispatch rank, and allowed item kinds. Queue append and planning paths validate lane admission so a malformed control/default or other invalid lane pairing fails predictably instead of silently changing priority. This lets synthetic control actions and Telegram prompts share one stable ordering model while still rendering distinctly in status output. In the pi status bar queue preview, priority prompts are marked with `⬆` while control items keep their own control-specific summary markers such as `⚡`.
+The command action itself carries its execution mode, and the queue domain exposes lane contracts for admission mode, dispatch rank, and allowed item kinds. Queue append and planning paths validate lane admission so a malformed control/default or other invalid lane pairing fails predictably instead of silently changing priority. This lets synthetic control actions and Telegram prompts share one stable ordering model while still rendering distinctly in status output. In the pi status bar, busy labels distinguish `active`, `dispatching`, `queued`, `tool running`, `model`, and `compacting`; priority prompts are marked with `⬆` while control items keep markers such as `⚡`.
 
 A dispatched prompt remains in the queue until `agent_start` consumes it. That keeps the active Telegram turn bound correctly for previews, attachments, abort handling, and final reply delivery.
 
@@ -112,7 +109,7 @@ Dispatch is gated by:
 - `ctx.isIdle()` being true
 - `ctx.hasPendingMessages()` being false
 
-This prevents queue races around rapid follow-ups, `/compact`, and mixed local plus Telegram activity. The dispatch controller also serializes asynchronous control items, so a queued `/status` or `/model` action must settle before the next queued action can dispatch.
+This prevents queue races around rapid follow-ups, `/compact`, and mixed local plus Telegram activity. Telegram `/status` and `/model` execute immediately; the dispatch controller still serializes any deferred control items so a queued control action must settle before the next queued action can dispatch.
 
 ### Abort Behavior
 
@@ -161,13 +158,13 @@ The bridge exposes Telegram-side session controls in addition to regular chat fo
 
 Current operator controls include:
 
-- `/status` for model, usage, cost, and context visibility, queued as a high-priority control item when needed
+- `/status` for model, usage, cost, and context visibility, executed immediately from Telegram even while generation is active
 - Inline status buttons for model and thinking adjustments, applying idle selections immediately while still respecting busy-run restart rules; model-menu inputs are cached briefly and stored inline-menu states are pruned by TTL/LRU so old keyboards expire predictably
-- `/model` for interactive model selection, queued as a high-priority control item when needed and supporting in-flight restart of the active Telegram-owned run on a newly selected model
+- `/model` for interactive model selection, executed immediately from Telegram and supporting in-flight restart of the active Telegram-owned run on a newly selected model
 - `/compact` for Telegram-triggered pi session compaction when the bridge is idle
 - `/stop` for aborting the active Telegram-owned run
 - `/telegram-status` for pi-side diagnostics as grouped line-by-line sections separated by blank lines: connection, polling, execution, queue, and the recent redacted runtime/API event ring. These sections include polling state, last update id, active turn source ids, pending dispatch, compaction state, active tool count, pending model-switch state, total queue depth, and queue-lane counts. The event ring records transport/API, polling/update, prompt-dispatch, control-action, typing, compaction, setup, session-lifecycle, and attachment queue/delivery failures; benign unchanged edit responses and unsupported empty draft-clear attempts are filtered out so expected preview transport noise does not obscure real failures
-- Queue reactions using `👍` and `👎`, with `👎` acting as the canonical queue-removal path because ordinary Telegram DM message deletions are not exposed through the Bot API polling path this bridge uses
+- Queue reactions using `👍` and `👎` apply to waiting text, voice, file, image, and media-group turns by matching the turn's source Telegram message ids; `👎` acts as the canonical queue-removal path because ordinary Telegram DM message deletions are not exposed through the Bot API polling path this bridge uses
 
 ## In-Flight Model Switching
 

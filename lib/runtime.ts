@@ -327,8 +327,9 @@ export interface TelegramRuntimeEventRecorderPort {
   ) => void;
 }
 
-export interface TelegramTypingLoopStarterDeps<TContext>
-  extends TelegramRuntimeEventRecorderPort {
+export interface TelegramTypingLoopStarterDeps<
+  TContext,
+> extends TelegramRuntimeEventRecorderPort {
   typing: TelegramRuntimeTypingPort;
   getDefaultChatId: () => number | undefined;
   sendTypingAction: (chatId: number) => Promise<unknown>;
@@ -413,8 +414,9 @@ export function createTelegramAgentEndResetter(
   };
 }
 
-export interface TelegramPromptDispatchLifecycleDeps<TContext>
-  extends TelegramRuntimeEventRecorderPort {
+export interface TelegramPromptDispatchLifecycleDeps<
+  TContext,
+> extends TelegramRuntimeEventRecorderPort {
   lifecycle: Pick<
     TelegramRuntimeLifecyclePort,
     "setDispatchPending" | "clearDispatchPending"
@@ -424,8 +426,9 @@ export interface TelegramPromptDispatchLifecycleDeps<TContext>
   updateStatus: (ctx: TContext, error?: string) => void;
 }
 
-export interface TelegramPromptDispatchRuntimeDeps<TContext>
-  extends TelegramRuntimeEventRecorderPort {
+export interface TelegramPromptDispatchRuntimeDeps<
+  TContext,
+> extends TelegramRuntimeEventRecorderPort {
   lifecycle: TelegramPromptDispatchLifecycleDeps<TContext>["lifecycle"];
   typing: TelegramRuntimeTypingPort;
   getDefaultChatId: () => number | undefined;

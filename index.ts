@@ -5,8 +5,10 @@
 
 import * as Api from "./lib/api.ts";
 import * as Attachments from "./lib/attachments.ts";
+import * as Commands from "./lib/commands.ts";
 import * as Config from "./lib/config.ts";
 import * as Handlers from "./lib/handlers.ts";
+import * as Lifecycle from "./lib/lifecycle.ts";
 import * as Locks from "./lib/locks.ts";
 import * as Media from "./lib/media.ts";
 import * as Menu from "./lib/menu.ts";
@@ -14,8 +16,8 @@ import * as Model from "./lib/model.ts";
 import * as Pi from "./lib/pi.ts";
 import * as Polling from "./lib/polling.ts";
 import * as Preview from "./lib/preview.ts";
+import * as Prompts from "./lib/prompts.ts";
 import * as Queue from "./lib/queue.ts";
-import * as Registration from "./lib/registration.ts";
 import * as Replies from "./lib/replies.ts";
 import * as Runtime from "./lib/runtime.ts";
 import * as Routing from "./lib/routing.ts";
@@ -255,7 +257,7 @@ export default function (pi: Pi.ExtensionAPI) {
     updateStatus,
     recordRuntimeEvent: runtimeEvents.record,
   });
-  const sessionLifecycleRuntime = Registration.appendTelegramLifecycleHooks(
+  const sessionLifecycleRuntime = Lifecycle.appendTelegramLifecycleHooks(
     Queue.createTelegramSessionLifecycleRuntime<
       Pi.ExtensionContext,
       RuntimeTelegramQueueItem,
@@ -282,14 +284,14 @@ export default function (pi: Pi.ExtensionAPI) {
     { onSessionStart: lockedPollingRuntime.onSessionStart },
   );
 
-  // --- Extension Registration ---
+  // --- Extension API Bindings ---
 
-  Registration.registerTelegramAttachmentTool(pi, {
+  Attachments.registerTelegramAttachmentTool(pi, {
     getActiveTurn: activeTurnRuntime.get,
     recordRuntimeEvent: runtimeEvents.record,
   });
 
-  Registration.registerTelegramCommands(pi, {
+  Commands.registerTelegramBridgeCommands(pi, {
     promptForConfig: Setup.createTelegramSetupPromptRuntime({
       getConfig: configStore.get,
       setConfig: configStore.set,
@@ -310,9 +312,9 @@ export default function (pi: Pi.ExtensionAPI) {
 
   // --- Lifecycle Hooks ---
 
-  Registration.registerTelegramLifecycleHooks(pi, {
+  Lifecycle.registerTelegramLifecycleHooks(pi, {
     ...sessionLifecycleRuntime,
-    onBeforeAgentStart: Registration.createTelegramBeforeAgentStartHook(),
+    onBeforeAgentStart: Prompts.createTelegramBeforeAgentStartHook(),
     onModelSelect: currentModelRuntime.onModelSelect,
     ...Queue.createTelegramAgentLifecycleHooks<
       Queue.PendingTelegramTurn,

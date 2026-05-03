@@ -57,9 +57,7 @@ export function formatTelegramTurnStatusSummary(
 ): string {
   const textSummary = truncateTelegramQueueSummary(rawText);
   if (textSummary) return textSummary;
-  const handlerSummary = truncateTelegramQueueSummary(
-    handlerOutputs.join(" "),
-  );
+  const handlerSummary = truncateTelegramQueueSummary(handlerOutputs.join(" "));
   if (handlerSummary) return handlerSummary;
   if (files.length === 1) {
     const fileName = basename(
@@ -121,7 +119,11 @@ export function buildTelegramTurnPrompt(options: {
   }
   const promptFiles = options.promptFiles ?? options.files;
   prompt = appendTelegramAttachmentSection(prompt, promptFiles);
-  prompt = appendTelegramListSection(prompt, "outputs", options.handlerOutputs ?? []);
+  prompt = appendTelegramListSection(
+    prompt,
+    "outputs",
+    options.handlerOutputs ?? [],
+  );
   return prompt;
 }
 
@@ -158,7 +160,9 @@ function splitTelegramPromptAttachmentSuffix(prompt: string): {
   const attachmentFiles = attachmentLines
     .map((line) => line.match(/^- (.+)$/)?.[1]?.trim())
     .filter((path): path is string => !!path)
-    .map((path) => (attachmentDir ? join(attachmentDir, path.replace(/^\/+/, "")) : path))
+    .map((path) =>
+      attachmentDir ? join(attachmentDir, path.replace(/^\/+/, "")) : path,
+    )
     .map((path) => ({
       path,
       fileName: basename(path),
@@ -301,8 +305,9 @@ export type BuildTelegramPromptTurnRuntimeOptions = Omit<
   "readBinaryFile"
 >;
 
-export interface TelegramPromptTurnRuntimeBuilderDeps<TContext = unknown>
-  extends DownloadTelegramMessageFilesDeps {
+export interface TelegramPromptTurnRuntimeBuilderDeps<
+  TContext = unknown,
+> extends DownloadTelegramMessageFilesDeps {
   allocateQueueOrder: () => number;
   processAttachments?: (
     files: DownloadedTelegramTurnFile[],

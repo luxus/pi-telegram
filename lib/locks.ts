@@ -3,7 +3,14 @@
  * Owns shared locks.json access and Telegram bridge ownership semantics
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -68,7 +75,9 @@ export type TelegramLockedPollingStartResult =
   | { ok: true; message: string; canTakeover?: false }
   | { ok: false; message: string; canTakeover?: boolean; owner?: string };
 
-export interface TelegramLockedPollingRuntime<TContext extends TelegramLockContext> {
+export interface TelegramLockedPollingRuntime<
+  TContext extends TelegramLockContext,
+> {
   start: (
     ctx: TContext,
     options?: TelegramLockedPollingStartOptions,
@@ -78,13 +87,19 @@ export interface TelegramLockedPollingRuntime<TContext extends TelegramLockConte
   onSessionStart: (_event: unknown, ctx: TContext) => Promise<void>;
 }
 
-export interface TelegramLockedPollingRuntimeDeps<TContext extends TelegramLockContext> {
+export interface TelegramLockedPollingRuntimeDeps<
+  TContext extends TelegramLockContext,
+> {
   lock: TelegramLockRuntime<TContext>;
   hasBotToken: () => boolean;
   startPolling: (ctx: TContext) => void | Promise<void>;
   stopPolling: () => Promise<void>;
   updateStatus: (ctx: TContext) => void;
-  recordRuntimeEvent?: (category: string, error: unknown, details?: Record<string, unknown>) => void;
+  recordRuntimeEvent?: (
+    category: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
   ownershipCheckMs?: number;
 }
 
@@ -116,8 +131,11 @@ export function writeLocks(path: string, locks: Record<string, unknown>): void {
   }
 }
 
-export function parseTelegramLockEntry(value: unknown): TelegramLockEntry | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+export function parseTelegramLockEntry(
+  value: unknown,
+): TelegramLockEntry | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
   const record = value as Record<string, unknown>;
   if (typeof record.pid !== "number") return undefined;
   return {
@@ -140,7 +158,11 @@ function formatLock(lock: TelegramLockEntry): string {
   return lock.cwd ? `pid ${lock.pid}, cwd ${lock.cwd}` : `pid ${lock.pid}`;
 }
 
-function getLockState(lock: TelegramLockEntry | undefined, pid: number, isAlive: (pid: number) => boolean): TelegramLockState {
+function getLockState(
+  lock: TelegramLockEntry | undefined,
+  pid: number,
+  isAlive: (pid: number) => boolean,
+): TelegramLockState {
   if (!lock) return { kind: "inactive" };
   if (lock.pid === pid) return { kind: "active-here", lock };
   if (isAlive(lock.pid)) return { kind: "active-elsewhere", lock };
@@ -205,12 +227,15 @@ export function createTelegramLockRuntime<TContext extends TelegramLockContext>(
       return state;
     },
     getState: () => getLockState(readLock(), pid, isAlive),
-    getStatusLabel: () => formatLockState(getLockState(readLock(), pid, isAlive)),
+    getStatusLabel: () =>
+      formatLockState(getLockState(readLock(), pid, isAlive)),
     owns: (ctx) => ownsLockContext(readLock(), pid, ctx),
   };
 }
 
-export function createTelegramLockedPollingRuntime<TContext extends TelegramLockContext>(
+export function createTelegramLockedPollingRuntime<
+  TContext extends TelegramLockContext,
+>(
   deps: TelegramLockedPollingRuntimeDeps<TContext>,
 ): TelegramLockedPollingRuntime<TContext> {
   let ownershipInterval: ReturnType<typeof setInterval> | undefined;
@@ -239,8 +264,11 @@ export function createTelegramLockedPollingRuntime<TContext extends TelegramLock
   const stopAfterOwnershipLoss = (ctx: TContext) => {
     if (ownershipStop) return;
     stopOwnershipWatcher();
-    ownershipStop = deps.stopPolling()
-      .catch((error) => deps.recordRuntimeEvent?.("lock", error, { phase: "ownership-loss" }))
+    ownershipStop = deps
+      .stopPolling()
+      .catch((error) =>
+        deps.recordRuntimeEvent?.("lock", error, { phase: "ownership-loss" }),
+      )
       .finally(() => {
         ownershipStop = undefined;
         updateStatusSafely(ctx, "ownership-loss-status");
@@ -257,7 +285,8 @@ export function createTelegramLockedPollingRuntime<TContext extends TelegramLock
   };
   return {
     start: async (ctx, options = {}) => {
-      if (!deps.hasBotToken()) return { ok: false, message: "Telegram bot is not configured." };
+      if (!deps.hasBotToken())
+        return { ok: false, message: "Telegram bot is not configured." };
       const acquired = deps.lock.acquire(ctx, options);
       if (!acquired.ok) {
         return {
@@ -279,7 +308,8 @@ export function createTelegramLockedPollingRuntime<TContext extends TelegramLock
       if (state.kind === "active-elsewhere") {
         return `Telegram bridge is active in another pi instance (${formatLock(state.lock)}).`;
       }
-      if (state.kind === "stale") return `Removed stale Telegram bridge lock (${formatLock(state.lock)}).`;
+      if (state.kind === "stale")
+        return `Removed stale Telegram bridge lock (${formatLock(state.lock)}).`;
       return "Telegram bridge disconnected.";
     },
     suspend: suspendPolling,

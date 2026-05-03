@@ -468,19 +468,24 @@ test("Menu helpers open status and model menus through runtime ports", async () 
   ]);
 });
 
-test("Menu helpers report open-menu busy and no-model paths", async () => {
+test("Menu helpers report model-menu busy and no-model paths", async () => {
   const events: string[] = [];
   await openTelegramStatusMenu({
     isIdle: () => false,
     sendBusyMessage: async () => {
-      events.push("busy-status");
+      events.push("unexpected:busy-status");
     },
     getModelMenuState: async () => createMenuState(0),
-    buildStatusHtml: () => "ignored",
+    buildStatusHtml: () => "status",
     getActiveModel: () => undefined,
     getThinkingLevel: () => "off",
-    sendStatusMenu: async () => 1,
-    storeModelMenuState: () => {},
+    sendStatusMenu: async () => {
+      events.push("status");
+      return 1;
+    },
+    storeModelMenuState: () => {
+      events.push("store-status");
+    },
   });
   await openTelegramModelMenu({
     isIdle: () => true,
@@ -510,7 +515,7 @@ test("Menu helpers report open-menu busy and no-model paths", async () => {
     sendModelMenu: async () => 1,
     storeModelMenuState: () => {},
   });
-  assert.deepEqual(events, ["busy-status", "no-models", "busy-model"]);
+  assert.deepEqual(events, ["status", "store-status", "no-models", "busy-model"]);
 });
 
 test("Menu helpers route callback entry states before action handlers", async () => {

@@ -159,6 +159,7 @@ test("Turn runtime builder routes attachment handler output into prompt text", a
     { cwd: "/work" },
   );
   assert.equal(turn.statusSummary, "transcript from /work");
+  assert.deepEqual(turn.sourceMessageIds, [12]);
   assert.equal(
     turn.historyText,
     "(no text)\n\n[attachments] /tmp\n- /voice-12.ogg\n\n[outputs]\n- transcript from /work",

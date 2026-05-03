@@ -856,8 +856,9 @@ export function createTelegramAgentEndHook<
       preserveQueuedTurnsAsHistory: deps.getPreserveQueuedTurnsAsHistory(),
       resetRuntimeState: deps.resetRuntimeState,
       updateStatus: () => deps.updateStatus(ctx),
-      dispatchNextQueuedTelegramTurn: () =>
-        deps.dispatchNextQueuedTelegramTurn(ctx),
+      dispatchNextQueuedTelegramTurn: () => {
+        setTimeout(() => deps.dispatchNextQueuedTelegramTurn(ctx), 0);
+      },
       clearPreview: deps.clearPreview,
       setPreviewPendingText: deps.setPreviewPendingText,
       finalizeMarkdownPreview: deps.finalizeMarkdownPreview,
@@ -1400,8 +1401,9 @@ export interface TelegramRuntimeEventRecorderPort {
   ) => void;
 }
 
-export interface TelegramControlRuntimeDeps<TContext>
-  extends TelegramRuntimeEventRecorderPort {
+export interface TelegramControlRuntimeDeps<
+  TContext,
+> extends TelegramRuntimeEventRecorderPort {
   ctx: TContext;
   sendTextReply: (
     chatId: number,
@@ -1454,8 +1456,9 @@ export interface TelegramDispatchRuntimeDeps<TContext = unknown> {
   onIdle: () => void;
 }
 
-export interface TelegramQueueDispatchControllerDeps<TContext = unknown>
-  extends TelegramRuntimeEventRecorderPort {
+export interface TelegramQueueDispatchControllerDeps<
+  TContext = unknown,
+> extends TelegramRuntimeEventRecorderPort {
   getQueuedItems: () => TelegramQueueItem<TContext>[];
   setQueuedItems: (items: TelegramQueueItem<TContext>[]) => void;
   canDispatch: (ctx: TContext) => boolean;

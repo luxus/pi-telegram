@@ -1,13 +1,13 @@
 /**
  * Regression tests for inbound Telegram attachment handlers
- * Covers MIME/type matching, command substitution, auto-tool invocation, handler failures, and prompt-text routing
+ * Covers MIME/type matching, template substitution, fallback failures, and prompt-text routing
  */
 
 import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  buildTelegramAttachmentCommandInvocation,
+  buildTelegramAttachmentHandlerInvocation,
   processTelegramAttachmentHandlers,
   telegramAttachmentHandlerMatchesFile,
 } from "../lib/handlers.ts";
@@ -34,7 +34,7 @@ test("Attachment handlers match MIME wildcards and Telegram file types", () => {
   assert.equal(telegramAttachmentHandlerMatchesFile({}, voiceFile), true);
 });
 
-test("Attachment command handlers substitute paths without shell interpolation", async () => {
+test("Attachment template handlers substitute paths without shell interpolation", async () => {
   const calls: Array<{ command: string; args: string[]; cwd?: string }> = [];
   const file = {
     path: "/tmp/voice one.ogg",
@@ -48,7 +48,7 @@ test("Attachment command handlers substitute paths without shell interpolation",
     handlers: [
       {
         mime: "audio/*",
-        command: "/opt/transcribe --file={filename} --mime {mime} --type {type}",
+        template: "/opt/transcribe --file={file} --mime {mime} --type {type}",
       },
     ],
     cwd: "/work",
@@ -69,9 +69,70 @@ test("Attachment command handlers substitute paths without shell interpolation",
   assert.deepEqual(result.handlerOutputs, ["hello from voice"]);
 });
 
-test("Attachment command handlers append the path when no placeholder is present", () => {
-  const invocation = buildTelegramAttachmentCommandInvocation(
-    "./scripts/transcribe --lang ru",
+test("Attachment template handlers apply declared defaults", async () => {
+  const calls: Array<{ command: string; args: string[] }> = [];
+  const file = {
+    path: "/tmp/voice one.ogg",
+    fileName: "voice one.ogg",
+    mimeType: "audio/ogg",
+    kind: "voice",
+  };
+  const result = await processTelegramAttachmentHandlers({
+    files: [file],
+    rawText: "",
+    handlers: [
+      {
+        type: "voice",
+        template: "/opt/transcribe {file} {lang} {model}",
+        args: ["file", "lang", "model"],
+        defaults: { lang: "ru", model: "voxtral-mini-latest" },
+      },
+    ],
+    cwd: "/work",
+    execCommand: async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: "voice transcript", stderr: "", code: 0, killed: false };
+    },
+  });
+  assert.deepEqual(calls, [
+    {
+      command: "/opt/transcribe",
+      args: ["/tmp/voice one.ogg", "ru", "voxtral-mini-latest"],
+    },
+  ]);
+  assert.deepEqual(result.handlerOutputs, ["voice transcript"]);
+});
+
+test("Attachment template invocation supports defaults in args strings", () => {
+  const invocation = buildTelegramAttachmentHandlerInvocation(
+    {
+      template: "./scripts/transcribe {file} {lang} {model}",
+      args: "file,lang=ru,model=voxtral-mini-latest",
+    },
+    { path: "/tmp/a.ogg" },
+    "/work",
+  );
+  assert.deepEqual(invocation, {
+    command: "/work/scripts/transcribe",
+    args: ["/tmp/a.ogg", "ru", "voxtral-mini-latest"],
+  });
+});
+
+test("Attachment template handlers resolve relative commands", () => {
+  const invocation = buildTelegramAttachmentHandlerInvocation(
+    { template: "./scripts/transcribe {file} ru" },
+    { path: "/tmp/a.ogg" },
+    "/work",
+  );
+  assert.deepEqual(invocation, {
+    command: "/work/scripts/transcribe",
+    args: ["/tmp/a.ogg", "ru"],
+  });
+});
+
+test("Attachment template handlers append the path when no placeholder is present", () => {
+  const invocation = buildTelegramAttachmentHandlerInvocation(
+    { template: "./scripts/transcribe --lang ru" },
     { path: "/tmp/a.ogg" },
     "/work",
   );
@@ -81,50 +142,40 @@ test("Attachment command handlers append the path when no placeholder is present
   });
 });
 
-test("Attachment tool handlers invoke pi-auto-tools scripts with configured args", async () => {
-  const calls: Array<{ command: string; args: string[] }> = [];
+test("Attachment handlers fall back to the next matching handler on failure", async () => {
+  const calls: string[] = [];
+  const events: Array<{ category: string; details?: Record<string, unknown> }> = [];
+  const file = {
+    path: "/tmp/voice.ogg",
+    fileName: "voice.ogg",
+    mimeType: "audio/ogg",
+    kind: "voice",
+  };
   const result = await processTelegramAttachmentHandlers({
-    files: [
-      {
-        path: "/tmp/voice.ogg",
-        fileName: "voice.ogg",
-        mimeType: "audio/ogg",
-        kind: "voice",
-      },
-    ],
+    files: [file],
     rawText: "",
     handlers: [
-      {
-        type: "voice",
-        tool: "transcribe_mistral",
-        args: { lang: "ru", model: "voxtral-mini" },
-      },
+      { type: "voice", template: "/tools/primary {file} ru" },
+      { mime: "audio/*", template: "/tools/fallback {file} ru" },
     ],
     cwd: "/work",
-    readTextFile: async () =>
-      JSON.stringify({
-        transcribe_mistral: {
-          name: "transcribe_mistral",
-          script: "/tools/transcribe",
-          args: ["file", "lang", "model"],
-        },
-      }),
-    execCommand: async (command, args) => {
-      calls.push({ command, args });
-      return { stdout: "расшифровка", stderr: "", code: 0, killed: false };
+    execCommand: async (command) => {
+      calls.push(command);
+      if (command === "/tools/primary") {
+        return { stdout: "", stderr: "primary down", code: 1, killed: false };
+      }
+      return { stdout: "fallback transcript", stderr: "", code: 0, killed: false };
+    },
+    recordRuntimeEvent: (category, _error, details) => {
+      events.push({ category, details });
     },
   });
-  assert.deepEqual(calls, [
-    { command: "/tools/transcribe", args: ["/tmp/voice.ogg", "ru", "voxtral-mini"] },
-  ]);
-  assert.equal(result.rawText, "");
-  assert.deepEqual(result.handlerOutputs, ["расшифровка"]);
-  assert.deepEqual(result.promptFiles, [
+  assert.deepEqual(calls, ["/tools/primary", "/tools/fallback"]);
+  assert.deepEqual(result.handlerOutputs, ["fallback transcript"]);
+  assert.deepEqual(events, [
     {
-      path: "/tmp/voice.ogg",
-      fileName: "voice.ogg",
-      mimeType: "audio/ogg",
-      kind: "voice",
+      category: "attachment-handler",
+      details: { fileName: "voice.ogg", handler: "template" },
     },
   ]);
 });
@@ -140,7 +191,7 @@ test("Attachment handler failures fall back to normal attachment prompts", async
   const result = await processTelegramAttachmentHandlers({
     files: [file],
     rawText: "read this",
-    handlers: [{ mime: "application/pdf", command: "/opt/pdf-to-text {filename}" }],
+    handlers: [{ mime: "application/pdf", template: "/opt/pdf-to-text {file}" }],
     cwd: "/work",
     execCommand: async () => ({
       stdout: "partial",
@@ -158,7 +209,7 @@ test("Attachment handler failures fall back to normal attachment prompts", async
   assert.deepEqual(events, [
     {
       category: "attachment-handler",
-      details: { fileName: "report.pdf", handler: "command" },
+      details: { fileName: "report.pdf", handler: "template" },
     },
   ]);
 });

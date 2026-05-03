@@ -26,9 +26,50 @@ import {
   handleTelegramStopCommand,
   parseTelegramCommand,
   registerTelegramBotCommands,
+  registerTelegramBridgeCommands,
   TELEGRAM_BOT_COMMANDS,
   TELEGRAM_HELP_TEXT,
 } from "../lib/commands.ts";
+import type { ExtensionAPI, ExtensionCommandContext } from "../lib/pi.ts";
+
+type RegisteredBridgeCommand = {
+  handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> | void;
+};
+
+function createCommandRegistrationApiHarness() {
+  const commands = new Map<string, RegisteredBridgeCommand>();
+  const api = {
+    registerCommand: (name: string, definition: RegisteredBridgeCommand) => {
+      commands.set(name, definition);
+    },
+  } as unknown as ExtensionAPI;
+  return { api, commands };
+}
+
+function getRequiredCommand(
+  commands: Map<string, RegisteredBridgeCommand>,
+  name: string,
+): RegisteredBridgeCommand {
+  const command = commands.get(name);
+  assert.ok(command, `Expected command ${name}`);
+  return command;
+}
+
+function createBridgeCommandContext(
+  notify: (message: string) => void = () => {},
+  confirm: () => Promise<boolean> | boolean = () => false,
+): ExtensionCommandContext {
+  return {
+    cwd: "/repo",
+    ui: {
+      notify,
+      confirm,
+      theme: {
+        fg: (_color: string, value: string) => value,
+      },
+    },
+  } as unknown as ExtensionCommandContext;
+}
 
 test("Command helpers expose Telegram bot command definitions", () => {
   assert.deepEqual(TELEGRAM_BOT_COMMANDS, [
@@ -59,6 +100,119 @@ test("Command helpers register Telegram bot commands through deps", async () => 
     },
   })();
   assert.deepEqual(calls, [TELEGRAM_BOT_COMMANDS, TELEGRAM_BOT_COMMANDS]);
+});
+
+test("Command helpers register pi setup and status commands", async () => {
+  const harness = createCommandRegistrationApiHarness();
+  const events: string[] = [];
+  registerTelegramBridgeCommands(harness.api, {
+    promptForConfig: async () => {
+      events.push("setup");
+    },
+    getStatusLines: () => ["bot: @demo", "polling: stopped"],
+    reloadConfig: async () => {
+      events.push("reload");
+    },
+    hasBotToken: () => false,
+    startPolling: async () => {
+      events.push("start");
+    },
+    stopPolling: async () => {
+      events.push("stop");
+    },
+    updateStatus: () => {
+      events.push("update-status");
+    },
+  });
+  const notifications: string[] = [];
+  const ctx = createBridgeCommandContext((message) => {
+    notifications.push(message);
+  });
+  await getRequiredCommand(harness.commands, "telegram-setup").handler("", ctx);
+  await getRequiredCommand(harness.commands, "telegram-status").handler("", ctx);
+  assert.deepEqual(events, ["setup"]);
+  assert.deepEqual(notifications, ["bot: @demo\npolling: stopped"]);
+});
+
+test("Command helpers register pi connect and disconnect commands", async () => {
+  const harness = createCommandRegistrationApiHarness();
+  const events: string[] = [];
+  let hasToken = false;
+  registerTelegramBridgeCommands(harness.api, {
+    promptForConfig: async () => {
+      events.push("setup");
+    },
+    getStatusLines: () => [],
+    reloadConfig: async () => {
+      events.push("reload");
+    },
+    hasBotToken: () => hasToken,
+    startPolling: async () => {
+      events.push("start");
+    },
+    stopPolling: async () => {
+      events.push("stop");
+    },
+    updateStatus: () => {
+      events.push("update-status");
+    },
+  });
+  const ctx = createBridgeCommandContext();
+  await getRequiredCommand(harness.commands, "telegram-connect").handler("", ctx);
+  hasToken = true;
+  await getRequiredCommand(harness.commands, "telegram-connect").handler("", ctx);
+  await getRequiredCommand(harness.commands, "telegram-disconnect").handler("", ctx);
+  assert.deepEqual(events, [
+    "reload",
+    "setup",
+    "reload",
+    "start",
+    "update-status",
+    "stop",
+    "update-status",
+  ]);
+});
+
+test("Command helpers move pi polling ownership after confirmation", async () => {
+  const harness = createCommandRegistrationApiHarness();
+  const events: string[] = [];
+  registerTelegramBridgeCommands(harness.api, {
+    promptForConfig: async () => undefined,
+    getStatusLines: () => [],
+    reloadConfig: async () => {
+      events.push("reload");
+    },
+    hasBotToken: () => true,
+    startPolling: async (_ctx, options) => {
+      events.push(options?.force ? "start-force" : "start");
+      return options?.force
+        ? { ok: true, message: "connected" }
+        : { ok: false, canTakeover: true, message: "active elsewhere" };
+    },
+    stopPolling: async () => undefined,
+    updateStatus: () => {
+      events.push("update-status");
+    },
+  });
+  const notifications: string[] = [];
+  const ctx = createBridgeCommandContext(
+    (message) => {
+      notifications.push(message);
+    },
+    () => {
+      events.push("confirm");
+      return true;
+    },
+  );
+  await getRequiredCommand(harness.commands, "telegram-connect").handler("", ctx);
+  assert.deepEqual(events, [
+    "reload",
+    "start",
+    "confirm",
+    "start-force",
+    "update-status",
+  ]);
+  assert.deepEqual(notifications, ["connected"]);
 });
 
 test("Command helpers parse slash commands with args", () => {
@@ -246,11 +400,11 @@ test("Command helpers build command actions", () => {
   });
   assert.deepEqual(buildTelegramCommandAction("status"), {
     kind: "status",
-    executionMode: "control-queue",
+    executionMode: "immediate",
   });
   assert.deepEqual(buildTelegramCommandAction("model"), {
     kind: "model",
-    executionMode: "control-queue",
+    executionMode: "immediate",
   });
   assert.deepEqual(buildTelegramCommandAction("help"), {
     kind: "help",
@@ -272,14 +426,14 @@ test("Command helpers build command actions", () => {
   });
 });
 
-test("Command execution mode contract separates immediate and queued controls", () => {
+test("Command execution mode contract keeps Telegram controls immediate", () => {
   const cases: Array<[string | undefined, string]> = [
     ["stop", "immediate"],
     ["compact", "immediate"],
     ["help", "immediate"],
     ["start", "immediate"],
-    ["status", "control-queue"],
-    ["model", "control-queue"],
+    ["status", "immediate"],
+    ["model", "immediate"],
     ["unknown", "ignored"],
     [undefined, "ignored"],
   ];
@@ -480,34 +634,21 @@ test("Command helpers report compact errors", async () => {
   ]);
 });
 
-test("Command helpers enqueue status and model control commands", async () => {
+test("Command helpers execute status and model controls immediately", async () => {
   const events: string[] = [];
-  const enqueueControlItem = (
-    controlType: "status" | "model",
-    statusSummary: string,
-    execute: (ctx: string) => Promise<void>,
-  ) => {
-    events.push(`${controlType}:${statusSummary}`);
-    void execute("ctx");
-  };
   await handleTelegramStatusCommand({
-    enqueueControlItem,
+    ctx: "ctx",
     showStatus: async (ctx) => {
       events.push(`show:${ctx}`);
     },
   });
   await handleTelegramModelCommand({
-    enqueueControlItem,
+    ctx: "ctx",
     openModelMenu: async (ctx) => {
       events.push(`model:${ctx}`);
     },
   });
-  assert.deepEqual(events, [
-    "status:⚡ status",
-    "show:ctx",
-    "model:⚡ model",
-    "model:ctx",
-  ]);
+  assert.deepEqual(events, ["show:ctx", "model:ctx"]);
 });
 
 test("Command helpers send help, register start commands, and pair first sender", async () => {
@@ -618,7 +759,9 @@ test("Command handler target runtime binds command targets into command handling
         `append:${item.chatId}:${item.replyToMessageId}:${item.controlType}:${ctx}`,
       );
     },
-    showStatus: async () => {},
+    showStatus: async (_chatId, _replyToMessageId, ctx) => {
+      calls.push(`show:${ctx}`);
+    },
     openModelMenu: async () => {},
     getAllowedUserId: () => undefined,
     setAllowedUserId: () => {},
@@ -630,7 +773,7 @@ test("Command handler target runtime binds command targets into command handling
     await handleCommand("status", { chat: { id: 7 }, message_id: 11 }, "ctx"),
     true,
   );
-  assert.deepEqual(calls, ["append:7:11:status:ctx", "dispatch:ctx"]);
+  assert.deepEqual(calls, ["show:ctx"]);
 });
 
 test("Command runtime routes commands through runtime ports", async () => {
@@ -715,9 +858,7 @@ test("Command runtime routes commands through runtime ports", async () => {
   assert.equal(await handleCommand("unknown", message, { idle: true }), false);
   assert.equal(allowedUserId, 7);
   assert.deepEqual(events, [
-    "enqueue:99:status:⚡ status",
     "show:42",
-    "enqueue:99:model:⚡ model",
     "model:42",
     "register",
     `reply:99:${TELEGRAM_HELP_TEXT}`,
