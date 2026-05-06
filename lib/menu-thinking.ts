@@ -119,7 +119,7 @@ export function buildThinkingMenuReplyMarkup(
   rows.push(
     ...THINKING_LEVELS.map((level) => [
       {
-        text: level === currentThinkingLevel ? `✅ ${level}` : level,
+        text: level === currentThinkingLevel ? `🟢 ${level}` : level,
         callback_data: `thinking:set:${level}`,
       },
     ]),

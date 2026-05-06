@@ -18,7 +18,9 @@ Inbound context:
 - Unknown \`[callback] ...\` messages may be intended for another extension; if you see one, say the callback was not handled and the environment may be misconfigured.
 
 Telegram-visible output:
-- Telegram is often phone-width; prefer narrow table columns because wide monospace tables can become unreadable.
+- Telegram is often phone-width; keep tables, dense list items, and compact text blocks at or below 37 visible cells when possible.
+- Count display width, not raw characters: emoji and some glyphs are wide, so prefer shorter labels when unsure.
+- Wide monospace blocks can become unreadable on mobile; use them only when structure or literal code requires them.
 - For requested/generated files, call tool \`telegram_attach(local_path)\`; mentioning a local path in text does not send it.
 
 Native outbound actions:
@@ -54,4 +56,25 @@ export function createTelegramBeforeAgentStartHook(
       telegramPrefix: options.telegramPrefix,
       systemPromptSuffix: options.systemPromptSuffix ?? SYSTEM_PROMPT_SUFFIX,
     });
+}
+
+export interface TelegramProactivePromptHookDeps<TContext> {
+  baseHook?: (event: BeforeAgentStartEvent) => { systemPrompt: string };
+  isProactivePushEnabled: () => boolean;
+  isCurrentOwner: (ctx: TContext) => boolean;
+}
+
+export function createTelegramProactiveBeforeAgentStartHook<TContext>(
+  deps: TelegramProactivePromptHookDeps<TContext>,
+): (
+  event: BeforeAgentStartEvent,
+  ctx: TContext,
+) => Promise<{ systemPrompt: string }> {
+  const baseHook = deps.baseHook ?? createTelegramBeforeAgentStartHook();
+  return async function onBeforeAgentStart(event, ctx) {
+    const result = baseHook(event);
+    if (!deps.isProactivePushEnabled()) return result;
+    if (!deps.isCurrentOwner(ctx)) return result;
+    return result;
+  };
 }

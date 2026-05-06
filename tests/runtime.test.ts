@@ -1703,8 +1703,10 @@ test("Extension runtime applies idle model picks immediately and refreshes statu
     assert.equal(callbackAnswers.includes("Switched to claude-b"), true);
     assert.equal(statusEvents.length > statusCountBeforePick, true);
     assert.equal(
-      runtimeEvents.some((event) =>
-        event.startsWith("edit:<b>π Telegram bridge</b>"),
+      runtimeEvents.some(
+        (event) =>
+          event.startsWith("edit:<b>π Telegram bridge</b>") ||
+          event.startsWith("edit:<b>🤖 Choose a model:</b>"),
       ),
       true,
     );

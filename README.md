@@ -13,7 +13,7 @@ This repository is an actively maintained fork of [`badlogic/pi-telegram`](https
 
 ## Key Features
 
-- **Telegram Controls**: `/start` opens the inline application menu with command help, available π prompt templates, status rows, model, thinking, and queue sections; `/stop`, `/abort`, `/next`, and `/continue` provide queue-clear, queue-preserve, force-next, and queued-resume semantics respectively; model-switch continuation turns still use the control lane when a restart needs to resume safely.
+- **Telegram Controls**: `/start` opens the inline application menu with command help, available π prompt templates, status rows, model, thinking, and queue sections; the Status row reports `compacting` during Telegram `/compact`; `/stop`, `/abort`, `/next`, and `/continue` provide queue-clear, queue-preserve, force-next, and queued-resume semantics respectively; model-switch continuation turns still use the control lane when a restart needs to resume safely.
 - **Interactive UI**: Manage your session directly from Telegram. Inline buttons expose an application menu for switching models, choosing model pages from the pagination indicator, adjusting reasoning (thinking) levels, and inspecting or mutating the waiting queue; model scope/pagination controls stay at the top of the model menu, the Queue button shows the current item count, and command emoji are reused on matching controls such as model and thinking.
 - **In-flight Model Switching**: Change the active model mid-generation. The agent gracefully pauses, applies the new model, and restarts its response without losing context.
 - **Smart Message Queue**: Messages sent while the agent is busy are queued and previewed in the π status bar, and queued turns can be reprioritized or removed with Telegram reactions or the queue section of the inline application menu.
@@ -92,9 +92,9 @@ Use these inside the Telegram DM with your bot:
 
 Prompt-template commands: π prompt templates are mapped to Telegram-safe aliases (`fix-tests.md` becomes `/fix_tests`) and shown as compact command-only rows between the built-in commands and status rows in `/start`. They are not registered in the Telegram bot command menu, keeping the bot menu focused on bridge controls. Sending `/template_name args` from Telegram expands the matching π prompt-template file and queues the expanded prompt like normal Telegram work.
 
-Hidden compatibility shortcuts: `/help` and `/status` open the same main application menu, `/model` opens the model section, `/thinking` opens the thinking section, and `/queue` opens the queue section. They are intentionally not shown in the bot command menu.
+Hidden compatibility shortcuts: `/help` and `/status` open the same main application menu, `/model` opens the model section, `/thinking` opens the thinking section, `/queue` opens the queue section, and `/settings` opens hidden bridge settings. Settings rows open detail submenus with Back plus green/black/yellow option controls such as On and Off for checkboxes. These shortcuts are intentionally not shown in the bot command menu.
 
-Telegram command admission is explicit: `/compact`, `/queue`, `/stop`, `/abort`, `/next`, `/help`, `/start`, `/status`, `/model`, and `/thinking` execute immediately. `/continue` is a command shortcut that enqueues a priority Telegram prompt containing `continue`. Prompt-template commands expand before queueing and then follow normal prompt-queue rules. Synthetic model-switch continuation turns still enter the high-priority control lane so they can resume before normal queued prompts when π becomes safe to dispatch.
+Telegram command admission is explicit: `/compact`, `/queue`, `/settings`, `/stop`, `/abort`, `/next`, `/help`, `/start`, `/status`, `/model`, and `/thinking` execute immediately. `/continue` is a command shortcut that enqueues a priority Telegram prompt containing `continue`. Prompt-template commands expand before queueing and then follow normal prompt-queue rules. Synthetic model-switch continuation turns still enter the high-priority control lane so they can resume before normal queued prompts when π becomes safe to dispatch.
 
 ### Pi Commands
 
@@ -102,6 +102,7 @@ Run these inside π, not Telegram:
 
 - **`/telegram-setup`**: Configure or update the Telegram bot token.
 - **`/telegram-status`**: Check bridge status, connection, polling, execution, queue, and recent redacted runtime/API failure events.
+- **`/telegram-settings`**: Open local bridge settings and toggle proactive push using the same `telegram.json` flag as the Telegram `/settings` menu.
 - **`/telegram-connect`**: Start polling Telegram updates in the current π session, acquire the singleton lock, or interactively move ownership here from another live instance.
 - **`/telegram-disconnect`**: Stop polling in the current π session and release the singleton lock.
 
@@ -118,6 +119,8 @@ Run these inside π, not Telegram:
 - Queue reactions depend on Telegram delivering `message_reaction` updates for your bot and chat type.
 
 ### Inbound Handlers
+
+`telegram.json` can set `proactivePush: true` to send successful local non-Telegram final replies to the paired Telegram chat when no Telegram turn is active. Local prompt text is not sent because the bot does not own or mirror terminal user messages. The mode is off by default, can be toggled from the hidden `/settings` menu, persists across contexts until explicitly disabled or removed from config, is gated by the current Telegram lock owner, and skips aborted or failed turns.
 
 `telegram.json` can define ordered `inboundHandlers` for Telegram → π preprocessing such as text translation, voice transcription, OCR, or PDF extraction. Matching handlers run before the Telegram turn enters the π queue. If a matching media/file handler fails, the next matching handler is tried as a fallback. Legacy `attachmentHandlers` still work as a deprecated compatibility alias and are appended after `inboundHandlers`.
 
@@ -231,7 +234,7 @@ Rich previews are sent through editable messages because Telegram drafts are tex
 
 ## Status bar
 
-The π status bar shows the current bridge state plus queued Telegram turns as compact previews. Busy labels distinguish states such as `active`, `dispatching`, `queued`, `tool running`, `model`, and `compacting`.
+The π status bar shows the current bridge state plus queued Telegram turns as compact previews. Busy labels distinguish states such as `active`, `dispatching`, `queued`, `tool running`, `model`, and `compacting`. Telegram prompt guidance asks agents to keep tables, dense list items, and compact text blocks within about 37 visible cells when possible so mobile replies stay readable.
 
 ```text
 telegram queued +3: [⚡ write a shell script…, summarize this image…, 📎 2 attachments]

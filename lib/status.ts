@@ -44,6 +44,7 @@ export interface TelegramStatusContext {
   getContextUsage(): TelegramContextUsage | undefined;
   isIdle?: () => boolean;
   hasPendingMessages?: () => boolean;
+  isCompactionInProgress?: () => boolean;
   modelRegistry: {
     isUsingOAuth(model: TelegramStatusActiveModel): boolean;
   };
@@ -303,8 +304,13 @@ export function buildTelegramRuntimeEventLines(
 
 export function createTelegramStatusHtmlBuilder<TContext>(deps: {
   getActiveModel: (ctx: TContext) => TelegramStatusActiveModel | undefined;
+  isCompactionInProgress?: () => boolean;
 }): (ctx: TContext & TelegramStatusContext) => string {
-  return (ctx) => buildStatusHtml(ctx, deps.getActiveModel(ctx));
+  return (ctx) =>
+    buildStatusHtml(
+      { ...ctx, isCompactionInProgress: deps.isCompactionInProgress },
+      deps.getActiveModel(ctx),
+    );
 }
 
 export function createTelegramStatusRuntime<
@@ -348,7 +354,11 @@ export function createTelegramBridgeStatusRuntime<
         paired: !!config.allowedUserId,
         compactionInProgress,
         processing:
-          hasActiveTurn || hasPendingDispatch || queuedItems.length > 0,
+          hasActiveTurn ||
+          hasPendingDispatch ||
+          hasPendingModelSwitch ||
+          activeToolExecutions > 0 ||
+          queuedItems.length > 0,
         processingStatus: getTelegramStatusBarProcessingStatus({
           hasActiveTurn,
           hasPendingDispatch,
@@ -388,8 +398,9 @@ export function getTelegramStatusBarProcessingStatus(state: {
   queuedItems: number;
 }): string | undefined {
   if (state.hasPendingModelSwitch) return "model";
-  if (state.activeToolExecutions > 0) return "tool running";
-  if (state.hasActiveTurn) return "active";
+  if (state.hasActiveTurn && state.activeToolExecutions > 0)
+    return "tool running";
+  if (state.hasActiveTurn || state.activeToolExecutions > 0) return "active";
   if (state.hasPendingDispatch) return "dispatching";
   if (state.queuedItems > 0) return "queued";
   return undefined;
@@ -410,13 +421,15 @@ export function buildTelegramStatusBarText(
   if (!state.paired)
     return `${label} ${theme.fg("warning", "awaiting pairing")}`;
   const queued = state.queuedStatus
-    ? theme.fg("muted", state.queuedStatus)
+    ? theme.fg("success", state.queuedStatus)
     : "";
   if (state.compactionInProgress) {
     return `${label} ${theme.fg("accent", "compacting")}${queued}`;
   }
   if (state.processing) {
-    const processingStatus = state.processingStatus ?? "processing";
+    const processingStatus = state.queuedStatus
+      ? "active"
+      : (state.processingStatus ?? "processing");
     const processingToken =
       processingStatus === "active" ? "warning" : "accent";
     return `${label} ${theme.fg(processingToken, processingStatus)}${queued}`;
@@ -537,6 +550,7 @@ function buildContextSummary(
 }
 
 function buildStatusSummary(ctx: TelegramStatusContext): string {
+  if (ctx.isCompactionInProgress?.()) return "compacting";
   if (ctx.hasPendingMessages?.()) return "pending";
   if (ctx.isIdle?.() === false) return "active";
   if (ctx.isIdle?.() === true) return "idle";

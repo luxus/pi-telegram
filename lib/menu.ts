@@ -118,6 +118,7 @@ export interface TelegramMenuEffectPort<TModel extends MenuModel = MenuModel> {
   updateModelMenuMessage: () => Promise<void>;
   updateThinkingMenuMessage: () => Promise<void>;
   updateStatusMessage: () => Promise<void>;
+  persistScopedModelPatterns?: (patterns: string[]) => Promise<void>;
   setModel: (model: TModel) => Promise<boolean>;
   setCurrentModel: (model: TModel) => void;
   setThinkingLevel: (level: ThinkingLevel) => void;
@@ -188,6 +189,10 @@ export interface TelegramMenuCallbackRuntimeDeps<
     state: TelegramModelMenuState<TModel>,
     ctx: TContext,
   ) => Promise<void>;
+  updateSettingsMenuMessage?: (
+    state: TelegramModelMenuState<TModel>,
+    ctx: TContext,
+  ) => Promise<void>;
   answerCallbackQuery: (
     callbackQueryId: string,
     text?: string,
@@ -196,6 +201,10 @@ export interface TelegramMenuCallbackRuntimeDeps<
   hasActiveTelegramTurn: () => boolean;
   hasAbortHandler: () => boolean;
   hasActiveToolExecutions: () => boolean;
+  persistScopedModelPatterns?: (
+    patterns: string[],
+    ctx: TContext,
+  ) => Promise<void>;
   setModel: (model: TModel) => Promise<boolean>;
   setCurrentModel: (model: TModel, ctx: TContext) => void;
   stagePendingModelSwitch: (
@@ -265,11 +274,21 @@ export interface TelegramMenuActionRuntime<
 
 export type TelegramMenuCallbackAction =
   | { kind: "ignore" }
-  | { kind: "status"; action: "model" | "thinking" | "queue" }
+  | { kind: "status"; action: "model" | "thinking" | "queue" | "settings" }
   | { kind: "thinking:set"; level: string }
   | {
       kind: "model";
-      action: "noop" | "scope" | "page" | "pages" | "pick";
+      action:
+        | "noop"
+        | "scope"
+        | "page"
+        | "pages"
+        | "open"
+        | "pick"
+        | "pick-selected"
+        | "scope-enable"
+        | "scope-disable"
+        | "scope-toggle";
       value?: string;
     };
 
@@ -285,6 +304,9 @@ export function parseTelegramMenuCallbackAction(
   if (data === "menu:queue" || data === "status:queue") {
     return { kind: "status", action: "queue" };
   }
+  if (data === "menu:settings" || data === "status:settings") {
+    return { kind: "status", action: "settings" };
+  }
   if (data?.startsWith("thinking:set:")) {
     return {
       kind: "thinking:set",
@@ -298,7 +320,12 @@ export function parseTelegramMenuCallbackAction(
       action === "scope" ||
       action === "page" ||
       action === "pages" ||
-      action === "pick"
+      action === "open" ||
+      action === "pick" ||
+      action === "pick-selected" ||
+      action === "scope-enable" ||
+      action === "scope-disable" ||
+      action === "scope-toggle"
     ) {
       return { kind: "model", action, value };
     }
@@ -379,6 +406,10 @@ export interface TelegramMenuCallbackRuntimeAdapterDeps<
     state: TelegramModelMenuState<TModel>,
     ctx: TContext,
   ) => Promise<void>;
+  updateSettingsMenuMessage?: (
+    state: TelegramModelMenuState<TModel>,
+    ctx: TContext,
+  ) => Promise<void>;
   answerCallbackQuery: (
     callbackQueryId: string,
     text?: string,
@@ -387,6 +418,10 @@ export interface TelegramMenuCallbackRuntimeAdapterDeps<
   hasActiveTelegramTurn: () => boolean;
   hasAbortHandler: () => boolean;
   getActiveToolExecutions: () => number;
+  persistScopedModelPatterns?: (
+    patterns: string[],
+    ctx: TContext,
+  ) => Promise<void>;
   setModel: (model: TModel) => Promise<boolean>;
   setCurrentModel: (model: TModel, ctx: TContext) => void;
   stagePendingModelSwitch: (
@@ -425,11 +460,13 @@ export function createTelegramMenuCallbackHandlerForContext<
     updateModelMenuMessage: deps.updateModelMenuMessage,
     updateThinkingMenuMessage: deps.updateThinkingMenuMessage,
     updateStatusMessage: deps.updateStatusMessage,
+    updateSettingsMenuMessage: deps.updateSettingsMenuMessage,
     answerCallbackQuery: deps.answerCallbackQuery,
     isIdle: deps.isIdle,
     hasActiveTelegramTurn: deps.hasActiveTelegramTurn,
     hasAbortHandler: deps.hasAbortHandler,
     hasActiveToolExecutions: () => deps.getActiveToolExecutions() > 0,
+    persistScopedModelPatterns: deps.persistScopedModelPatterns,
     setModel: deps.setModel,
     setCurrentModel: deps.setCurrentModel,
     stagePendingModelSwitch: deps.stagePendingModelSwitch,
@@ -467,6 +504,8 @@ export async function handleTelegramMenuCallbackRuntime<
           updateModelMenuMessage: () => deps.updateModelMenuMessage(state, ctx),
           updateThinkingMenuMessage: () =>
             deps.updateThinkingMenuMessage(state, ctx),
+          updateSettingsMenuMessage: () =>
+            deps.updateSettingsMenuMessage?.(state, ctx) ?? Promise.resolve(),
           answerCallbackQuery: deps.answerCallbackQuery,
         },
       ),
@@ -504,6 +543,9 @@ export async function handleTelegramMenuCallbackRuntime<
               deps.updateModelMenuMessage(state, ctx),
             updateStatusMessage: () => deps.updateStatusMessage(state, ctx),
             answerCallbackQuery: deps.answerCallbackQuery,
+            persistScopedModelPatterns: deps.persistScopedModelPatterns
+              ? (patterns) => deps.persistScopedModelPatterns!(patterns, ctx)
+              : undefined,
             setModel: deps.setModel,
             setCurrentModel: (model) => deps.setCurrentModel(model, ctx),
             setThinkingLevel: (level) => {

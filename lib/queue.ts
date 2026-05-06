@@ -357,7 +357,7 @@ function formatTelegramQueueItemStatusSummary<TContext = unknown>(
   item: TelegramQueueItem<TContext>,
 ): string {
   if (item.queueLane === "priority") {
-    return `${item.kind === "prompt" ? item.priorityEmoji ?? "⚡" : "⚡"} ${item.statusSummary}`;
+    return `${item.kind === "prompt" ? (item.priorityEmoji ?? "⚡") : "⚡"} ${item.statusSummary}`;
   }
   return item.statusSummary;
 }
@@ -365,15 +365,7 @@ function formatTelegramQueueItemStatusSummary<TContext = unknown>(
 export function formatQueuedTelegramItemsStatus<TContext = unknown>(
   items: TelegramQueueItem<TContext>[],
 ): string {
-  if (items.length === 0) return "";
-  const previewCount = 4;
-  const summaries = items
-    .slice(0, previewCount)
-    .map(formatTelegramQueueItemStatusSummary)
-    .filter(Boolean);
-  if (summaries.length === 0) return ` +${items.length}`;
-  const suffix = items.length > summaries.length ? ", …" : "";
-  return ` +${items.length}: [${summaries.join(", ")}${suffix}]`;
+  return items.length === 0 ? "" : ` +${items.length}`;
 }
 
 export function canDispatchTelegramTurnState(
@@ -783,7 +775,7 @@ export interface TelegramAgentEndRuntimeDeps<
   ) => Promise<boolean>;
   sendMarkdownReply: (
     chatId: number,
-    replyToMessageId: number,
+    replyToMessageId: number | undefined,
     markdown: string,
     options?: { replyMarkup?: TReplyMarkup },
   ) => Promise<unknown>;
@@ -801,6 +793,14 @@ export interface TelegramAgentEndRuntimeDeps<
     plan: TelegramAgentEndOutboundReplyPlan,
     options?: { replyToPrompt?: boolean },
   ) => Promise<void>;
+  getDefaultChatId?: () => number | undefined;
+  consumeProactiveReplyToMessageId?: (chatId: number) => number | undefined;
+  isProactivePushEnabled?: () => boolean;
+  recordRuntimeEvent?: (
+    category: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
 }
 
 export interface TelegramAgentEndHookRuntimeDeps<
@@ -838,6 +838,10 @@ export interface TelegramAgentEndHookRuntimeDeps<
     TReplyMarkup
   >["planOutboundReply"];
   sendOutboundReplyArtifacts?: TelegramAgentEndRuntimeDeps<TTurn>["sendOutboundReplyArtifacts"];
+  getDefaultChatId?: TelegramAgentEndRuntimeDeps<TTurn>["getDefaultChatId"];
+  consumeProactiveReplyToMessageId?: TelegramAgentEndRuntimeDeps<TTurn>["consumeProactiveReplyToMessageId"];
+  isProactivePushEnabled?: TelegramAgentEndRuntimeDeps<TTurn>["isProactivePushEnabled"];
+  recordRuntimeEvent?: TelegramAgentEndRuntimeDeps<TTurn>["recordRuntimeEvent"];
 }
 
 export interface TelegramAgentEndHookEvent<TMessage> {
@@ -928,9 +932,11 @@ export function createTelegramAgentEndHook<
     ctx: TContext,
   ): Promise<void> {
     const turn = deps.getActiveTurn();
+    const proactiveEnabled = deps.isProactivePushEnabled?.() ?? false;
     await handleTelegramAgentEndRuntime({
       turn,
-      assistant: turn ? deps.extractAssistant(event.messages) : {},
+      assistant:
+        turn || proactiveEnabled ? deps.extractAssistant(event.messages) : {},
       preserveQueuedTurnsAsHistory: deps.getPreserveQueuedTurnsAsHistory(),
       resetRuntimeState: deps.resetRuntimeState,
       updateStatus: () => deps.updateStatus(ctx),
@@ -950,6 +956,10 @@ export function createTelegramAgentEndHook<
       sendQueuedAttachments: deps.sendQueuedAttachments,
       planOutboundReply: deps.planOutboundReply,
       sendOutboundReplyArtifacts: deps.sendOutboundReplyArtifacts,
+      getDefaultChatId: deps.getDefaultChatId,
+      consumeProactiveReplyToMessageId: deps.consumeProactiveReplyToMessageId,
+      isProactivePushEnabled: deps.isProactivePushEnabled,
+      recordRuntimeEvent: deps.recordRuntimeEvent,
     });
   };
 }
@@ -969,8 +979,8 @@ export async function handleTelegramAgentEndRuntime<
   const replyMarkup = outboundReply?.replyMarkup;
   deps.resetRuntimeState();
   deps.updateStatus();
-  if (turn && deps.isCurrentOwner && !deps.isCurrentOwner()) {
-    await deps.clearPreview(turn.chatId);
+  if (deps.isCurrentOwner && !deps.isCurrentOwner()) {
+    if (turn) await deps.clearPreview(turn.chatId);
     return;
   }
   const endPlan = buildTelegramAgentEndPlan({
@@ -981,6 +991,28 @@ export async function handleTelegramAgentEndRuntime<
     preserveQueuedTurnsAsHistory: deps.preserveQueuedTurnsAsHistory,
   });
   if (!turn) {
+    if (
+      deps.isProactivePushEnabled?.() &&
+      finalText &&
+      !assistant.errorMessage
+    ) {
+      const defaultChatId = deps.getDefaultChatId?.();
+      if (defaultChatId !== undefined) {
+        const replyToMessageId =
+          deps.consumeProactiveReplyToMessageId?.(defaultChatId);
+        try {
+          await deps.sendMarkdownReply(
+            defaultChatId,
+            replyToMessageId,
+            finalText,
+          );
+        } catch (error) {
+          deps.recordRuntimeEvent?.("proactive-push", error, {
+            chatId: defaultChatId,
+          });
+        }
+      }
+    }
     if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
     return;
   }

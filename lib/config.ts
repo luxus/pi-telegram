@@ -42,6 +42,7 @@ export interface TelegramConfig {
   inboundHandlers?: TelegramInboundHandlerConfig[];
   attachmentHandlers?: TelegramInboundHandlerConfig[];
   outboundHandlers?: TelegramOutboundHandlerConfig[];
+  proactivePush?: boolean;
 }
 
 export interface TelegramConfigStore {
@@ -120,6 +121,54 @@ export function createTelegramConfigStore(
     },
     persist: async (nextConfig = config) => {
       await writeTelegramConfig(agentDir, configPath, nextConfig);
+    },
+  };
+}
+
+export function createTelegramProactivePushChecker(
+  configStore: Pick<TelegramConfigStore, "get">,
+): () => boolean {
+  return () => configStore.get().proactivePush ?? false;
+}
+
+export function createTelegramProactivePushSetter(
+  configStore: Pick<TelegramConfigStore, "get" | "set" | "persist">,
+): (enabled: boolean) => Promise<void> {
+  return async (enabled) => {
+    const config = { ...configStore.get(), proactivePush: enabled };
+    configStore.set(config);
+    await configStore.persist(config);
+  };
+}
+
+export function createTelegramProactivePushChatIdGetter(deps: {
+  getActiveTurnChatId: () => number | undefined;
+  getAllowedUserId: () => number | undefined;
+}): () => number | undefined {
+  return () => deps.getActiveTurnChatId() ?? deps.getAllowedUserId();
+}
+
+export interface TelegramProactivePromptTarget {
+  chatId: number;
+  messageId: number;
+}
+
+export interface TelegramProactivePromptTargetStore {
+  set: (target: TelegramProactivePromptTarget) => void;
+  consumeForChat: (chatId: number) => number | undefined;
+}
+
+export function createTelegramProactivePromptTargetStore(): TelegramProactivePromptTargetStore {
+  let target: TelegramProactivePromptTarget | undefined;
+  return {
+    set: (nextTarget) => {
+      target = nextTarget;
+    },
+    consumeForChat: (chatId) => {
+      if (!target || target.chatId !== chatId) return undefined;
+      const messageId = target.messageId;
+      target = undefined;
+      return messageId;
     },
   };
 }

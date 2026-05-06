@@ -557,7 +557,7 @@ test("Queued status formatting marks priority prompts in the pi status bar", () 
       priorityPrompt,
       defaultPrompt,
     ]),
-    " +3: [⚡ status, ❤ prompt, default]",
+    " +3",
   );
 });
 
@@ -808,6 +808,45 @@ test("Agent end runtime resets state, finalizes replies, sends attachments, and 
     "clear:1",
     "markdown:final",
     "attachments:1",
+    "dispatch",
+  ]);
+});
+
+test("Agent end runtime sends proactive local result", async () => {
+  const events: string[] = [];
+  await handleTelegramAgentEndRuntime({
+    turn: undefined,
+    assistant: { text: "done" },
+    preserveQueuedTurnsAsHistory: false,
+    resetRuntimeState: () => {
+      events.push("reset");
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+    dispatchNextQueuedTelegramTurn: () => {
+      events.push("dispatch");
+    },
+    clearPreview: async () => {},
+    setPreviewPendingText: () => {},
+    finalizeMarkdownPreview: async () => false,
+    sendMarkdownReply: async (chatId, replyToMessageId, markdown) => {
+      events.push(`markdown:${chatId}:${replyToMessageId}:${markdown}`);
+    },
+    sendTextReply: async () => {},
+    sendQueuedAttachments: async () => {},
+    getDefaultChatId: () => 7,
+    consumeProactiveReplyToMessageId: (chatId) => {
+      events.push(`consume:${chatId}`);
+      return undefined;
+    },
+    isProactivePushEnabled: () => true,
+  });
+  assert.deepEqual(events, [
+    "reset",
+    "status",
+    "consume:7",
+    "markdown:7:undefined:done",
     "dispatch",
   ]);
 });

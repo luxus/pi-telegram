@@ -8,6 +8,10 @@ import test from "node:test";
 
 import { createTelegramQueueMenuRuntime } from "../lib/menu-queue.ts";
 import {
+  buildProactivePushSettingsReplyMarkup,
+  buildTelegramSettingsMenuReplyMarkup,
+} from "../lib/menu-settings.ts";
+import {
   applyTelegramModelPageSelection,
   applyTelegramModelScopeSelection,
   buildModelMenuReplyMarkup,
@@ -68,6 +72,8 @@ function createMenuState<TModel extends MenuModel = MenuModel>(
     scope: "scoped",
     scopedModels: [],
     allModels: [],
+    scopedModelPatterns: [],
+    canMutateScope: true,
     mode: "model",
     ...overrides,
   };
@@ -203,6 +209,8 @@ test("Menu runtime controller owns stored state and cached inputs", async () => 
   assert.equal(secondState.chatId, 42);
   assert.equal(reloadCount, 1);
   assert.equal(refreshCount, 1);
+  runtime.clearCachedInputs();
+  assert.equal(runtime.getState(11)?.messageId, 11);
   runtime.clear();
   assert.equal(runtime.getState(11), undefined);
 });
@@ -396,7 +404,7 @@ test("Menu helpers build model page selector markup and payloads", () => {
   );
   assert.deepEqual(
     markup.inline_keyboard[1]?.map((button) => button.text),
-    ["1", "2", "3", "4"],
+    ["1", "🟢 2", "3", "4"],
   );
   assert.deepEqual(
     markup.inline_keyboard[2]?.map((button) => button.text),
@@ -441,6 +449,37 @@ test("Menu helpers build model callback plans for paging, page menu, selection, 
     { kind: "update-menu" },
   );
   assert.equal(state.mode, "model");
+  assert.deepEqual(
+    buildTelegramModelCallbackPlan({
+      data: "model:open:1",
+      state,
+      activeModel: modelA,
+      currentThinkingLevel: "medium",
+      isIdle: true,
+      canRestartBusyRun: false,
+      hasActiveToolExecutions: false,
+    }),
+    { kind: "update-menu" },
+  );
+  assert.equal(state.mode, "model-detail");
+  assert.equal(state.selectedModelIndex, 1);
+  assert.equal(state.selectedModelKey, "anthropic/claude-3");
+  assert.deepEqual(
+    buildTelegramModelCallbackPlan({
+      data: "model:scope-toggle",
+      state,
+      activeModel: modelA,
+      currentThinkingLevel: "medium",
+      isIdle: true,
+      canRestartBusyRun: false,
+      hasActiveToolExecutions: false,
+    }),
+    {
+      kind: "persist-scope",
+      patterns: ["anthropic/claude-3"],
+      text: "Added to scoped models",
+    },
+  );
   assert.deepEqual(
     buildTelegramModelCallbackPlan({
       data: "model:page:1",
@@ -500,6 +539,132 @@ test("Menu helpers build model callback plans for paging, page menu, selection, 
     }),
     { kind: "answer", text: "π is busy. Send /abort, /next, or /stop." },
   );
+});
+
+test("Menu helpers keep model detail selection stable after scope changes", () => {
+  const modelA = createMenuModel("openai", "gpt-5");
+  const modelB = createMenuModel("anthropic", "claude-3");
+  const state = createMenuState<MenuModel>(2, {
+    scope: "scoped",
+    scopedModels: [{ model: modelA }, { model: modelB }],
+    allModels: [{ model: modelA }, { model: modelB }],
+    scopedModelPatterns: ["openai/gpt-5", "anthropic/claude-3"],
+  });
+  assert.deepEqual(
+    buildTelegramModelCallbackPlan({
+      data: "model:open:1",
+      state,
+      activeModel: modelA,
+      currentThinkingLevel: "medium",
+      isIdle: true,
+      canRestartBusyRun: false,
+      hasActiveToolExecutions: false,
+    }),
+    { kind: "update-menu" },
+  );
+  assert.deepEqual(
+    buildTelegramModelCallbackPlan({
+      data: "model:scope-toggle",
+      state,
+      activeModel: modelA,
+      currentThinkingLevel: "medium",
+      isIdle: true,
+      canRestartBusyRun: false,
+      hasActiveToolExecutions: false,
+    }),
+    {
+      kind: "persist-scope",
+      patterns: ["openai/gpt-5"],
+      text: "Removed from scoped models",
+    },
+  );
+  assert.deepEqual(
+    buildTelegramModelCallbackPlan({
+      data: "model:pick-selected",
+      state,
+      activeModel: modelA,
+      currentThinkingLevel: "medium",
+      isIdle: true,
+      canRestartBusyRun: false,
+      hasActiveToolExecutions: false,
+    }),
+    {
+      kind: "switch-model",
+      selection: state.allModels[1],
+      mode: "idle",
+      callbackText: "Switched to claude-3",
+    },
+  );
+});
+
+test("Menu helpers expand wildcard scope patterns when disabling one matched model", () => {
+  const modelA = createMenuModel("openai", "gpt-5");
+  const modelB = createMenuModel("openai", "gpt-4");
+  const modelC = createMenuModel("anthropic", "claude-3");
+  const state = createMenuState<MenuModel>(2, {
+    scope: "scoped",
+    scopedModels: [
+      { model: modelA, thinkingLevel: "high" },
+      { model: modelB, thinkingLevel: "high" },
+      { model: modelC },
+    ],
+    allModels: [{ model: modelA }, { model: modelB }, { model: modelC }],
+    scopedModelPatterns: [
+      "openai/*:high",
+      "anthropic/claude-3",
+      "future/model",
+    ],
+    selectedModelKey: "openai/gpt-5",
+    mode: "model-detail",
+  });
+  assert.deepEqual(
+    buildTelegramModelCallbackPlan({
+      data: "model:scope-disable",
+      state,
+      activeModel: modelA,
+      currentThinkingLevel: "medium",
+      isIdle: true,
+      canRestartBusyRun: false,
+      hasActiveToolExecutions: false,
+    }),
+    {
+      kind: "persist-scope",
+      patterns: ["openai/gpt-4:high", "anthropic/claude-3", "future/model"],
+      text: "Removed from scoped models",
+    },
+  );
+  assert.equal(
+    state.scopedModels.some((entry) => entry.model === modelA),
+    false,
+  );
+});
+
+test("Menu helpers send active detail selection back to model list page", () => {
+  const models = Array.from({ length: 8 }, (_value, index) =>
+    createMenuModel("openai", `model-${index}`),
+  );
+  const activeModel = models[7]!;
+  const state = createMenuState<MenuModel>(2, {
+    scope: "all",
+    scopedModels: [],
+    allModels: models.map((model) => ({ model })),
+    selectedModelKey: "openai/model-7",
+    mode: "model-detail",
+  });
+  assert.deepEqual(
+    buildTelegramModelCallbackPlan({
+      data: "model:pick-selected",
+      state,
+      activeModel,
+      currentThinkingLevel: "medium",
+      isIdle: true,
+      canRestartBusyRun: false,
+      hasActiveToolExecutions: false,
+    }),
+    { kind: "update-menu", text: "Model: model-7" },
+  );
+  assert.equal(state.mode, "model");
+  assert.equal(state.page, 1);
 });
 
 test("Menu helpers open status and model menus through runtime ports", async () => {
@@ -816,7 +981,7 @@ test("Menu runtime routes stored callback queries through callback action ports"
         events.push("status");
       },
       updateModelMenuMessage: async () => {
-        events.push("unexpected:model-menu");
+        events.push("model-menu");
       },
       updateThinkingMenuMessage: async () => {
         events.push("unexpected:thinking-menu");
@@ -859,7 +1024,7 @@ test("Menu runtime routes stored callback queries through callback action ports"
     "current:gpt-5",
     "thinking:high",
     "status",
-    "status-menu",
+    "model-menu",
     "restart:gpt-5",
     "answer:Switching to gpt-5 and continuing…",
   ]);
@@ -964,9 +1129,11 @@ test("Menu callback adapter converts active tool count into runtime booleans", a
   );
   assert.deepEqual(events, [
     "current:claude-3",
+    "model-menu",
     "pending:claude-3",
     "answer:Switched to claude-3. Restarting after the current tool finishes…",
     "current:claude-3",
+    "model-menu",
     "restart",
     "answer:Switching to claude-3 and continuing…",
   ]);
@@ -1034,10 +1201,10 @@ test("Menu helpers execute model callback actions across update, switch, and res
       },
       {
         updateModelMenuMessage: async () => {
-          events.push("unexpected:update");
+          events.push("update-menu");
         },
         updateStatusMessage: async () => {
-          events.push("status");
+          events.push("unexpected:status");
         },
         answerCallbackQuery: async (_id, text) => {
           events.push(`answer:${text ?? ""}`);
@@ -1074,10 +1241,10 @@ test("Menu helpers execute model callback actions across update, switch, and res
       },
       {
         updateModelMenuMessage: async () => {
-          events.push("unexpected:update");
+          events.push("update-menu");
         },
         updateStatusMessage: async () => {
-          events.push("status");
+          events.push("unexpected:status");
         },
         answerCallbackQuery: async (_id, text) => {
           events.push(`answer:${text ?? ""}`);
@@ -1103,14 +1270,14 @@ test("Menu helpers execute model callback actions across update, switch, and res
   assert.equal(events[0], "update-menu");
   assert.equal(events[1], "answer:");
   assert.equal(events[2], "current:claude-3");
-  assert.equal(events[3], "status");
+  assert.equal(events[3], "update-menu");
   assert.equal(events[4], "pending:claude-3");
   assert.equal(
     events[5],
     "answer:Switched to claude-3. Restarting after the current tool finishes…",
   );
   assert.equal(events[6], "current:claude-3");
-  assert.equal(events[7], "status");
+  assert.equal(events[7], "update-menu");
   assert.equal(events[8], "restart:claude-3");
   assert.equal(events[9], "answer:Switching to claude-3 and continuing…");
 });
@@ -1287,6 +1454,7 @@ test("Menu action runtime with state builder opens menus from settings runtime",
       storeState: () => {},
       getState: () => undefined,
       clear: () => {},
+      clearCachedInputs: () => {},
       buildState: async (options) => {
         await options.reloadSettings();
         events.push(
@@ -1416,8 +1584,22 @@ test("Queue menu keeps main-menu navigation on top", async () => {
       reorder: () => {},
       clear: () => 0,
       removeByMessageIds: () => 0,
-      clearPriorityByMessageId: () => false,
-      prioritizeByMessageId: () => false,
+      clearPriorityByMessageId: (messageId) => {
+        const item = queuedItems.find(
+          (entry) => entry.replyToMessageId === messageId,
+        );
+        if (!item) return false;
+        item.queueLane = "default";
+        return true;
+      },
+      prioritizeByMessageId: (messageId) => {
+        const item = queuedItems.find(
+          (entry) => entry.replyToMessageId === messageId,
+        );
+        if (!item) return false;
+        item.queueLane = "priority";
+        return true;
+      },
     },
     sendInteractiveMessage: async (_chatId, text, mode, replyMarkup) => {
       texts.push(text);
@@ -1460,6 +1642,14 @@ test("Queue menu keeps main-menu navigation on top", async () => {
     },
     "ctx",
   );
+  await runtime.handleCallbackQuery(
+    {
+      id: "callback",
+      data: "queue:prio-set:1:10:normal",
+      message: { chat: { id: 1 }, message_id: 2 },
+    },
+    "ctx",
+  );
   queuedItems.length = 0;
   await runtime.openQueueMenu(1, 2, "ctx");
   assert.equal(markups[0]?.inline_keyboard[0]?.[0]?.callback_data, "menu:back");
@@ -1469,21 +1659,31 @@ test("Queue menu keeps main-menu navigation on top", async () => {
     "1. 🕊 queued <prompt>",
   );
   assert.deepEqual(markups[2]?.inline_keyboard[1], [
-    { text: "🐢 Deprioritize 🕊", callback_data: "queue:prio:1:10" },
+    { text: "🟡 Priority", callback_data: "queue:prio-set:1:10:priority" },
+    { text: "⚫️ Normal", callback_data: "queue:prio-set:1:10:normal" },
   ]);
   assert.deepEqual(markups[2]?.inline_keyboard[2], [
     { text: "🗑 Delete", callback_data: "queue:delete:1:10" },
   ]);
-  assert.deepEqual(markups[3]?.inline_keyboard, [
+  assert.deepEqual(markups[3]?.inline_keyboard[1], [
+    { text: "⚫️ Priority", callback_data: "queue:prio-set:1:10:priority" },
+    { text: "🟡 Normal", callback_data: "queue:prio-set:1:10:normal" },
+  ]);
+  assert.deepEqual(markups[4]?.inline_keyboard, [
     [{ text: "⬆️ Main menu", callback_data: "menu:back" }],
+    [{ text: "🌀 Refresh", callback_data: "queue:refresh" }],
   ]);
   assert.equal(texts[0], "<b>⏳ Queue:</b>");
   assert.equal(
     texts[2],
-    "<pre>[telegram] queued &lt;prompt&gt;\n\nfull body</pre>",
+    "<b>1.</b> 🕊\n<pre>[telegram] queued &lt;prompt&gt;\n\nfull body</pre>",
   );
-  assert.equal(texts[3], "<b>⏳ Queue is empty.</b>");
-  assert.deepEqual(modes, ["html", "html", "html", "html"]);
+  assert.equal(
+    texts[3],
+    "<b>1.</b>\n<pre>[telegram] queued &lt;prompt&gt;\n\nfull body</pre>",
+  );
+  assert.equal(texts[4], "<b>⌛ Queue is empty.</b>");
+  assert.deepEqual(modes, ["html", "html", "html", "html", "html"]);
 });
 
 test("Queue item detail renders prompt as raw preformatted HTML", async () => {
@@ -1539,7 +1739,7 @@ test("Queue item detail renders prompt as raw preformatted HTML", async () => {
     },
     "ctx",
   );
-  assert.match(texts[0] ?? "", /^<pre>\[telegram\]/);
+  assert.match(texts[0] ?? "", /^<b>1\.<\/b>\n<pre>\[telegram\]/);
   assert.match(texts[0] ?? "", /\/home\/user\/\.pi\/agent\/tmp\/telegram/);
   assert.match(texts[0] ?? "", /&amp;&lt;&gt;/);
   assert.match(texts[0] ?? "", /… \[truncated\]<\/pre>$/);
@@ -1620,8 +1820,10 @@ test("Queue item delete requires confirmation", async () => {
   assert.equal(queuedItems.length, 1);
   assert.equal(texts[0], "<b>Delete this queued prompt?</b>");
   assert.deepEqual(markups[0]?.inline_keyboard, [
-    [{ text: "🗑 Yes, delete", callback_data: "queue:confirm-delete:1:10" }],
-    [{ text: "❌ No", callback_data: "queue:keep:1:10" }],
+    [
+      { text: "🗑 Yes, delete", callback_data: "queue:confirm-delete:1:10" },
+      { text: "❌ No", callback_data: "queue:keep:1:10" },
+    ],
   ]);
   await runtime.handleCallbackQuery(
     {
@@ -1642,7 +1844,7 @@ test("Queue item delete requires confirmation", async () => {
     "ctx",
   );
   assert.equal(queuedItems.length, 1);
-  assert.equal(texts[2], "<pre>[telegram] delete me</pre>");
+  assert.equal(texts[2], "<b>1.</b>\n<pre>[telegram] delete me</pre>");
   assert.equal(notices[2], "Kept in queue.");
   await runtime.handleCallbackQuery(
     {
@@ -1653,7 +1855,7 @@ test("Queue item delete requires confirmation", async () => {
     "ctx",
   );
   assert.equal(queuedItems.length, 0);
-  assert.equal(texts[3], "<b>⏳ Queue is empty.</b>");
+  assert.equal(texts[3], "<b>⌛ Queue is empty.</b>");
   assert.equal(notices[3], "Deleted from queue.");
 });
 
@@ -1667,25 +1869,39 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
   assert.deepEqual(getModelMenuItems(state), state.scopedModels);
   assert.match(
     formatScopedModelButtonText(state.scopedModels[0], modelA),
-    /^✅ /,
+    /^🟢 /,
   );
   const modelMarkup = buildModelMenuReplyMarkup(state, modelA, 6);
+  state.mode = "model-detail";
+  state.selectedModelKey = "openai/gpt-5";
+  state.allModels = [{ model: modelA }];
+  const detailPayload = buildTelegramModelMenuRenderPayload(state, modelA);
+  assert.deepEqual(detailPayload.replyMarkup.inline_keyboard[1], [
+    { text: "🟢 Active", callback_data: "model:pick-selected" },
+  ]);
+  assert.deepEqual(detailPayload.replyMarkup.inline_keyboard[2], [
+    { text: "🟡 Scoped", callback_data: "model:scope-enable" },
+    { text: "⚫️ All", callback_data: "model:scope-disable" },
+  ]);
+  const disabledDetailPayload = buildTelegramModelMenuRenderPayload(
+    state,
+    modelB,
+  );
+  assert.deepEqual(disabledDetailPayload.replyMarkup.inline_keyboard[1], [
+    { text: "☑️ Activate", callback_data: "model:pick-selected" },
+  ]);
   assert.equal(modelMarkup.inline_keyboard[0]?.[0]?.callback_data, "menu:back");
-  assert.equal(
-    modelMarkup.inline_keyboard[1]?.[0]?.callback_data,
-    "model:scope:scoped",
-  );
-  assert.equal(
-    modelMarkup.inline_keyboard[1]?.[1]?.callback_data,
-    "model:scope:all",
-  );
+  assert.deepEqual(modelMarkup.inline_keyboard[1], [
+    { text: "🟡 Scoped", callback_data: "model:scope:scoped" },
+    { text: "⚫️ All", callback_data: "model:scope:all" },
+  ]);
   assert.equal(
     modelMarkup.inline_keyboard[2]?.[0]?.callback_data,
     "model:pages",
   );
   assert.equal(
     modelMarkup.inline_keyboard[3]?.[0]?.callback_data,
-    "model:pick:0",
+    "model:open:0",
   );
   const thinkingText = buildThinkingMenuText();
   assert.equal(thinkingText, "<b>🧠 Choose a thinking level:</b>");
@@ -1696,14 +1912,14 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
     "menu:back",
   );
   assert.equal(
-    thinkingMarkup.inline_keyboard.some((row) => row[0]?.text === "✅ medium"),
+    thinkingMarkup.inline_keyboard.some((row) => row[0]?.text === "🟢 medium"),
     true,
   );
   const statusMarkup = buildStatusReplyMarkup(modelA, "medium", 3);
   const statusCallbackData = statusMarkup.inline_keyboard.flatMap((row) =>
     row.map((button) => button.callback_data),
   );
-  assert.equal(statusMarkup.inline_keyboard.length, 3);
+  assert.equal(statusMarkup.inline_keyboard.length, 4);
   assert.equal(
     statusMarkup.inline_keyboard[0]?.[0]?.text.startsWith("🤖 Model"),
     true,
@@ -1712,11 +1928,17 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
     statusMarkup.inline_keyboard[1]?.[0]?.text.startsWith("🧠 Thinking"),
     true,
   );
-  assert.equal(statusMarkup.inline_keyboard.at(-1)?.[0]?.text, "⏳ Queue: 3");
+  assert.equal(statusMarkup.inline_keyboard[2]?.[0]?.text, "⏳ Queue: 3");
+  assert.equal(statusMarkup.inline_keyboard.at(-1)?.[0]?.text, "⚙️ Settings");
+  assert.equal(
+    buildStatusReplyMarkup(undefined, "off", 0).inline_keyboard[1]?.[0]?.text,
+    "⌛ Queue: 0",
+  );
   assert.deepEqual(statusCallbackData, [
     "menu:model",
     "menu:thinking",
     "menu:queue",
+    "menu:settings",
   ]);
   assert.equal(
     statusCallbackData.some((callbackData) =>
@@ -1725,5 +1947,33 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
     false,
   );
   const noReasoningMarkup = buildStatusReplyMarkup(modelB, "medium");
-  assert.equal(noReasoningMarkup.inline_keyboard.length, 2);
+  assert.equal(noReasoningMarkup.inline_keyboard.length, 3);
+});
+
+test("Settings menu marks binary config flags in the list", () => {
+  assert.deepEqual(
+    buildTelegramSettingsMenuReplyMarkup(true).inline_keyboard[1],
+    [{ text: "🟢 Proactive push", callback_data: "settings:open:proactive" }],
+  );
+  assert.deepEqual(
+    buildTelegramSettingsMenuReplyMarkup(false).inline_keyboard[1],
+    [{ text: "⚫️ Proactive push", callback_data: "settings:open:proactive" }],
+  );
+});
+
+test("Settings menu marks one-line on/off checkbox controls symmetrically", () => {
+  assert.deepEqual(
+    buildProactivePushSettingsReplyMarkup(true).inline_keyboard[1],
+    [
+      { text: "🟢 On", callback_data: "settings:set:proactive:on" },
+      { text: "⚫️ Off", callback_data: "settings:set:proactive:off" },
+    ],
+  );
+  assert.deepEqual(
+    buildProactivePushSettingsReplyMarkup(false).inline_keyboard[1],
+    [
+      { text: "⚫️ On", callback_data: "settings:set:proactive:on" },
+      { text: "🟡 Off", callback_data: "settings:set:proactive:off" },
+    ],
+  );
 });

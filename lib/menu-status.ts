@@ -21,6 +21,7 @@ import {
 export interface TelegramStatusMenuCallbackDeps {
   updateModelMenuMessage: () => Promise<void>;
   updateThinkingMenuMessage: () => Promise<void>;
+  updateSettingsMenuMessage?: () => Promise<void>;
   answerCallbackQuery: (
     callbackQueryId: string,
     text?: string,
@@ -49,7 +50,7 @@ export interface TelegramStatusMenuOpenDeps<
 
 function isTelegramStatusMenuCallbackAction(
   data: string | undefined,
-  action: "model" | "thinking",
+  action: "model" | "thinking" | "settings",
 ): boolean {
   return data === `menu:${action}` || data === `status:${action}`;
 }
@@ -119,6 +120,12 @@ export async function handleTelegramStatusMenuCallbackAction(
     await deps.answerCallbackQuery(callbackQueryId);
     return true;
   }
+  if (isTelegramStatusMenuCallbackAction(data, "settings")) {
+    if (!deps.updateSettingsMenuMessage) return false;
+    await deps.updateSettingsMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId);
+    return true;
+  }
   if (!isTelegramStatusMenuCallbackAction(data, "thinking")) return false;
   if (!activeModel?.reasoning) {
     await deps.answerCallbackQuery(
@@ -160,8 +167,14 @@ export function buildStatusReplyMarkup(
   }
   rows.push([
     {
-      text: `⏳ Queue: ${queueItemCount}`,
+      text: `${queueItemCount === 0 ? "⌛" : "⏳"} Queue: ${queueItemCount}`,
       callback_data: "menu:queue",
+    },
+  ]);
+  rows.push([
+    {
+      text: "⚙️ Settings",
+      callback_data: "menu:settings",
     },
   ]);
   return { inline_keyboard: rows };

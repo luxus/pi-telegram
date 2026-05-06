@@ -64,12 +64,14 @@ function getRequiredCommand(
 function createBridgeCommandContext(
   notify: (message: string) => void = () => {},
   confirm: () => Promise<boolean> | boolean = () => false,
+  select?: (title: string, items: string[]) => Promise<string | undefined>,
 ): ExtensionCommandContext {
   return {
     cwd: "/repo",
     ui: {
       notify,
       confirm,
+      select,
       theme: {
         fg: (_color: string, value: string) => value,
       },
@@ -155,6 +157,43 @@ test("Command helpers register pi setup and status commands", async () => {
   );
   assert.deepEqual(events, ["setup"]);
   assert.deepEqual(notifications, ["bot: @demo\npolling: stopped"]);
+});
+
+test("Command helpers register terminal settings command", async () => {
+  const harness = createCommandRegistrationApiHarness();
+  const events: string[] = [];
+  let proactive = false;
+  registerTelegramBridgeCommands(harness.api, {
+    promptForConfig: async () => {},
+    getStatusLines: () => [],
+    reloadConfig: async () => {
+      events.push("reload");
+    },
+    hasBotToken: () => true,
+    startPolling: async () => {},
+    stopPolling: async () => {},
+    updateStatus: () => {
+      events.push("status");
+    },
+    isProactivePushEnabled: () => proactive,
+    setProactivePushEnabled: async (enabled) => {
+      proactive = enabled;
+      events.push(`proactive:${enabled}`);
+    },
+  });
+  const notifications: string[] = [];
+  const ctx = createBridgeCommandContext(
+    (message) => notifications.push(message),
+    () => false,
+    async (_title, items) => items[0],
+  );
+  await getRequiredCommand(harness.commands, "telegram-settings").handler(
+    "",
+    ctx,
+  );
+  assert.equal(proactive, true);
+  assert.deepEqual(events, ["reload", "proactive:true", "status"]);
+  assert.deepEqual(notifications, ["Proactive push enabled."]);
 });
 
 test("Command helpers register pi connect and disconnect commands", async () => {

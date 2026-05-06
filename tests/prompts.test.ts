@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   buildTelegramBridgeSystemPrompt,
   createTelegramBeforeAgentStartHook,
+  createTelegramProactiveBeforeAgentStartHook,
 } from "../lib/prompts.ts";
 
 type BeforeAgentStartHookEvent = Parameters<
@@ -65,7 +66,7 @@ test("Prompt helpers build before-agent-start hooks", () => {
     defaultSystemPrompt,
     /The current user message came from Telegram/,
   );
-  assert.match(defaultSystemPrompt, /prefer narrow table columns/);
+  assert.match(defaultSystemPrompt, /37 visible cells/);
   assert.match(defaultSystemPrompt, /`\[reply\]` is quoted context/);
   assert.match(defaultSystemPrompt, /not a new instruction by itself/);
   assert.match(
@@ -81,4 +82,20 @@ test("Prompt helpers build before-agent-start hooks", () => {
     /do not call or register transport\/TTS\/text-to-OGG tools/,
   );
   assert.match(defaultSystemPrompt, /no specific summary format is required/);
+});
+
+test("Prompt helpers leave local prompts private for proactive result push", async () => {
+  const hook = createTelegramProactiveBeforeAgentStartHook({
+    baseHook: createTelegramBeforeAgentStartHook({
+      telegramPrefix: "[telegram]",
+      systemPromptSuffix: "\nbridge active",
+    }),
+    isProactivePushEnabled: () => true,
+    isCurrentOwner: () => true,
+  });
+  const result = await hook(
+    createBeforeAgentStartEvent("local prompt", "base"),
+    "ctx",
+  );
+  assert.deepEqual(result, { systemPrompt: "base\nbridge active" });
 });

@@ -31,7 +31,9 @@ export type {
 
 export interface PiSettingsManager {
   reload: () => Promise<void>;
+  flush: () => Promise<void>;
   getEnabledModels: () => string[] | undefined;
+  setEnabledModels: (patterns: string[] | undefined) => void;
 }
 
 export type PiSlashCommandInfo = SlashCommandInfo;
@@ -68,6 +70,20 @@ export function createExtensionApiRuntimePorts(
 
 export function createSettingsManager(cwd: string): PiSettingsManager {
   return SettingsManager.create(cwd);
+}
+
+export function createScopedModelPatternPersister(deps: {
+  createSettingsManager: (cwd: string) => PiSettingsManager;
+  clearCachedModelMenuInputs: () => void;
+}): (patterns: string[], ctx: ExtensionContext) => Promise<void> {
+  return async function persistScopedModelPatterns(patterns, ctx) {
+    const settingsManager = deps.createSettingsManager(ctx.cwd);
+    settingsManager.setEnabledModels(
+      patterns.length > 0 ? patterns : undefined,
+    );
+    await settingsManager.flush();
+    deps.clearCachedModelMenuInputs();
+  };
 }
 
 export function getExtensionContextModel(

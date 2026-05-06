@@ -135,6 +135,10 @@ export interface TelegramBridgeCommandStartPollingResult {
   owner?: string;
 }
 
+interface TelegramBridgeSettingsSelectUi {
+  select?: (title: string, items: string[]) => Promise<string | undefined>;
+}
+
 export interface TelegramBridgeCommandRegistrationDeps {
   promptForConfig: (ctx: ExtensionCommandContext) => Promise<void>;
   getStatusLines: () => string[];
@@ -149,6 +153,8 @@ export interface TelegramBridgeCommandRegistrationDeps {
     | TelegramBridgeCommandStartPollingResult;
   stopPolling: () => Promise<void | string>;
   updateStatus: (ctx: ExtensionCommandContext) => void;
+  isProactivePushEnabled?: () => boolean;
+  setProactivePushEnabled?: (enabled: boolean) => Promise<void>;
 }
 
 function formatTelegramTakeoverTitle(ctx: ExtensionCommandContext): string {
@@ -181,6 +187,36 @@ export function registerTelegramBridgeCommands(
     description: "Show Telegram bridge status",
     handler: async (_args, ctx) => {
       ctx.ui.notify(deps.getStatusLines().join("\n"), "info");
+    },
+  });
+  pi.registerCommand("telegram-settings", {
+    description: "Open Telegram bridge settings",
+    handler: async (_args, ctx) => {
+      if (!deps.isProactivePushEnabled || !deps.setProactivePushEnabled) {
+        ctx.ui.notify("Telegram settings are unavailable.", "warning");
+        return;
+      }
+      await deps.reloadConfig();
+      const enabled = deps.isProactivePushEnabled();
+      const nextEnabled = !enabled;
+      const label = `${enabled ? "🟢" : "⚫️"} Proactive push`;
+      const action = `${nextEnabled ? "Enable" : "Disable"} proactive push`;
+      const select = (ctx.ui as TelegramBridgeSettingsSelectUi).select;
+      if (!select) {
+        ctx.ui.notify(
+          `${label}\n${action}: /telegram-settings requires interactive mode.`,
+          "info",
+        );
+        return;
+      }
+      const selected = await select("Telegram settings", [label, "Cancel"]);
+      if (selected !== label) return;
+      await deps.setProactivePushEnabled(nextEnabled);
+      deps.updateStatus(ctx);
+      ctx.ui.notify(
+        `Proactive push ${nextEnabled ? "enabled" : "disabled"}.`,
+        "info",
+      );
     },
   });
   pi.registerCommand("telegram-connect", {
@@ -230,6 +266,7 @@ export const TELEGRAM_RESERVED_COMMAND_NAMES = [
   "compact",
   "model",
   "thinking",
+  "settings",
   "help",
   "start",
 ] as const;
@@ -261,6 +298,7 @@ export type TelegramCommandAction =
   | { kind: "status"; executionMode: "immediate" }
   | { kind: "model"; executionMode: "immediate" }
   | { kind: "thinking"; executionMode: "immediate" }
+  | { kind: "settings"; executionMode: "immediate" }
   | {
       kind: "help";
       commandName: "help" | "start";
@@ -279,6 +317,7 @@ export interface TelegramCommandActionDeps<TMessage, TContext> {
   handleStatus: (message: TMessage, ctx: TContext) => Promise<void>;
   handleModel: (message: TMessage, ctx: TContext) => Promise<void>;
   handleThinking: (message: TMessage, ctx: TContext) => Promise<void>;
+  handleSettings?: (message: TMessage, ctx: TContext) => Promise<void>;
   handleHelp: (
     message: TMessage,
     commandName: "help" | "start",
@@ -353,6 +392,11 @@ export interface TelegramCommandTargetRuntimeDeps<TContext> {
     replyToMessageId: number,
     ctx: TContext,
   ) => Promise<void>;
+  openSettingsMenu?: (
+    chatId: number,
+    replyToMessageId: number,
+    ctx: TContext,
+  ) => Promise<void>;
   sendTextReply: (
     chatId: number,
     replyToMessageId: number,
@@ -373,6 +417,7 @@ export interface TelegramCommandTargetRuntime<
   ) => void;
   showStatus: (message: TMessage, ctx: TContext) => Promise<void>;
   openModelMenu: (message: TMessage, ctx: TContext) => Promise<void>;
+  openSettingsMenu: (message: TMessage, ctx: TContext) => Promise<void>;
   sendTextReply: (message: TMessage, text: string) => Promise<void>;
 }
 
@@ -457,6 +502,7 @@ export function createTelegramCommandTargetQueueRuntime<
     }),
     showStatus: deps.showStatus,
     openModelMenu: deps.openModelMenu,
+    openSettingsMenu: deps.openSettingsMenu,
     sendTextReply: deps.sendTextReply,
   });
 }
@@ -484,6 +530,18 @@ export function createTelegramCommandTargetRuntime<
     openModelMenu: (message, ctx) => {
       const target = getTelegramCommandMessageTarget(message);
       return deps.openModelMenu(target.chatId, target.replyToMessageId, ctx);
+    },
+    openSettingsMenu: async (message, ctx) => {
+      const target = getTelegramCommandMessageTarget(message);
+      if (!deps.openSettingsMenu) {
+        await deps.sendTextReply(
+          target.chatId,
+          target.replyToMessageId,
+          "Settings menu is unavailable.",
+        );
+        return;
+      }
+      await deps.openSettingsMenu(target.chatId, target.replyToMessageId, ctx);
     },
     sendTextReply: async (message, text) => {
       const target = getTelegramCommandMessageTarget(message);
@@ -541,6 +599,7 @@ export interface TelegramCommandRuntimeDeps<
   openModelMenu: (message: TMessage, ctx: TContext) => Promise<void>;
   openThinkingMenu: (message: TMessage, ctx: TContext) => Promise<void>;
   openQueueMenu: (message: TMessage, ctx: TContext) => Promise<void>;
+  openSettingsMenu?: (message: TMessage, ctx: TContext) => Promise<void>;
   getAllowedUserId: () => number | undefined;
   setAllowedUserId: (userId: number) => void;
   registerBotCommands: () => Promise<void>;
@@ -624,6 +683,7 @@ export const TELEGRAM_COMMAND_ACTIONS = {
   compact: { kind: "compact", executionMode: "immediate" },
   model: { kind: "model", executionMode: "immediate" },
   thinking: { kind: "thinking", executionMode: "immediate" },
+  settings: { kind: "settings", executionMode: "immediate" },
   help: { kind: "help", commandName: "help", executionMode: "immediate" },
   start: { kind: "help", commandName: "start", executionMode: "immediate" },
 } as const satisfies Record<TelegramReservedCommandName, TelegramCommandAction>;
@@ -830,6 +890,10 @@ export async function executeTelegramCommandAction<TMessage, TContext>(
     case "thinking":
       await deps.handleThinking(message, ctx);
       return true;
+    case "settings":
+      if (!deps.handleSettings) return false;
+      await deps.handleSettings(message, ctx);
+      return true;
     case "help":
       await deps.handleHelp(message, action.commandName, ctx);
       return true;
@@ -846,6 +910,7 @@ export interface TelegramCommandHandlerTargetRuntimeDeps<
       | "enqueueControlItem"
       | "showStatus"
       | "openModelMenu"
+      | "openSettingsMenu"
       | "sendTextReply"
       | "registerBotCommands"
     >,
@@ -877,6 +942,7 @@ export function createTelegramCommandHandlerTargetRuntime<
     dispatchNextQueuedTelegramTurn: deps.dispatchNextQueuedTelegramTurn,
     showStatus: deps.showStatus,
     openModelMenu: deps.openModelMenu,
+    openSettingsMenu: deps.openSettingsMenu,
     sendTextReply: deps.sendTextReply,
   });
   return createTelegramCommandHandler({
@@ -901,6 +967,7 @@ export function createTelegramCommandHandlerTargetRuntime<
     openModelMenu: commandTargetRuntime.openModelMenu,
     openThinkingMenu: deps.openThinkingMenu,
     openQueueMenu: deps.openQueueMenu,
+    openSettingsMenu: commandTargetRuntime.openSettingsMenu,
     getAllowedUserId: deps.getAllowedUserId,
     setAllowedUserId: deps.setAllowedUserId,
     registerBotCommands: createTelegramBotCommandRegistrar({
@@ -1056,6 +1123,11 @@ async function handleTelegramCommandRuntime<
       handleThinking: async (nextMessage, commandCtx) => {
         await deps.openThinkingMenu(nextMessage, commandCtx);
       },
+      handleSettings: deps.openSettingsMenu
+        ? async (nextMessage, commandCtx) => {
+            await deps.openSettingsMenu?.(nextMessage, commandCtx);
+          }
+        : undefined,
       handleHelp: async (nextMessage, _nextCommandName, commandCtx) => {
         try {
           await deps.registerBotCommands();

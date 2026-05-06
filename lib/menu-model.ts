@@ -6,6 +6,7 @@
 
 import type { TelegramInlineKeyboardMarkup } from "./keyboard.ts";
 import {
+  getCanonicalModelId,
   type MenuModel,
   modelsMatch,
   parseTelegramCliScopedModelPatterns,
@@ -29,7 +30,18 @@ export interface TelegramModelMenuState<TModel extends MenuModel = MenuModel> {
   scopedModels: ScopedTelegramModel<TModel>[];
   allModels: ScopedTelegramModel<TModel>[];
   note?: string;
-  mode: "status" | "model" | "model-pages" | "thinking" | "queue";
+  selectedModelIndex?: number;
+  selectedModelKey?: string;
+  scopedModelPatterns?: string[];
+  canMutateScope?: boolean;
+  mode:
+    | "status"
+    | "model"
+    | "model-pages"
+    | "model-detail"
+    | "thinking"
+    | "queue"
+    | "settings";
 }
 
 export interface StoredTelegramModelMenuState<
@@ -90,7 +102,9 @@ export interface TelegramModelMenuRuntimeOptions<
 
 export interface MenuSettingsManager {
   reload: () => Promise<void>;
+  flush?: () => Promise<void>;
   getEnabledModels: () => string[] | undefined;
+  setEnabledModels?: (patterns: string[] | undefined) => void;
 }
 
 export type TelegramModelMenuStateBuilderContext<
@@ -134,6 +148,7 @@ export type TelegramModelMenuCallbackDeps<
   ) => Promise<void>;
   updateModelMenuMessage: () => Promise<void>;
   updateStatusMessage: () => Promise<void>;
+  persistScopedModelPatterns?: (patterns: string[]) => Promise<void>;
   setModel: (model: TModel) => Promise<boolean>;
   setCurrentModel: (model: TModel) => void;
   setThinkingLevel: (level: ThinkingLevel) => void;
@@ -193,6 +208,7 @@ export type TelegramModelCallbackPlan<TModel extends MenuModel = MenuModel> =
   | { kind: "ignore" }
   | { kind: "answer"; text?: string }
   | { kind: "update-menu"; text?: string }
+  | { kind: "persist-scope"; patterns: string[]; text: string }
   | {
       kind: "refresh-status";
       selection: ScopedTelegramModel<TModel>;
@@ -226,6 +242,7 @@ export interface TelegramModelMenuRuntime<
     messageId: number | undefined,
   ) => TelegramModelMenuState<TModel> | undefined;
   clear: () => void;
+  clearCachedInputs: () => void;
   buildState: <TContext extends TelegramModelMenuRuntimeContext<TModel>>(
     options: Omit<
       TelegramModelMenuRuntimeOptions<TContext, TModel>,
@@ -238,6 +255,7 @@ export const TELEGRAM_MODEL_PAGE_SIZE = 6;
 const TELEGRAM_MODEL_PAGE_PICKER_ROW_SIZE = 4;
 export const MODEL_MENU_TITLE = "<b>🤖 Choose a model:</b>";
 export const MODEL_PAGE_MENU_TITLE = "<b>Choose a page:</b>";
+export const MODEL_DETAIL_MENU_TITLE = "<b>🤖 Model:</b>";
 
 function truncateTelegramButtonLabel(label: string, maxLength = 56): string {
   return label.length <= maxLength
@@ -249,10 +267,21 @@ function getTelegramCliScopedModelPatterns(): string[] | undefined {
   return parseTelegramCliScopedModelPatterns(process.argv.slice(2));
 }
 
-function parseTelegramModelMenuCallbackAction(
-  data: string | undefined,
-):
-  | { action: "noop" | "scope" | "page" | "pages" | "pick"; value?: string }
+function parseTelegramModelMenuCallbackAction(data: string | undefined):
+  | {
+      action:
+        | "noop"
+        | "scope"
+        | "page"
+        | "pages"
+        | "open"
+        | "pick"
+        | "pick-selected"
+        | "scope-enable"
+        | "scope-disable"
+        | "scope-toggle";
+      value?: string;
+    }
   | undefined {
   if (!data?.startsWith("model:")) return undefined;
   const [, action, value] = data.split(":");
@@ -261,7 +290,12 @@ function parseTelegramModelMenuCallbackAction(
     action === "scope" ||
     action === "page" ||
     action === "pages" ||
-    action === "pick"
+    action === "open" ||
+    action === "pick" ||
+    action === "pick-selected" ||
+    action === "scope-enable" ||
+    action === "scope-disable" ||
+    action === "scope-toggle"
   ) {
     return { action, value };
   }
@@ -311,7 +345,7 @@ export function formatScopedModelButtonText<
   entry: ScopedTelegramModel<TModel>,
   currentModel: TModel | undefined,
 ): string {
-  let label = `${modelsMatch(entry.model, currentModel) ? "✅ " : ""}${entry.model.id} [${entry.model.provider}]`;
+  let label = `${modelsMatch(entry.model, currentModel) ? "🟢 " : ""}${entry.model.id} [${entry.model.provider}]`;
   if (entry.thinkingLevel) {
     label += ` · ${entry.thinkingLevel}`;
   }
@@ -399,6 +433,9 @@ export function createTelegramModelMenuRuntime<
       getStoredTelegramModelMenuState(menus, messageId, getStoreOptions()),
     clear: () => {
       menus.clear();
+      cachedInputs = undefined;
+    },
+    clearCachedInputs: () => {
       cachedInputs = undefined;
     },
     buildState: async (stateOptions) => {
@@ -490,6 +527,9 @@ export function buildTelegramModelMenuState<
     scopedModels,
     allModels,
     note,
+    selectedModelIndex: undefined,
+    scopedModelPatterns: params.configuredScopedModelPatterns,
+    canMutateScope: !params.cliScopedModelPatterns,
     mode: "status",
   };
 }
@@ -563,6 +603,115 @@ export function getTelegramModelSelection<TModel extends MenuModel = MenuModel>(
   return { kind: "selected", selection };
 }
 
+export function applyTelegramModelDetailSelection(
+  state: TelegramModelMenuState,
+  value: string | undefined,
+): TelegramMenuMutationResult {
+  const index = Number(value);
+  if (!Number.isFinite(index)) return "invalid";
+  const selection = getModelMenuItems(state)[index];
+  if (!selection) return "invalid";
+  state.selectedModelIndex = index;
+  state.selectedModelKey = getCanonicalModelId(selection.model);
+  state.mode = "model-detail";
+  return "changed";
+}
+
+export function getTelegramSelectedDetailModel<
+  TModel extends MenuModel = MenuModel,
+>(state: TelegramModelMenuState<TModel>): TelegramMenuSelectionResult<TModel> {
+  if (state.selectedModelKey) {
+    const lowerKey = state.selectedModelKey.toLowerCase();
+    const selection = state.allModels.find(
+      (entry) => getCanonicalModelId(entry.model).toLowerCase() === lowerKey,
+    );
+    if (selection) return { kind: "selected", selection };
+  }
+  return getTelegramModelSelection(state, state.selectedModelIndex?.toString());
+}
+
+export function isTelegramModelScoped(
+  state: TelegramModelMenuState,
+  model: MenuModel,
+): boolean {
+  const key = getCanonicalModelId(model);
+  return state.scopedModels.some(
+    (entry) => getCanonicalModelId(entry.model) === key,
+  );
+}
+
+export function focusTelegramModelListPage(
+  state: TelegramModelMenuState,
+  model: MenuModel,
+  pageSize = TELEGRAM_MODEL_PAGE_SIZE,
+): void {
+  const key = getCanonicalModelId(model).toLowerCase();
+  const index = getModelMenuItems(state).findIndex(
+    (entry) => getCanonicalModelId(entry.model).toLowerCase() === key,
+  );
+  state.page = index < 0 ? 0 : Math.floor(index / pageSize);
+  state.mode = "model";
+}
+
+function formatScopedModelPattern(entry: ScopedTelegramModel): string {
+  const key = getCanonicalModelId(entry.model);
+  return entry.thinkingLevel ? `${key}:${entry.thinkingLevel}` : key;
+}
+
+export function setTelegramModelScope(
+  state: TelegramModelMenuState,
+  model: MenuModel,
+  enabled: boolean,
+): { patterns: string[]; enabled: boolean } {
+  const key = getCanonicalModelId(model);
+  const lowerKey = key.toLowerCase();
+  const scopedModelPatterns = state.scopedModelPatterns ?? [];
+  const allModels = state.allModels.map((entry) => entry.model);
+  const patterns: string[] = [];
+  for (const pattern of scopedModelPatterns) {
+    const resolved = resolveScopedModelPatterns([pattern], allModels);
+    const matchesModel = resolved.some(
+      (entry) => getCanonicalModelId(entry.model).toLowerCase() === lowerKey,
+    );
+    if (enabled || !matchesModel) {
+      if (pattern.toLowerCase() !== lowerKey) patterns.push(pattern);
+      continue;
+    }
+    for (const entry of resolved) {
+      if (getCanonicalModelId(entry.model).toLowerCase() === lowerKey) continue;
+      const expandedPattern = formatScopedModelPattern(entry);
+      const duplicated = patterns.some(
+        (item) => item.toLowerCase() === expandedPattern.toLowerCase(),
+      );
+      if (!duplicated) patterns.push(expandedPattern);
+    }
+  }
+  if (enabled) patterns.push(key);
+  state.scopedModelPatterns = patterns;
+  state.scopedModels = sortScopedModels(
+    resolveScopedModelPatterns(
+      patterns,
+      state.allModels.map((entry) => entry.model),
+    ),
+    model,
+  );
+  if (state.scope === "scoped" && state.scopedModels.length === 0) {
+    state.scope = "all";
+  }
+  return { patterns, enabled };
+}
+
+export function toggleTelegramModelScope(
+  state: TelegramModelMenuState,
+  model: MenuModel,
+): { patterns: string[]; enabled: boolean } {
+  return setTelegramModelScope(
+    state,
+    model,
+    !isTelegramModelScoped(state, model),
+  );
+}
+
 export function buildTelegramModelCallbackPlan<
   TModel extends MenuModel = MenuModel,
 >(
@@ -609,10 +758,55 @@ export function buildTelegramModelCallbackPlan<
     }
     return { kind: "update-menu" };
   }
-  if (action.action !== "pick") {
+  if (action.action === "open") {
+    const detailResult = applyTelegramModelDetailSelection(
+      params.state,
+      action.value,
+    );
+    if (detailResult === "invalid") {
+      return { kind: "answer", text: "Selected model is no longer available." };
+    }
+    return { kind: "update-menu" };
+  }
+  if (
+    action.action === "scope-toggle" ||
+    action.action === "scope-enable" ||
+    action.action === "scope-disable"
+  ) {
+    if (params.state.canMutateScope === false) {
+      return {
+        kind: "answer",
+        text: "Model scope is controlled by CLI --models.",
+      };
+    }
+    const selectionResult = getTelegramSelectedDetailModel(params.state);
+    if (selectionResult.kind !== "selected") {
+      return { kind: "answer", text: "Selected model is no longer available." };
+    }
+    const model = selectionResult.selection.model;
+    const enabled =
+      action.action === "scope-toggle"
+        ? !isTelegramModelScoped(params.state, model)
+        : action.action === "scope-enable";
+    if (enabled === isTelegramModelScoped(params.state, model)) {
+      return { kind: "answer" };
+    }
+    const result = setTelegramModelScope(params.state, model, enabled);
+    return {
+      kind: "persist-scope",
+      patterns: result.patterns,
+      text: result.enabled
+        ? "Added to scoped models"
+        : "Removed from scoped models",
+    };
+  }
+  if (action.action !== "pick" && action.action !== "pick-selected") {
     return { kind: "answer" };
   }
-  const selectionResult = getTelegramModelSelection(params.state, action.value);
+  const selectionResult =
+    action.action === "pick-selected"
+      ? getTelegramSelectedDetailModel(params.state)
+      : getTelegramModelSelection(params.state, action.value);
   if (selectionResult.kind === "invalid") {
     return { kind: "answer", text: "Invalid model selection." };
   }
@@ -621,6 +815,10 @@ export function buildTelegramModelCallbackPlan<
   }
   const selection = selectionResult.selection;
   if (modelsMatch(selection.model, params.activeModel)) {
+    if (action.action === "pick-selected") {
+      focusTelegramModelListPage(params.state, selection.model);
+      return { kind: "update-menu", text: `Model: ${selection.model.id}` };
+    }
     return {
       kind: "refresh-status",
       selection,
@@ -693,11 +891,24 @@ export async function handleTelegramModelMenuCallbackAction<
     await deps.answerCallbackQuery(callbackQueryId, plan.text);
     return true;
   }
+  if (plan.kind === "persist-scope") {
+    if (!deps.persistScopedModelPatterns) {
+      await deps.answerCallbackQuery(
+        callbackQueryId,
+        "Scoped model persistence is unavailable.",
+      );
+      return true;
+    }
+    await deps.persistScopedModelPatterns(plan.patterns);
+    await deps.updateModelMenuMessage();
+    await deps.answerCallbackQuery(callbackQueryId, plan.text);
+    return true;
+  }
   if (plan.kind === "refresh-status") {
     if (plan.shouldApplyThinkingLevel && plan.selection.thinkingLevel) {
       deps.setThinkingLevel(plan.selection.thinkingLevel);
     }
-    await deps.updateStatusMessage();
+    await deps.updateModelMenuMessage();
     await deps.answerCallbackQuery(callbackQueryId, plan.callbackText);
     return true;
   }
@@ -710,7 +921,7 @@ export async function handleTelegramModelMenuCallbackAction<
   if (plan.selection.thinkingLevel) {
     deps.setThinkingLevel(plan.selection.thinkingLevel);
   }
-  await deps.updateStatusMessage();
+  await deps.updateModelMenuMessage();
   if (plan.mode === "restart-after-tool") {
     deps.stagePendingModelSwitch(plan.selection);
     await deps.answerCallbackQuery(callbackQueryId, plan.callbackText);
@@ -756,11 +967,11 @@ export function buildModelMenuReplyMarkup(
   if (state.scopedModels.length > 0) {
     rows.push([
       {
-        text: state.scope === "scoped" ? "✅ Scoped" : "Scoped",
+        text: state.scope === "scoped" ? "🟡 Scoped" : "⚫️ Scoped",
         callback_data: "model:scope:scoped",
       },
       {
-        text: state.scope === "all" ? "✅ All" : "All",
+        text: state.scope === "all" ? "🟡 All" : "⚫️ All",
         callback_data: "model:scope:all",
       },
     ]);
@@ -790,11 +1001,58 @@ export function buildModelMenuReplyMarkup(
     ...menuPage.items.map((entry, index) => [
       {
         text: formatScopedModelButtonText(entry, currentModel),
-        callback_data: `model:pick:${menuPage.start + index}`,
+        callback_data: `model:open:${menuPage.start + index}`,
       },
     ]),
   );
   return { inline_keyboard: rows };
+}
+
+export function buildModelDetailMenuReplyMarkup(
+  state: TelegramModelMenuState,
+  currentModel: MenuModel | undefined,
+): TelegramReplyMarkup {
+  const selection = getTelegramSelectedDetailModel(state);
+  if (selection.kind !== "selected") {
+    return {
+      inline_keyboard: [
+        [{ text: "⬆️ Back", callback_data: "model:pages:back" }],
+      ],
+    };
+  }
+  const model = selection.selection.model;
+  const active = modelsMatch(model, currentModel);
+  const scoped = isTelegramModelScoped(state, model);
+  return {
+    inline_keyboard: [
+      [{ text: "⬆️ Back", callback_data: "model:pages:back" }],
+      [
+        {
+          text: active ? "🟢 Active" : "☑️ Activate",
+          callback_data: "model:pick-selected",
+        },
+      ],
+      [
+        {
+          text: scoped ? "🟡 Scoped" : "⚫️ Scoped",
+          callback_data: "model:scope-enable",
+        },
+        {
+          text: scoped ? "⚫️ All" : "🟡 All",
+          callback_data: "model:scope-disable",
+        },
+      ],
+    ],
+  };
+}
+
+export function buildModelDetailMenuText(
+  state: TelegramModelMenuState,
+): string {
+  const selection = getTelegramSelectedDetailModel(state);
+  if (selection.kind !== "selected") return MODEL_DETAIL_MENU_TITLE;
+  const model = selection.selection.model;
+  return `${MODEL_DETAIL_MENU_TITLE}\n${getCanonicalModelId(model)}`;
 }
 
 export function buildModelPageMenuReplyMarkup(
@@ -816,10 +1074,16 @@ export function buildModelPageMenuReplyMarkup(
             menuPage.pageCount - page,
           ),
         },
-        (_unused, offset) => ({
-          text: String(page + offset + 1),
-          callback_data: `model:page:${page + offset}`,
-        }),
+        (_unused, offset) => {
+          const pageIndex = page + offset;
+          return {
+            text:
+              pageIndex === menuPage.page
+                ? `🟢 ${pageIndex + 1}`
+                : String(pageIndex + 1),
+            callback_data: `model:page:${pageIndex}`,
+          };
+        },
       ),
     );
   }
@@ -843,6 +1107,14 @@ export function buildTelegramModelMenuRenderPayload(
 ): TelegramMenuRenderPayload {
   if (state.mode === "model-pages") {
     return buildTelegramModelPageMenuRenderPayload(state);
+  }
+  if (state.mode === "model-detail") {
+    return {
+      nextMode: "model-detail",
+      text: buildModelDetailMenuText(state),
+      mode: "html",
+      replyMarkup: buildModelDetailMenuReplyMarkup(state, activeModel),
+    };
   }
   return {
     nextMode: "model",

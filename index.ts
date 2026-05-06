@@ -5,7 +5,6 @@
  */
 
 import * as Api from "./lib/api.ts";
-import * as OutboundAttachments from "./lib/outbound-attachments.ts";
 import * as CommandTemplates from "./lib/command-templates.ts";
 import * as Commands from "./lib/commands.ts";
 import * as Config from "./lib/config.ts";
@@ -15,8 +14,10 @@ import * as Lifecycle from "./lib/lifecycle.ts";
 import * as Locks from "./lib/locks.ts";
 import * as Media from "./lib/media.ts";
 import * as MenuQueue from "./lib/menu-queue.ts";
+import * as MenuSettings from "./lib/menu-settings.ts";
 import * as Menu from "./lib/menu.ts";
 import * as Model from "./lib/model.ts";
+import * as OutboundAttachments from "./lib/outbound-attachments.ts";
 import * as OutboundHandlers from "./lib/outbound-handlers.ts";
 import * as Pi from "./lib/pi.ts";
 import * as Polling from "./lib/polling.ts";
@@ -48,10 +49,21 @@ export default function (pi: Pi.ExtensionAPI) {
   const bridgeRuntime = Runtime.createTelegramBridgeRuntime();
   const { abort, lifecycle, queue, setup, typing } = bridgeRuntime;
   const configStore = Config.createTelegramConfigStore();
+  const isProactivePushEnabled =
+    Config.createTelegramProactivePushChecker(configStore);
+  const setProactivePushEnabled =
+    Config.createTelegramProactivePushSetter(configStore);
+  const proactivePromptTargetStore =
+    Config.createTelegramProactivePromptTargetStore();
   const lockRuntime = Locks.createTelegramLockRuntime<Pi.ExtensionContext>();
   const lockOwnershipGuard =
     Locks.createTelegramLockOwnershipGuard(lockRuntime);
   const activeTurnRuntime = Queue.createTelegramActiveTurnStore();
+  const proactivePushChatIdGetter =
+    Config.createTelegramProactivePushChatIdGetter({
+      getActiveTurnChatId: activeTurnRuntime.getChatId,
+      getAllowedUserId: configStore.getAllowedUserId,
+    });
   const buttonActionStore = OutboundHandlers.createTelegramButtonActionStore();
   const pendingModelSwitchStore =
     Model.createPendingModelSwitchStore<
@@ -249,6 +261,7 @@ export default function (pi: Pi.ExtensionAPI) {
     buildStatusHtml: Commands.createTelegramAppMenuHtmlBuilder({
       buildStatusHtml: Status.createTelegramStatusHtmlBuilder({
         getActiveModel: currentModelRuntime.get,
+        isCompactionInProgress: lifecycle.isCompactionInProgress,
       }),
       getPromptTemplateCommands,
     }),
@@ -279,6 +292,16 @@ export default function (pi: Pi.ExtensionAPI) {
     updateStatusMessage: menuActions.updateStatusMessage,
     updateStatus,
   });
+  const settingsMenuRuntime = MenuSettings.createTelegramSettingsMenuRuntime({
+    getModelMenuState: getQueueMenuState,
+    getStoredModelMenuState: modelMenuRuntime.getState,
+    storeModelMenuState: modelMenuRuntime.storeState,
+    editInteractiveMessage,
+    sendInteractiveMessage,
+    answerCallbackQuery,
+    isProactivePushEnabled,
+    setProactivePushEnabled,
+  });
 
   // --- Polling ---
 
@@ -300,8 +323,11 @@ export default function (pi: Pi.ExtensionAPI) {
     currentModelRuntime,
     modelSwitchController,
     menuActions,
+    updateSettingsMenuMessage: settingsMenuRuntime.updateSettingsMenuMessage,
     openQueueMenu: queueMenuRuntime.openQueueMenu,
     queueMenuCallbackHandler: queueMenuRuntime.handleCallbackQuery,
+    openSettingsMenu: settingsMenuRuntime.openSettingsMenu,
+    settingsMenuCallbackHandler: settingsMenuRuntime.handleCallbackQuery,
     buttonActionStore,
     inboundHandlerRuntime,
     updateStatus,
@@ -313,6 +339,10 @@ export default function (pi: Pi.ExtensionAPI) {
     downloadFile: downloadTelegramBridgeFile,
     getThinkingLevel,
     setThinkingLevel,
+    persistScopedModelPatterns: Pi.createScopedModelPatternPersister({
+      createSettingsManager: Pi.createSettingsManager,
+      clearCachedModelMenuInputs: modelMenuRuntime.clearCachedInputs,
+    }),
     setModel,
     sendUserMessage,
     isIdle,
@@ -400,6 +430,8 @@ export default function (pi: Pi.ExtensionAPI) {
     startPolling: lockedPollingRuntime.start,
     stopPolling: lockedPollingRuntime.stop,
     updateStatus,
+    isProactivePushEnabled,
+    setProactivePushEnabled,
   });
 
   // --- Lifecycle Hooks ---
@@ -463,6 +495,10 @@ export default function (pi: Pi.ExtensionAPI) {
     planOutboundReply: outboundReplyPlanner,
     sendOutboundReplyArtifacts: outboundReplyArtifactSender,
     isCurrentOwner: lockOwnershipGuard.ownsContext,
+    getDefaultChatId: proactivePushChatIdGetter,
+    consumeProactiveReplyToMessageId: proactivePromptTargetStore.consumeForChat,
+    isProactivePushEnabled,
+    recordRuntimeEvent,
     getActiveToolExecutions: lifecycle.getActiveToolExecutions,
     setActiveToolExecutions: lifecycle.setActiveToolExecutions,
     triggerPendingModelSwitchAbort: modelSwitchController.triggerPendingAbort,
@@ -476,7 +512,10 @@ export default function (pi: Pi.ExtensionAPI) {
     ...sessionLifecycleRuntime,
     ...agentLifecycleHooks,
     onAgentStart: agentStartWithDedupReset,
-    onBeforeAgentStart: Prompts.createTelegramBeforeAgentStartHook(),
+    onBeforeAgentStart: Prompts.createTelegramProactiveBeforeAgentStartHook({
+      isProactivePushEnabled,
+      isCurrentOwner: lockOwnershipGuard.ownsContext,
+    }),
     onModelSelect: currentModelRuntime.onModelSelect,
     onMessageStart: previewRuntime.onMessageStart,
     onMessageUpdate: previewRuntime.onMessageUpdate,

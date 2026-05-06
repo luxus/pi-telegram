@@ -50,11 +50,24 @@ export interface TelegramInboundRouteRuntimeDeps<
     Model.ScopedTelegramModel<TModel>
   >;
   menuActions: Menu.TelegramMenuActionRuntime<TContext, TModel>;
+  updateSettingsMenuMessage?: (
+    state: Menu.TelegramModelMenuState<TModel>,
+    ctx: TContext,
+  ) => Promise<void>;
   openQueueMenu: (
     chatId: number,
     replyToMessageId: number,
     ctx: TContext,
   ) => Promise<void>;
+  openSettingsMenu?: (
+    chatId: number,
+    replyToMessageId: number,
+    ctx: TContext,
+  ) => Promise<void>;
+  settingsMenuCallbackHandler?: (
+    query: TCallbackQuery,
+    ctx: TContext,
+  ) => Promise<boolean>;
   queueMenuCallbackHandler: (
     query: TCallbackQuery,
     ctx: TContext,
@@ -79,6 +92,10 @@ export interface TelegramInboundRouteRuntimeDeps<
   downloadFile: Media.DownloadTelegramMessageFilesDeps["downloadFile"];
   getThinkingLevel: () => Model.ThinkingLevel;
   setThinkingLevel: (level: Model.ThinkingLevel) => void;
+  persistScopedModelPatterns?: (
+    patterns: string[],
+    ctx: TContext,
+  ) => Promise<void>;
   setModel: (model: TModel) => Promise<boolean>;
   sendUserMessage?: (message: string) => void;
   isIdle: (ctx: TContext) => boolean;
@@ -98,6 +115,7 @@ const TELEGRAM_OWNED_CALLBACK_PREFIXES = [
   "menu:",
   "model:",
   "queue:",
+  "settings:",
   "status:",
   "tgbtn:",
   "thinking:",
@@ -140,12 +158,14 @@ export function createTelegramInboundRouteRuntime<
     updateModelMenuMessage: deps.menuActions.updateModelMenuMessage,
     updateThinkingMenuMessage: deps.menuActions.updateThinkingMenuMessage,
     updateStatusMessage: deps.menuActions.updateStatusMessage,
+    updateSettingsMenuMessage: deps.updateSettingsMenuMessage,
     answerCallbackQuery: deps.answerCallbackQuery,
     isIdle: deps.isIdle,
     hasActiveTelegramTurn: deps.activeTurnRuntime.has,
     hasAbortHandler: deps.bridgeRuntime.abort.hasHandler,
     getActiveToolExecutions:
       deps.bridgeRuntime.lifecycle.getActiveToolExecutions,
+    persistScopedModelPatterns: deps.persistScopedModelPatterns,
     setModel: deps.setModel,
     setCurrentModel: deps.currentModelRuntime.setCurrentModel,
     stagePendingModelSwitch: deps.modelSwitchController.stagePendingSwitch,
@@ -187,6 +207,11 @@ export function createTelegramInboundRouteRuntime<
     }
     const handledByQueue = await deps.queueMenuCallbackHandler(query, ctx);
     if (handledByQueue) return;
+    const handledBySettings = await deps.settingsMenuCallbackHandler?.(
+      query,
+      ctx,
+    );
+    if (handledBySettings) return;
     const callbackData = query.data;
     if (
       deps.sendUserMessage &&
@@ -279,6 +304,7 @@ export function createTelegramInboundRouteRuntime<
       const chatId = (message as { chat: { id: number } }).chat.id;
       return deps.openQueueMenu(chatId, message.message_id, ctx);
     },
+    openSettingsMenu: deps.openSettingsMenu,
     getAllowedUserId: deps.configStore.getAllowedUserId,
     setAllowedUserId: deps.configStore.setAllowedUserId,
     setMyCommands: deps.setMyCommands,

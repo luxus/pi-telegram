@@ -42,9 +42,9 @@ test("Status bar text renders bridge connection and queue states", () => {
       paired: true,
       compactionInProgress: false,
       processing: true,
-      queuedStatus: " +1: [next]",
+      queuedStatus: " +1",
     }),
-    "<accent>telegram</accent> <accent>processing</accent><muted> +1: [next]</muted>",
+    "<accent>telegram</accent> <warning>active</warning><success> +1</success>",
   );
   assert.equal(
     buildTelegramStatusBarText(theme, {
@@ -54,9 +54,9 @@ test("Status bar text renders bridge connection and queue states", () => {
       compactionInProgress: false,
       processing: true,
       processingStatus: "dispatching",
-      queuedStatus: " +1: [next]",
+      queuedStatus: " +1",
     }),
-    "<accent>telegram</accent> <accent>dispatching</accent><muted> +1: [next]</muted>",
+    "<accent>telegram</accent> <warning>active</warning><success> +1</success>",
   );
   assert.equal(
     buildTelegramStatusBarText(theme, {
@@ -151,7 +151,7 @@ test("Status bar processing labels prefer the most specific live state", () => {
       activeToolExecutions: 1,
       queuedItems: 1,
     }),
-    "tool running",
+    "active",
   );
   assert.equal(
     getTelegramStatusBarProcessingStatus({
@@ -175,6 +175,41 @@ test("Status bar processing labels prefer the most specific live state", () => {
   );
 });
 
+test("Bridge status runtime stays active while tools run after queue changes", () => {
+  const events: string[] = [];
+  const runtime = createTelegramBridgeStatusRuntime({
+    getConfig: () => ({
+      botToken: "token",
+      botUsername: "demo_bot",
+      allowedUserId: 7,
+    }),
+    isPollingActive: () => true,
+    getActiveSourceMessageIds: () => undefined,
+    hasActiveTurn: () => false,
+    hasDispatchPending: () => false,
+    isCompactionInProgress: () => false,
+    getActiveToolExecutions: () => 1,
+    hasPendingModelSwitch: () => false,
+    getQueuedItems: () => [],
+    formatQueuedStatus: () => "",
+    getRecentRuntimeEvents: () => [],
+  });
+  runtime.updateStatus({
+    ui: {
+      theme: {
+        fg: (token: string, text: string) => `<${token}>${text}</${token}>`,
+      },
+      setStatus: (key: string, text: string) => {
+        events.push(`${key}:${text}`);
+      },
+    },
+  });
+  assert.equal(
+    events[0],
+    "telegram:<accent>telegram</accent> <warning>active</warning>",
+  );
+});
+
 test("Bridge status runtime builds status state from live ports", () => {
   const events: string[] = [];
   const runtime = createTelegramBridgeStatusRuntime({
@@ -192,7 +227,7 @@ test("Bridge status runtime builds status state from live ports", () => {
     getActiveToolExecutions: () => 3,
     hasPendingModelSwitch: () => true,
     getQueuedItems: () => [{ queueLane: "control" as const }],
-    formatQueuedStatus: () => " +1: [⚡ status]",
+    formatQueuedStatus: () => " +1",
     getRecentRuntimeEvents: () => [
       { at: 1000, category: "api", message: "ok" },
     ],
@@ -210,7 +245,7 @@ test("Bridge status runtime builds status state from live ports", () => {
   });
   assert.equal(
     events[0],
-    "telegram:<accent>telegram</accent> <accent>model</accent><muted> +1: [⚡ status]</muted>",
+    "telegram:<accent>telegram</accent> <warning>active</warning><success> +1</success>",
   );
   assert.deepEqual(runtime.getStatusLines(), [
     "connection:",
@@ -297,6 +332,20 @@ test("Status HTML builder binds active model lookup", () => {
   });
   assert.match(html, /Status.*idle/s);
   assert.match(html, /Context.*0\.0%\/1\.0k/s);
+});
+
+test("Status HTML builder shows compacting while compact is running", () => {
+  const buildStatusHtml = createTelegramStatusHtmlBuilder({
+    getActiveModel: () => undefined,
+    isCompactionInProgress: () => true,
+  });
+  const html = buildStatusHtml({
+    sessionManager: { getEntries: () => [] },
+    getContextUsage: () => ({ percent: 0, contextWindow: 1000 }),
+    isIdle: () => true,
+    modelRegistry: { isUsingOAuth: () => false },
+  });
+  assert.match(html, /Status.*compacting/s);
 });
 
 test("Runtime event lines render the recent-event ring newest first", () => {

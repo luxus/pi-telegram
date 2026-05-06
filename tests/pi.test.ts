@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   compactExtensionContext,
   createExtensionApiRuntimePorts,
+  createScopedModelPatternPersister,
   type ExtensionContext,
   getExtensionContextCwd,
   getExtensionContextModel,
@@ -77,6 +78,31 @@ test("Pi API runtime ports bind methods without losing receiver context", async 
     "get-thinking",
     "thinking:low",
     "model:gpt-5",
+  ]);
+});
+
+test("Pi scoped model persister invalidates cached inputs without clearing live menus", async () => {
+  const events: string[] = [];
+  const persist = createScopedModelPatternPersister({
+    createSettingsManager: (cwd) => ({
+      reload: async () => {},
+      flush: async () => {
+        events.push("flush");
+      },
+      getEnabledModels: () => undefined,
+      setEnabledModels: (patterns) => {
+        events.push(`set:${cwd}:${patterns?.join(",") ?? "all"}`);
+      },
+    }),
+    clearCachedModelMenuInputs: () => {
+      events.push("clear-cache");
+    },
+  });
+  await persist(["openai/gpt-5"], { cwd: "/tmp/project" } as ExtensionContext);
+  assert.deepEqual(events, [
+    "set:/tmp/project:openai/gpt-5",
+    "flush",
+    "clear-cache",
   ]);
 });
 
