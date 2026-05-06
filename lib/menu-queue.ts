@@ -57,10 +57,8 @@ function buildTelegramQueueMenuReplyMarkup(
   items: readonly TelegramQueueMenuItem[],
 ): TelegramQueueMenuReplyMarkup {
   const backRow = [{ text: "⬆️ Main menu", callback_data: "menu:back" }];
-  if (items.length === 0) {
-    const refreshRow = [{ text: "🌀 Refresh", callback_data: "queue:refresh" }];
-    return { inline_keyboard: [backRow, refreshRow] };
-  }
+  const refreshRow = [{ text: "🌀 Refresh", callback_data: "queue:refresh" }];
+  if (items.length === 0) return { inline_keyboard: [backRow, refreshRow] };
   const rows = items.map(function buildTelegramQueueMenuRow(item, index) {
     const prefix = item.isPriority
       ? `${item.priorityEmoji ?? "⚡"} `
@@ -75,7 +73,7 @@ function buildTelegramQueueMenuReplyMarkup(
       },
     ];
   });
-  return { inline_keyboard: [backRow, ...rows] };
+  return { inline_keyboard: [backRow, ...rows, refreshRow] };
 }
 function findTelegramQueueItem<Context>(
   items: readonly Queue.TelegramQueueItem<Context>[],

@@ -1710,6 +1710,9 @@ test("Queue menu keeps main-menu navigation on top", async () => {
     markups[0]?.inline_keyboard[1]?.[0]?.text,
     "1. 🕊 queued <prompt>",
   );
+  assert.deepEqual(markups[0]?.inline_keyboard[2], [
+    { text: "🌀 Refresh", callback_data: "queue:refresh" },
+  ]);
   assert.deepEqual(markups[2]?.inline_keyboard[1], [
     { text: "🟡 Priority", callback_data: "queue:prio-set:1:10:priority" },
     { text: "⚫️ Normal", callback_data: "queue:prio-set:1:10:normal" },

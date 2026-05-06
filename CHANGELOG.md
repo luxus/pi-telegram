@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `[Queue Menu]` Non-empty queue lists now keep the `🌀 Refresh` row below queued items, matching the empty-queue surface. Impact: users can manually refresh the queue screen while waiting for changes without navigating away.
+
 ## 0.9.1: Model Detail Hotfix
 
 - `[Model Menu]` Detail-mode activation now preserves scoped `thinkingLevel` by resolving the selected scoped entry before falling back to the unscoped model list. Impact: scoped model shortcuts opened through the detail submenu keep their reasoning/thinking level.
