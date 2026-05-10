@@ -18,6 +18,7 @@ import {
   extractDeletedTelegramMessageIds,
   getAuthorizedTelegramCallbackQuery,
   getAuthorizedTelegramEditedMessage,
+  getAuthorizedTelegramGuestMessage,
   getAuthorizedTelegramMessage,
   handleAuthorizedTelegramReactionUpdate,
   normalizeTelegramReactionEmoji,
@@ -107,6 +108,7 @@ test("Paired update runtime binds pairing ports into update routing", async () =
     clearQueuedTelegramTurnPriorityByMessageId: () => false,
     prioritizeQueuedTelegramTurnByMessageId: () => false,
     answerCallbackQuery: async () => {},
+    answerGuestQuery: async () => {},
     handleAuthorizedTelegramCallbackQuery: async () => {},
     sendTextReply: async () => undefined,
     handleAuthorizedTelegramMessage: async (message, ctx: string) => {
@@ -177,6 +179,28 @@ test("Update routing extracts private human messages and edited messages separat
   assert.ok(editedMessage);
 });
 
+test("Update routing extracts guest messages without private chat filter", () => {
+  assert.equal(
+    getAuthorizedTelegramGuestMessage({
+      guest_message: {
+        guest_query_id: "gq-1",
+        chat: { type: "supergroup" },
+        from: { id: 1, is_bot: true },
+      },
+    }),
+    undefined,
+  );
+  const guestMessage = getAuthorizedTelegramGuestMessage({
+    guest_message: {
+      guest_query_id: "gq-1",
+      chat: { type: "supergroup" },
+      from: { id: 1, is_bot: false },
+    },
+  });
+  assert.ok(guestMessage);
+  assert.equal(guestMessage.guest_query_id, "gq-1");
+});
+
 test("Update flow prioritizes deleted business-message handling over other update kinds", () => {
   const action = buildTelegramUpdateFlowAction(
     {
@@ -232,6 +256,39 @@ test("Update flow returns authorized callback, message, and edit actions", () =>
     9,
   );
   assert.equal(editAction.kind, "edited-message");
+});
+
+test("Update flow classifies guest messages with authorization", () => {
+  const guestAction = buildTelegramUpdateFlowAction(
+    {
+      guest_message: {
+        guest_query_id: "gq-1",
+        chat: { type: "supergroup" },
+        from: { id: 5, is_bot: false },
+      },
+    },
+    5,
+  );
+  assert.equal(guestAction.kind, "guest");
+  assert.deepEqual(
+    guestAction.kind === "guest" ? guestAction.authorization : undefined,
+    { kind: "allow" },
+  );
+  const guestDeny = buildTelegramUpdateFlowAction(
+    {
+      guest_message: {
+        guest_query_id: "gq-2",
+        chat: { type: "supergroup" },
+        from: { id: 6, is_bot: false },
+      },
+    },
+    5,
+  );
+  assert.equal(guestDeny.kind, "guest");
+  assert.deepEqual(
+    guestDeny.kind === "guest" ? guestDeny.authorization : undefined,
+    { kind: "deny" },
+  );
 });
 
 test("Update flow ignores unauthorized transport shapes and preserves reaction events", () => {
@@ -307,6 +364,27 @@ test("Update execution plan preserves deleted and reaction actions", () => {
   );
 });
 
+test("Update execution plan maps guest authorization to deny flag", () => {
+  const guestPlan = buildTelegramUpdateExecutionPlan({
+    kind: "guest",
+    guestMessage: {
+      guest_query_id: "gq-1",
+      chat: { type: "supergroup" },
+      from: { id: 1, is_bot: false },
+    },
+    authorization: { kind: "allow" },
+  });
+  assert.deepEqual(guestPlan, {
+    kind: "guest",
+    guestMessage: {
+      guest_query_id: "gq-1",
+      chat: { type: "supergroup" },
+      from: { id: 1, is_bot: false },
+    },
+    shouldDeny: false,
+  });
+});
+
 test("Update execution plan can be built directly from updates", () => {
   const plan = buildTelegramUpdateExecutionPlanFromUpdate(
     {
@@ -347,6 +425,9 @@ test("Update runtime controller binds update and reaction ports", async () => {
     answerCallbackQuery: async (id, text) => {
       events.push(`answer:${id}:${text ?? ""}`);
     },
+    answerGuestQuery: async (id, text) => {
+      events.push(`guest-answer:${id}:${text ?? ""}`);
+    },
     handleAuthorizedTelegramCallbackQuery: async () => {
       events.push("callback");
     },
@@ -382,6 +463,75 @@ test("Update runtime controller binds update and reaction ports", async () => {
     "ctx",
   );
   assert.deepEqual(events, ["priority:ctx:9", "message:ctx:10"]);
+});
+
+test("Update runtime routes guest messages through guest handler", async () => {
+  const events: string[] = [];
+  const runtime = createTelegramUpdateRuntime({
+    getAllowedUserId: () => 42,
+    removePendingMediaGroupMessages: () => {},
+    removeQueuedTelegramTurnsByMessageIds: () => 0,
+    clearQueuedTelegramTurnPriorityByMessageId: () => true,
+    prioritizeQueuedTelegramTurnByMessageId: () => true,
+    pairTelegramUserIfNeeded: async () => false,
+    answerCallbackQuery: async () => {},
+    answerGuestQuery: async () => {},
+    handleAuthorizedTelegramCallbackQuery: async () => {},
+    sendTextReply: async () => 1,
+    handleAuthorizedTelegramMessage: async () => {},
+    handleAuthorizedTelegramEditedMessage: async () => {},
+    handleAuthorizedTelegramGuestMessage: async (
+      guestMessage,
+      _ctx: string,
+    ) => {
+      events.push(`guest:${guestMessage.guest_query_id}`);
+    },
+  });
+  await runtime.handleUpdate(
+    {
+      guest_message: {
+        guest_query_id: "gq-1",
+        chat: { type: "supergroup" },
+        from: { id: 42, is_bot: false },
+      },
+    },
+    "ctx",
+  );
+  assert.deepEqual(events, ["guest:gq-1"]);
+});
+
+test("Update runtime answers guest query with access denied for unauthorized users", async () => {
+  const events: string[] = [];
+  const runtime = createTelegramUpdateRuntime({
+    getAllowedUserId: () => 42,
+    removePendingMediaGroupMessages: () => {},
+    removeQueuedTelegramTurnsByMessageIds: () => 0,
+    clearQueuedTelegramTurnPriorityByMessageId: () => true,
+    prioritizeQueuedTelegramTurnByMessageId: () => true,
+    pairTelegramUserIfNeeded: async () => false,
+    answerCallbackQuery: async () => {},
+    answerGuestQuery: async (id, text) => {
+      events.push(`guest-deny:${id}:${text ?? ""}`);
+    },
+    handleAuthorizedTelegramCallbackQuery: async () => {},
+    sendTextReply: async () => 1,
+    handleAuthorizedTelegramMessage: async () => {},
+    handleAuthorizedTelegramEditedMessage: async () => {},
+    handleAuthorizedTelegramGuestMessage: async () => {
+      events.push("guest-handled");
+    },
+  });
+  await runtime.handleUpdate(
+    {
+      guest_message: {
+        guest_query_id: "gq-deny",
+        chat: { type: "supergroup" },
+        from: { id: 99, is_bot: false },
+      },
+    },
+    "ctx",
+  );
+  assert.deepEqual(events, ["guest-deny:gq-deny:Access denied."]);
 });
 
 test("Update runtime handles authorized reaction priority and removal effects", async () => {
@@ -557,6 +707,7 @@ test("Update runtime executes delete and reaction plans through the right side e
       },
       pairTelegramUserIfNeeded: async () => false,
       answerCallbackQuery: async () => {},
+      answerGuestQuery: async () => {},
       handleAuthorizedTelegramCallbackQuery: async () => {},
       sendTextReply: async () => undefined,
       handleAuthorizedTelegramMessage: async () => {},
@@ -587,6 +738,7 @@ test("Update runtime can execute directly from raw updates", async () => {
         return true;
       },
       answerCallbackQuery: async () => {},
+      answerGuestQuery: async () => {},
       handleAuthorizedTelegramCallbackQuery: async () => {},
       sendTextReply: async (_chatId, _replyToMessageId, text) => {
         events.push(`reply:${text}`);
@@ -625,6 +777,7 @@ test("Update runtime routes edited messages without creating normal message turn
       handleAuthorizedTelegramReactionUpdate: async () => {},
       pairTelegramUserIfNeeded: async () => false,
       answerCallbackQuery: async () => {},
+      answerGuestQuery: async () => {},
       handleAuthorizedTelegramCallbackQuery: async () => {},
       sendTextReply: async () => undefined,
       handleAuthorizedTelegramMessage: async () => {
@@ -663,6 +816,7 @@ test("Update runtime handles callback deny and message pair flows", async () => 
       answerCallbackQuery: async (id, text) => {
         events.push(`answer:${id}:${text}`);
       },
+      answerGuestQuery: async () => {},
       handleAuthorizedTelegramCallbackQuery: async () => {
         events.push("callback");
       },
@@ -697,6 +851,7 @@ test("Update runtime handles callback deny and message pair flows", async () => 
       handleAuthorizedTelegramReactionUpdate: async () => {},
       pairTelegramUserIfNeeded: async () => true,
       answerCallbackQuery: async () => {},
+      answerGuestQuery: async () => {},
       handleAuthorizedTelegramCallbackQuery: async () => {},
       sendTextReply: async (chatId, replyToMessageId, text) => {
         events.push(`reply:${chatId}:${replyToMessageId}:${text}`);

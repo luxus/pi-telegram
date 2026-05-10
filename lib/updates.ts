@@ -130,10 +130,19 @@ export interface TelegramCallbackQuery {
   message?: TelegramUpdateMessage;
 }
 
+export interface TelegramGuestMessage {
+  guest_query_id: string;
+  chat: TelegramChat;
+  from?: TelegramUser;
+  message_id?: number;
+  text?: string;
+}
+
 export interface TelegramUpdateRouting {
   message?: TelegramUpdateMessage;
   edited_message?: TelegramUpdateMessage;
   callback_query?: TelegramCallbackQuery;
+  guest_message?: TelegramGuestMessage;
 }
 
 export function getAuthorizedTelegramCallbackQuery(
@@ -178,6 +187,16 @@ export function getAuthorizedTelegramEditedMessage(
   return message;
 }
 
+export function getAuthorizedTelegramGuestMessage(
+  update: TelegramUpdateRouting,
+): TelegramGuestMessage | undefined {
+  const guestMessage = update.guest_message;
+  if (!guestMessage || !guestMessage.from || guestMessage.from.is_bot) {
+    return undefined;
+  }
+  return guestMessage;
+}
+
 // --- Flow ---
 
 export interface TelegramMessageReactionUpdated {
@@ -198,6 +217,7 @@ export type TelegramUpdateFlowAction<
     TelegramMessageReactionUpdated,
   TCallbackQuery extends TelegramCallbackQuery = TelegramCallbackQuery,
   TMessage extends TelegramUpdateMessage = TelegramUpdateMessage,
+  TGuestMessage extends TelegramGuestMessage = TelegramGuestMessage,
 > =
   | { kind: "ignore" }
   | { kind: "deleted"; messageIds: number[] }
@@ -216,6 +236,11 @@ export type TelegramUpdateFlowAction<
       kind: "edited-message";
       message: TMessage & { from: TelegramUser };
       authorization: TelegramAuthorizationState;
+    }
+  | {
+      kind: "guest";
+      guestMessage: TGuestMessage & { from: TelegramUser };
+      authorization: TelegramAuthorizationState;
     };
 
 export function buildTelegramUpdateFlowAction<
@@ -226,7 +251,8 @@ export function buildTelegramUpdateFlowAction<
 ): TelegramUpdateFlowAction<
   NonNullable<TUpdate["message_reaction"]>,
   NonNullable<TUpdate["callback_query"]>,
-  NonNullable<TUpdate["message"] | TUpdate["edited_message"]>
+  NonNullable<TUpdate["message"] | TUpdate["edited_message"]>,
+  NonNullable<TUpdate["guest_message"]>
 > {
   const deletedMessageIds = extractDeletedTelegramMessageIds(update);
   if (deletedMessageIds.length > 0) {
@@ -272,6 +298,19 @@ export function buildTelegramUpdateFlowAction<
       ),
     };
   }
+  const guestMessage = getAuthorizedTelegramGuestMessage(update);
+  if (guestMessage?.from) {
+    return {
+      kind: "guest",
+      guestMessage: guestMessage as NonNullable<TUpdate["guest_message"]> & {
+        from: TelegramUser;
+      },
+      authorization: getTelegramAuthorizationState(
+        guestMessage.from.id,
+        allowedUserId,
+      ),
+    };
+  }
   return { kind: "ignore" };
 }
 
@@ -282,6 +321,7 @@ export type TelegramUpdateExecutionPlan<
     TelegramMessageReactionUpdated,
   TCallbackQuery extends TelegramCallbackQuery = TelegramCallbackQuery,
   TMessage extends TelegramUpdateMessage = TelegramUpdateMessage,
+  TGuestMessage extends TelegramGuestMessage = TelegramGuestMessage,
 > =
   | { kind: "ignore" }
   | { kind: "deleted"; messageIds: number[] }
@@ -307,15 +347,31 @@ export type TelegramUpdateExecutionPlan<
       message: TMessage & { from: TelegramUser };
       shouldPair: boolean;
       shouldDeny: boolean;
+    }
+  | {
+      kind: "guest";
+      guestMessage: TGuestMessage & { from: TelegramUser };
+      shouldDeny: boolean;
     };
 
 export function buildTelegramUpdateExecutionPlan<
   TReactionUpdate extends TelegramMessageReactionUpdated,
   TCallbackQuery extends TelegramCallbackQuery,
   TMessage extends TelegramUpdateMessage,
+  TGuestMessage extends TelegramGuestMessage,
 >(
-  action: TelegramUpdateFlowAction<TReactionUpdate, TCallbackQuery, TMessage>,
-): TelegramUpdateExecutionPlan<TReactionUpdate, TCallbackQuery, TMessage> {
+  action: TelegramUpdateFlowAction<
+    TReactionUpdate,
+    TCallbackQuery,
+    TMessage,
+    TGuestMessage
+  >,
+): TelegramUpdateExecutionPlan<
+  TReactionUpdate,
+  TCallbackQuery,
+  TMessage,
+  TGuestMessage
+> {
   switch (action.kind) {
     case "ignore":
       return { kind: "ignore" };
@@ -343,6 +399,12 @@ export function buildTelegramUpdateExecutionPlan<
         kind: "edited-message",
         message: action.message,
         shouldPair: action.authorization.kind === "pair",
+        shouldDeny: action.authorization.kind === "deny",
+      };
+    case "guest":
+      return {
+        kind: "guest",
+        guestMessage: action.guestMessage,
         shouldDeny: action.authorization.kind === "deny",
       };
   }
@@ -387,6 +449,7 @@ export interface TelegramUpdateRuntimeDeps<
     callbackQueryId: string,
     text?: string,
   ) => Promise<void>;
+  answerGuestQuery: (guestQueryId: string, text?: string) => Promise<void>;
   handleAuthorizedTelegramCallbackQuery: (
     query: TCallbackQuery,
     ctx: TContext,
@@ -404,6 +467,10 @@ export interface TelegramUpdateRuntimeDeps<
     message: TMessage,
     ctx: TContext,
   ) => unknown;
+  handleAuthorizedTelegramGuestMessage?: (
+    guestMessage: TelegramGuestMessage & { from: TelegramUser },
+    ctx: TContext,
+  ) => Promise<void>;
 }
 
 export interface TelegramUpdateRuntimeControllerDeps<
@@ -431,6 +498,7 @@ export interface TelegramUpdateRuntimeControllerDeps<
     callbackQueryId: string,
     text?: string,
   ) => Promise<void>;
+  answerGuestQuery: (guestQueryId: string, text?: string) => Promise<void>;
   handleAuthorizedTelegramCallbackQuery: (
     query: TCallbackQuery,
     ctx: TContext,
@@ -448,6 +516,10 @@ export interface TelegramUpdateRuntimeControllerDeps<
     message: TMessage,
     ctx: TContext,
   ) => unknown;
+  handleAuthorizedTelegramGuestMessage?: (
+    guestMessage: TelegramGuestMessage & { from: TelegramUser },
+    ctx: TContext,
+  ) => Promise<void>;
 }
 
 export interface TelegramUpdateRuntimeController<
@@ -536,12 +608,15 @@ export function createTelegramPairedUpdateRuntime<
       updateStatus: deps.updateStatus,
     }).pairIfNeeded,
     answerCallbackQuery: deps.answerCallbackQuery,
+    answerGuestQuery: deps.answerGuestQuery,
     handleAuthorizedTelegramCallbackQuery:
       deps.handleAuthorizedTelegramCallbackQuery,
     sendTextReply: deps.sendTextReply,
     handleAuthorizedTelegramMessage: deps.handleAuthorizedTelegramMessage,
     handleAuthorizedTelegramEditedMessage:
       deps.handleAuthorizedTelegramEditedMessage,
+    handleAuthorizedTelegramGuestMessage:
+      deps.handleAuthorizedTelegramGuestMessage,
   });
 }
 
@@ -582,12 +657,15 @@ export function createTelegramUpdateRuntime<
         handleAuthorizedTelegramReactionUpdate: handleAuthorizedReactionUpdate,
         pairTelegramUserIfNeeded: deps.pairTelegramUserIfNeeded,
         answerCallbackQuery: deps.answerCallbackQuery,
+        answerGuestQuery: deps.answerGuestQuery,
         handleAuthorizedTelegramCallbackQuery:
           deps.handleAuthorizedTelegramCallbackQuery,
         sendTextReply: deps.sendTextReply,
         handleAuthorizedTelegramMessage: deps.handleAuthorizedTelegramMessage,
         handleAuthorizedTelegramEditedMessage:
           deps.handleAuthorizedTelegramEditedMessage,
+        handleAuthorizedTelegramGuestMessage:
+          deps.handleAuthorizedTelegramGuestMessage,
       }),
   };
 }
@@ -710,6 +788,22 @@ export async function executeTelegramUpdatePlan<
       return;
     }
     await deps.handleAuthorizedTelegramCallbackQuery(plan.query, deps.ctx);
+    return;
+  }
+  if (plan.kind === "guest") {
+    if (plan.shouldDeny) {
+      await deps.answerGuestQuery(
+        plan.guestMessage.guest_query_id,
+        "Access denied.",
+      );
+      return;
+    }
+    if (deps.handleAuthorizedTelegramGuestMessage) {
+      await deps.handleAuthorizedTelegramGuestMessage(
+        plan.guestMessage,
+        deps.ctx,
+      );
+    }
     return;
   }
   const pairedNow = plan.shouldPair

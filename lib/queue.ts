@@ -66,6 +66,7 @@ export interface TelegramQueueItemBase {
   kind: TelegramQueueItemKind;
   chatId: number;
   replyToMessageId: number;
+  guestQueryId?: string;
   queueOrder: number;
   queueLane: TelegramQueueLane;
   laneOrder: number;
@@ -113,6 +114,7 @@ export interface TelegramActiveTurnStore<
   clear: () => void;
   getChatId: () => number | undefined;
   getReplyToMessageId: () => number | undefined;
+  getGuestQueryId: () => string | undefined;
   getSourceMessageIds: () => number[] | undefined;
 }
 
@@ -203,6 +205,7 @@ export function createTelegramActiveTurnStore<
     },
     getChatId: () => activeTurn?.chatId,
     getReplyToMessageId: () => activeTurn?.replyToMessageId,
+    getGuestQueryId: () => activeTurn?.guestQueryId,
     getSourceMessageIds: () => activeTurn?.sourceMessageIds,
   };
 }
@@ -785,6 +788,7 @@ export interface TelegramAgentEndRuntimeDeps<
     text: string,
   ) => Promise<unknown>;
   sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+  answerGuestQuery?: (guestQueryId: string, text?: string) => Promise<void>;
   planOutboundReply?: (
     markdown: string,
   ) => TelegramAgentEndOutboundReplyPlan<TReplyMarkup>;
@@ -832,6 +836,7 @@ export interface TelegramAgentEndHookRuntimeDeps<
   >["sendMarkdownReply"];
   sendTextReply: TelegramAgentEndRuntimeDeps<TTurn>["sendTextReply"];
   sendQueuedAttachments: (turn: TTurn) => Promise<void>;
+  answerGuestQuery?: TelegramAgentEndRuntimeDeps<TTurn>["answerGuestQuery"];
   planOutboundReply?: TelegramAgentEndRuntimeDeps<
     TTurn,
     TReplyMarkup
@@ -952,6 +957,7 @@ export function createTelegramAgentEndHook<
       sendMarkdownReply: deps.sendMarkdownReply,
       sendTextReply: deps.sendTextReply,
       sendQueuedAttachments: deps.sendQueuedAttachments,
+      answerGuestQuery: deps.answerGuestQuery,
       planOutboundReply: deps.planOutboundReply,
       sendOutboundReplyArtifacts: deps.sendOutboundReplyArtifacts,
       getDefaultChatId: deps.getDefaultChatId,
@@ -1003,6 +1009,25 @@ export async function handleTelegramAgentEndRuntime<
           });
         }
       }
+    }
+    if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
+    return;
+  }
+  if (turn.guestQueryId) {
+    if (deps.isCurrentOwner && !deps.isCurrentOwner()) {
+      if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
+      return;
+    }
+    if (assistant.errorMessage) {
+      await deps.answerGuestQuery?.(
+        turn.guestQueryId,
+        "Telegram bridge: π failed while processing the request.",
+      );
+      if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
+      return;
+    }
+    if (finalText) {
+      await deps.answerGuestQuery?.(turn.guestQueryId, finalText);
     }
     if (endPlan.shouldDispatchNext) deps.dispatchNextQueuedTelegramTurn();
     return;

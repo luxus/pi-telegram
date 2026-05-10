@@ -148,6 +148,7 @@ export default function (pi: Pi.ExtensionAPI) {
     downloadFile: downloadTelegramBridgeFile,
     editMessageText: editTelegramMessageText,
     answerCallbackQuery,
+    answerGuestQuery,
     prepareTempDir,
   } = Api.createDefaultTelegramBridgeApiRuntime({
     getBotToken: configStore.getBotToken,
@@ -333,6 +334,7 @@ export default function (pi: Pi.ExtensionAPI) {
     updateStatus,
     dispatchNextQueuedTelegramTurn,
     answerCallbackQuery,
+    answerGuestQuery,
     sendTextReply,
     setMyCommands,
     getCommands,
@@ -494,6 +496,7 @@ export default function (pi: Pi.ExtensionAPI) {
     sendMarkdownReply,
     sendTextReply,
     sendQueuedAttachments: queuedAttachmentSender,
+    answerGuestQuery,
     planOutboundReply: outboundReplyPlanner,
     sendOutboundReplyArtifacts: outboundReplyArtifactSender,
     isCurrentOwner: lockOwnershipGuard.ownsContext,
