@@ -216,8 +216,13 @@ export function registerTelegramBridgeCommands(
         items.push(`${enabled ? "🟢" : "⚫️"} Proactive push`);
       }
       for (const pref of getTelegramPreferenceRegistry().list()) {
-        const enabled = pref.get();
-        items.push(`${enabled ? "🟢" : "⚫️"} ${pref.label}`);
+        if (pref.kind === "toggle") {
+          const enabled = pref.get();
+          items.push(`${enabled ? "🟢" : "⚫️"} ${pref.label}`);
+        } else {
+          const value = pref.get();
+          items.push(`🔵 ${pref.label}: ${value}`);
+        }
       }
       items.push("Cancel");
       const selected = await select("Telegram settings", items);
@@ -233,14 +238,32 @@ export function registerTelegramBridgeCommands(
       }
       for (const pref of getTelegramPreferenceRegistry().list()) {
         if (selected?.includes(pref.label)) {
-          const enabled = pref.get();
-          await pref.set(!enabled);
-          deps.updateStatus(ctx);
-          ctx.ui.notify(
-            `${pref.label} ${!enabled ? "enabled" : "disabled"}.`,
-            "info",
-          );
-          return;
+          if (pref.kind === "toggle") {
+            const enabled = pref.get();
+            await pref.set(!enabled);
+            deps.updateStatus(ctx);
+            ctx.ui.notify(
+              `${pref.label} ${!enabled ? "enabled" : "disabled"}.`,
+              "info",
+            );
+            return;
+          } else {
+            const optionItems = [...pref.options, "Cancel"];
+            const chosen = await select(`${pref.label}`, optionItems);
+            if (
+              chosen &&
+              chosen !== "Cancel" &&
+              pref.options.includes(chosen)
+            ) {
+              await pref.set(chosen);
+              deps.updateStatus(ctx);
+              ctx.ui.notify(
+                `${pref.label} set to ${chosen}.`,
+                "info",
+              );
+            }
+            return;
+          }
         }
       }
     },

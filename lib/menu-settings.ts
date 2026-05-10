@@ -7,7 +7,10 @@
 import type { TelegramInlineKeyboardMarkup } from "./keyboard.ts";
 import type { TelegramModelMenuState } from "./menu-model.ts";
 import type { MenuModel } from "./model.ts";
-import { getTelegramPreferenceRegistry } from "./preference-bus.ts";
+import {
+  getTelegramPreferenceRegistry,
+  type TelegramPreferenceKind,
+} from "./preference-bus.ts";
 
 export type TelegramSettingsMenuReplyMarkup = TelegramInlineKeyboardMarkup;
 
@@ -106,14 +109,19 @@ export const PROACTIVE_PUSH_SETTINGS_TITLE = "<b>Proactive push:</b>";
 function getExtensionPreferences(): Array<{
   label: string;
   key: string;
-  enabled: boolean;
-  set: (enabled: boolean) => Promise<void>;
+  kind: TelegramPreferenceKind;
+  value: string | boolean;
+  set: (value: string | boolean) => Promise<void>;
 }> {
   return getTelegramPreferenceRegistry().list().map((entry) => ({
     label: entry.label,
     key: `${entry.category}:${entry.key}`,
-    enabled: entry.get(),
-    set: entry.set,
+    kind: entry.kind,
+    value: entry.kind === "toggle" ? entry.get() : entry.get(),
+    set: (value: string | boolean) =>
+      entry.kind === "toggle"
+        ? entry.set(value as boolean)
+        : entry.set(value as string),
   }));
 }
 
@@ -131,7 +139,12 @@ export function buildProactivePushSettingsText(): string {
 
 export function buildTelegramSettingsMenuReplyMarkup(
   proactivePushEnabled: boolean,
-  extensionPreferences: Array<{ label: string; key: string; enabled: boolean }>,
+  extensionPreferences: Array<{
+    label: string;
+    key: string;
+    kind: TelegramPreferenceKind;
+    value: string | boolean;
+  }>,
 ): TelegramSettingsMenuReplyMarkup {
   const rows: TelegramSettingsMenuReplyMarkup["inline_keyboard"] = [
     [{ text: "⬆️ Main menu", callback_data: "menu:back" }],
@@ -143,9 +156,15 @@ export function buildTelegramSettingsMenuReplyMarkup(
     ],
   ];
   for (const pref of extensionPreferences) {
+    const displayValue =
+      pref.kind === "toggle"
+        ? pref.value
+          ? "🟢"
+          : "⚫️"
+        : `🔵 ${pref.value}`;
     rows.push([
       {
-        text: `${pref.enabled ? "🟢" : "⚫️"} ${pref.label}`,
+        text: `${displayValue} ${pref.label}`,
         callback_data: `settings:open:pref:${pref.key}`,
       },
     ]);
@@ -191,7 +210,7 @@ export function buildProactivePushSettingsReplyMarkup(
   };
 }
 
-function buildExtensionPreferenceDetailReplyMarkup(
+function buildExtensionToggleDetailReplyMarkup(
   enabled: boolean,
   key: string,
 ): TelegramSettingsMenuReplyMarkup {
@@ -208,6 +227,25 @@ function buildExtensionPreferenceDetailReplyMarkup(
           callback_data: `settings:set:pref:${key}:off`,
         },
       ],
+    ],
+  };
+}
+
+function buildExtensionSelectDetailReplyMarkup(
+  options: string[],
+  currentValue: string,
+  key: string,
+): TelegramSettingsMenuReplyMarkup {
+  const optionRows = options.map((option) => [
+    {
+      text: option === currentValue ? `🟢 ${option}` : `⚫️ ${option}`,
+      callback_data: `settings:set:pref:${key}:${option}`,
+    },
+  ]);
+  return {
+    inline_keyboard: [
+      [{ text: "⬆️ Back", callback_data: "settings:list" }],
+      ...optionRows,
     ],
   };
 }
@@ -273,10 +311,21 @@ export async function handleTelegramSettingsMenuCallbackAction(
     const key = data.slice("settings:open:pref:".length);
     const pref = findExtensionPreference(key);
     if (pref) {
-      await deps.updateSettingsMessage(
-        `<b>${pref.label}:</b>`,
-        buildExtensionPreferenceDetailReplyMarkup(pref.get(), key),
-      );
+      if (pref.kind === "toggle") {
+        await deps.updateSettingsMessage(
+          `<b>${pref.label}:</b>`,
+          buildExtensionToggleDetailReplyMarkup(pref.get(), key),
+        );
+      } else {
+        await deps.updateSettingsMessage(
+          `<b>${pref.label}:</b>`,
+          buildExtensionSelectDetailReplyMarkup(
+            pref.options,
+            pref.get(),
+            key,
+          ),
+        );
+      }
       await deps.answerCallbackQuery(callbackQueryId);
       return true;
     }
@@ -286,18 +335,35 @@ export async function handleTelegramSettingsMenuCallbackAction(
     const lastColon = rest.lastIndexOf(":");
     if (lastColon !== -1) {
       const key = rest.slice(0, lastColon);
-      const enabled = rest.endsWith(":on");
+      const value = rest.slice(lastColon + 1);
       const pref = findExtensionPreference(key);
       if (pref) {
-        await pref.set(enabled);
-        await deps.updateSettingsMessage(
-          `<b>${pref.label}:</b>`,
-          buildExtensionPreferenceDetailReplyMarkup(enabled, key),
-        );
-        await deps.answerCallbackQuery(
-          callbackQueryId,
-          `${pref.label} ${enabled ? "enabled" : "disabled"}`,
-        );
+        if (pref.kind === "toggle") {
+          const enabled = value === "on";
+          await pref.set(enabled);
+          await deps.updateSettingsMessage(
+            `<b>${pref.label}:</b>`,
+            buildExtensionToggleDetailReplyMarkup(enabled, key),
+          );
+          await deps.answerCallbackQuery(
+            callbackQueryId,
+            `${pref.label} ${enabled ? "enabled" : "disabled"}`,
+          );
+        } else {
+          await pref.set(value);
+          await deps.updateSettingsMessage(
+            `<b>${pref.label}:</b>`,
+            buildExtensionSelectDetailReplyMarkup(
+              pref.options,
+              value,
+              key,
+            ),
+          );
+          await deps.answerCallbackQuery(
+            callbackQueryId,
+            `${pref.label} set to ${value}`,
+          );
+        }
         return true;
       }
     }

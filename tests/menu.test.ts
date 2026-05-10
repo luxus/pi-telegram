@@ -2085,15 +2085,21 @@ test("Settings menu marks binary config flags in the list", () => {
   );
   assert.deepEqual(
     buildTelegramSettingsMenuReplyMarkup(false, [
-      { label: "Voice replies", key: "xai:voicePreferred", enabled: true },
+      { label: "Voice replies", key: "xai:voicePreferred", kind: "toggle", value: true },
     ]).inline_keyboard[2],
     [{ text: "🟢 Voice replies", callback_data: "settings:open:pref:xai:voicePreferred" }],
   );
   assert.deepEqual(
     buildTelegramSettingsMenuReplyMarkup(false, [
-      { label: "Voice replies", key: "xai:voicePreferred", enabled: false },
+      { label: "Voice replies", key: "xai:voicePreferred", kind: "toggle", value: false },
     ]).inline_keyboard[2],
     [{ text: "⚫️ Voice replies", callback_data: "settings:open:pref:xai:voicePreferred" }],
+  );
+  assert.deepEqual(
+    buildTelegramSettingsMenuReplyMarkup(false, [
+      { label: "TTS Voice", key: "xai:ttsVoice", kind: "select", value: "eve" },
+    ]).inline_keyboard[2],
+    [{ text: "🔵 eve TTS Voice", callback_data: "settings:open:pref:xai:ttsVoice" }],
   );
 });
 

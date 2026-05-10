@@ -1,20 +1,32 @@
 /**
  * Telegram bridge preference and prompt guidance bus
  * Zones: shared utils, extension interop
- * Lets layered extensions inject boolean preferences into the Telegram settings menu
+ * Lets layered extensions inject boolean or select preferences into the Telegram settings menu
  * and conditional prompt guidance into the before-agent-start hook.
  *
  * Uses the same globalThis registry pattern as external-handlers.ts.
  */
 
-export interface TelegramPreferenceEntry {
-  /** Human-readable label shown in the settings menu. */
+export type TelegramPreferenceKind = "toggle" | "select";
+
+export interface TelegramTogglePreference {
+  kind: "toggle";
   label: string;
-  /** Read current value. */
   get: () => boolean;
-  /** Write new value. */
   set: (enabled: boolean) => Promise<void>;
 }
+
+export interface TelegramSelectPreference {
+  kind: "select";
+  label: string;
+  options: string[];
+  get: () => string;
+  set: (value: string) => Promise<void>;
+}
+
+export type TelegramPreferenceEntry =
+  | TelegramTogglePreference
+  | TelegramSelectPreference;
 
 export interface TelegramPreferenceRegistry {
   readonly version: 1;
@@ -23,13 +35,12 @@ export interface TelegramPreferenceRegistry {
     key: string,
     entry: TelegramPreferenceEntry,
   ): () => void;
-  list(): Array<{
-    category: string;
-    key: string;
-    label: string;
-    get: () => boolean;
-    set: (enabled: boolean) => Promise<void>;
-  }>;
+  list(): Array<
+    {
+      category: string;
+      key: string;
+    } & TelegramPreferenceEntry
+  >;
 }
 
 export interface TelegramPromptGuidanceEntry {
@@ -88,7 +99,7 @@ function getOrCreatePreferenceRegistry(): TelegramPreferenceRegistry {
     list() {
       return [...entries.entries()].map(([fullKey, entry]) => {
         const [category, key] = fullKey.split(":") as [string, string];
-        return { category, key, label: entry.label, get: entry.get, set: entry.set };
+        return { category, key, ...entry };
       });
     },
   };

@@ -4,20 +4,36 @@ Extension preference and prompt guidance bus for `pi-telegram`.
 
 ## Purpose
 
-Layered extensions can inject boolean preferences into the Telegram `/settings` menu and conditional prompt guidance into the `before_agent_start` hook without modifying `pi-telegram`.
+Layered extensions inject boolean or select preferences into the Telegram `/settings` menu and conditional prompt guidance into the `before_agent_start` hook without modifying `pi-telegram`.
 
 Uses the same `globalThis` registry pattern as `external-handlers.ts`.
 
-## Preference registry
+## Toggle preference
 
 ```typescript
 import { registerTelegramPreference } from "@llblab/pi-telegram/lib/preference-bus.ts";
 
 const off = registerTelegramPreference("xai", "voicePreferred", {
+  kind: "toggle",
   label: "Voice replies",
   get: () => config.xai.voice.replyMode === "voice",
   set: async (enabled) => {
     config.xai.voice.replyMode = enabled ? "voice" : "text";
+    await saveConfig();
+  },
+});
+```
+
+## Select preference
+
+```typescript
+const off = registerTelegramPreference("xai", "ttsVoice", {
+  kind: "select",
+  label: "TTS Voice",
+  options: ["eve", "alloy", "shimmer"],
+  get: () => config.xai.voice.defaultVoice,
+  set: async (voice) => {
+    config.xai.voice.defaultVoice = voice;
     await saveConfig();
   },
 });
@@ -47,7 +63,7 @@ If `@llblab/pi-telegram` is not importable, reach the registry directly:
 ```typescript
 const prefRegistry = (globalThis as any).__piTelegramPreferences__;
 if (prefRegistry?.version === 1) {
-  prefRegistry.add("xai", "voicePreferred", { label, get, set });
+  prefRegistry.add("xai", "voicePreferred", { kind: "toggle", label, get, set });
 }
 ```
 
