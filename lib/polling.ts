@@ -20,6 +20,7 @@ export const TELEGRAM_ALLOWED_UPDATES = [
   "edited_message",
   "callback_query",
   "message_reaction",
+  "guest_message",
 ] as const;
 
 export function buildTelegramInitialSyncRequest(): {

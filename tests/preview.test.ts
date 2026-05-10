@@ -71,7 +71,7 @@ function createPreviewRuntimeHarness(state?: {
         draftSupport = support;
       },
       allocateDraftId: () => nextDraftId++,
-      sendDraft: async (chatId: number, draftId: number, text: string) => {
+      sendDraft: async (chatId: number, draftId: number, text?: string) => {
         events.push(`draft:${chatId}:${draftId}:${text}`);
       },
       sendMessage: async (

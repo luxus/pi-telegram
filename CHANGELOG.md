@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.7: Bot API 10.0 Alignment
+
+- `[Dependencies]` Migrated peer dependencies and imports from `@mariozechner/*` to `@earendil-works/*` (`pi-agent-core`, `pi-ai`, `pi-coding-agent`). Impact: the extension now tracks the new `@earendil-works` package scope; transitive `@mariozechner` packages remain in the lockfile until their upstreams migrate.
+- `[Package]` Added `engines: { "node": ">=22.0.0" }` to document the supported Node expectation while keeping dev dependencies on `latest` for early-stage iteration. Impact: users know the minimum Node version without constraining the development dependency matrix prematurely.
+- `[Polling]` Added `"guest_message"` to `TELEGRAM_ALLOWED_UPDATES` so the bot receives guest-mode updates. Impact: without this, guest mentions are silently ignored by Telegram.
+- `[Telegram API]` Updated `sendMessageDraft` wrapper for Bot API 10.0 semantics: removed the empty-text guard, made `text` optional, and added optional `parse_mode`, `entities`, and `message_thread_id` parameters. Impact: preview can now show a "Thinking…" placeholder with empty text, and callers can pass rich formatting through `parse_mode` or `entities`.
+- `[Telegram API]` Added `answerGuestQuery` to the API runtime for Bot API 10.0 Guest Mode support. Impact: callers can reply to guest queries in chats where the bot is not a member. Uses `InlineQueryResultArticle` as the result payload per Bot API 10.0 contract.
+- `[Updates]` Extended inbound update routing to recognize `guest_message` updates. Added `getAuthorizedTelegramGuestMessage`, guest flow action, execution plan, runtime handler, and prompt enqueue support. Unauthorized guest queries receive an "Access denied." reply via `answerGuestQuery`. Guest turns customize the agent-end delivery to use `answerGuestQuery` instead of normal reply transport. Impact: the bridge can now receive and route guest-mode mentions in group chats while preserving the existing private-message authorization model.
+- `[Runtime]` Added typing-loop skip for guest turns (`chatId === 0`) to avoid spurious `sendChatAction` errors in the status bar.
+- `[Tests]` Added regression tests for empty-text draft delivery, undefined-text draft delivery, rich preview with `parse_mode` and `entities`, guest query answers, guest extraction, guest flow classification, guest execution plan, guest deny reply, and guest message routing through the runtime.
+- `[Preview]` Updated `sendDraft` interface in `lib/preview.ts` to accept optional text and formatting options, keeping the preview pipeline aligned with the new API wrapper.
+
 ## 0.9.6: Runtime Adapter Positioning
 
 - `[Package]` Bumped package metadata to `0.9.6` and repositioned the package description from "Better Telegram DM bridge extension for π" to "Telegram Runtime Adapter for π". Impact: package metadata now reflects the runtime adapter/operator-console role rather than a narrow pipe metaphor.

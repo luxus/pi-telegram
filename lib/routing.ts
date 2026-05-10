@@ -17,6 +17,7 @@ import type { TelegramBridgeRuntime } from "./runtime.ts";
 import * as TextGroups from "./text-groups.ts";
 import * as Turns from "./turns.ts";
 import * as Updates from "./updates.ts";
+import type { TelegramUser } from "./updates.ts";
 
 export type TelegramRoutedMessage = Updates.TelegramUpdateMessage &
   Media.TelegramMediaMessage &
@@ -80,6 +81,7 @@ export interface TelegramInboundRouteRuntimeDeps<
     callbackQueryId: string,
     text?: string,
   ) => Promise<void>;
+  answerGuestQuery: (guestQueryId: string, text?: string) => Promise<void>;
   sendTextReply: (
     chatId: number,
     replyToMessageId: number,
@@ -364,6 +366,33 @@ export function createTelegramInboundRouteRuntime<
     ...deps.telegramQueueStore,
     updateStatus: deps.updateStatus,
   });
+  const handleAuthorizedTelegramGuestMessage = async (
+    guestMessage: Updates.TelegramGuestMessage & { from: TelegramUser },
+    ctx: TContext,
+  ): Promise<void> => {
+    const text = guestMessage.text ?? "";
+    const order = deps.bridgeRuntime.queue.allocateItemOrder();
+    const guestTurn: Queue.PendingTelegramTurn = {
+      kind: "prompt",
+      chatId: 0,
+      replyToMessageId: 0,
+      guestQueryId: guestMessage.guest_query_id,
+      sourceMessageIds: [],
+      queueOrder: order,
+      queueLane: "default",
+      laneOrder: order,
+      queuedAttachments: [],
+      content: [{ type: "text", text }],
+      historyText: text,
+      statusSummary: Turns.truncateTelegramQueueSummary(text),
+    };
+    const items = deps.telegramQueueStore.getQueuedItems();
+    deps.telegramQueueStore.setQueuedItems(
+      Queue.appendTelegramQueueItem(items, guestTurn),
+    );
+    deps.updateStatus(ctx);
+    deps.dispatchNextQueuedTelegramTurn(ctx);
+  };
   return Updates.createTelegramPairedUpdateRuntime<TContext, TUpdate>({
     getAllowedUserId: deps.configStore.getAllowedUserId,
     setAllowedUserId: deps.configStore.setAllowedUserId,
@@ -377,9 +406,11 @@ export function createTelegramInboundRouteRuntime<
     prioritizeQueuedTelegramTurnByMessageId:
       deps.queueMutationRuntime.prioritizeByMessageId,
     answerCallbackQuery: deps.answerCallbackQuery,
+    answerGuestQuery: deps.answerGuestQuery,
     handleAuthorizedTelegramCallbackQuery: callbackHandler,
     sendTextReply: deps.sendTextReply,
     handleAuthorizedTelegramMessage: textDispatch.handleMessage,
     handleAuthorizedTelegramEditedMessage: editRuntime.updateFromEditedMessage,
+    handleAuthorizedTelegramGuestMessage,
   });
 }

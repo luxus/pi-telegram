@@ -114,7 +114,7 @@ unregister();
 Sections are registered by normal pi extensions:
 
 ```ts
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerTelegramSection } from "@llblab/pi-telegram/lib/extension-sections.ts";
 
 export default function (pi: ExtensionAPI) {

@@ -151,12 +151,25 @@ export interface TelegramMessageReactionUpdated {
   date: number;
 }
 
+export interface TelegramGuestMessage {
+  message_id: number;
+  from?: TelegramUser;
+  chat: TelegramChat;
+  date: number;
+  text?: string;
+  caption?: string;
+  guest_query_id: string;
+  guest_bot_caller_user?: TelegramUser;
+  guest_bot_caller_chat?: TelegramChat;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   edited_message?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
   message_reaction?: TelegramMessageReactionUpdated;
+  guest_message?: TelegramGuestMessage;
   deleted_business_messages?: { message_ids?: unknown };
 }
 
@@ -182,6 +195,15 @@ export type TelegramEditMessageTextBody = Record<string, unknown> & {
   message_id: number;
   text: string;
   parse_mode?: "HTML";
+};
+
+export type TelegramSendMessageDraftBody = Record<string, unknown> & {
+  chat_id: number;
+  draft_id: number;
+  text?: string;
+  parse_mode?: string;
+  entities?: unknown[];
+  message_thread_id?: number;
 };
 
 interface TelegramApiResponse<T> {
@@ -233,6 +255,7 @@ export interface TelegramApiClient {
     callbackQueryId: string,
     text?: string,
   ) => Promise<void>;
+  answerGuestQuery?: (guestQueryId: string, text?: string) => Promise<void>;
 }
 
 export interface TelegramBridgeApiRuntimeDeps {
@@ -275,7 +298,12 @@ export interface TelegramBridgeApiRuntime {
   sendMessageDraft: (
     chatId: number,
     draftId: number,
-    text: string,
+    text?: string,
+    options?: {
+      parse_mode?: string;
+      entities?: unknown[];
+      message_thread_id?: number;
+    },
   ) => Promise<boolean>;
   sendMessage: (body: TelegramSendMessageBody) => Promise<TelegramSentMessage>;
   editMessageText: (
@@ -285,6 +313,7 @@ export interface TelegramBridgeApiRuntime {
     callbackQueryId: string,
     text?: string,
   ) => Promise<void>;
+  answerGuestQuery: (guestQueryId: string, text?: string) => Promise<void>;
   prepareTempDir: () => Promise<number>;
 }
 
@@ -534,9 +563,7 @@ export async function fetchTelegramBotIdentity(
   botToken: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<TelegramBotIdentityResponse> {
-  const response = await fetchImpl(
-    `${TELEGRAM_API_BASE}/bot${botToken}/getMe`,
-  );
+  const response = await fetchImpl(`${TELEGRAM_API_BASE}/bot${botToken}/getMe`);
   return response.json() as Promise<TelegramBotIdentityResponse>;
 }
 
@@ -559,14 +586,11 @@ export async function callTelegramMultipart<TResponse>(
         form.set(key, value);
       }
       form.set(fileField, fileBlob, fileName);
-      return fetch(
-        `${TELEGRAM_API_BASE}/bot${configuredBotToken}/${method}`,
-        {
-          method: "POST",
-          body: form,
-          signal: options?.signal,
-        },
-      );
+      return fetch(`${TELEGRAM_API_BASE}/bot${configuredBotToken}/${method}`, {
+        method: "POST",
+        body: form,
+        signal: options?.signal,
+      });
     },
     options,
   );
@@ -732,13 +756,18 @@ export function createTelegramBridgeApiRuntime(
         }),
       "typing",
     ),
-    sendMessageDraft: (chatId, draftId, text) => {
-      if (text.length === 0) return Promise.resolve(false);
-      return callRecorded<boolean>("sendMessageDraft", {
+    sendMessageDraft: (chatId, draftId, text, options) => {
+      const body: Record<string, unknown> = {
         chat_id: chatId,
         draft_id: draftId,
-        text,
-      });
+      };
+      if (text !== undefined) body.text = text;
+      if (options?.parse_mode !== undefined)
+        body.parse_mode = options.parse_mode;
+      if (options?.entities !== undefined) body.entities = options.entities;
+      if (options?.message_thread_id !== undefined)
+        body.message_thread_id = options.message_thread_id;
+      return callRecorded<boolean>("sendMessageDraft", body);
     },
     sendMessage: (body) =>
       callRecorded<TelegramSentMessage>("sendMessage", body),
@@ -754,6 +783,18 @@ export function createTelegramBridgeApiRuntime(
     },
     answerCallbackQuery: (callbackQueryId, text) => {
       return deps.client.answerCallbackQuery(callbackQueryId, text);
+    },
+    answerGuestQuery: (guestQueryId, text) => {
+      const body: Record<string, unknown> = { guest_query_id: guestQueryId };
+      if (text !== undefined) {
+        body.result = {
+          type: "article",
+          id: "1",
+          title: text.length > 64 ? text.slice(0, 61) + "..." : text,
+          input_message_content: { message_text: text },
+        };
+      }
+      return callRecorded<void>("answerGuestQuery", body);
     },
     prepareTempDir: () =>
       prepareTelegramTempDir(deps.tempDir, deps.tempFileMaxAgeMs),

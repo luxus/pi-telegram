@@ -365,7 +365,8 @@ export function startTelegramTypingLoop(
   state: TelegramBridgeRuntimeState,
   deps: TelegramTypingLoopDeps,
 ): boolean {
-  if (state.typingInterval || deps.chatId === undefined) return false;
+  if (state.typingInterval || deps.chatId === undefined || deps.chatId === 0)
+    return false;
   const sendTyping = (): void => {
     void deps.sendTypingAction(deps.chatId as number);
   };

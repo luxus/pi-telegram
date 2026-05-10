@@ -139,6 +139,7 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     answerCallbackQuery: async (callbackQueryId) => {
       events.push(`answer:${callbackQueryId}`);
     },
+    answerGuestQuery: async () => {},
     sendTextReply: async () => undefined,
     setMyCommands: async () => undefined,
     getCommands: () => [],

@@ -61,7 +61,12 @@ export interface TelegramPreviewRuntimeDeps<
   sendDraft: (
     chatId: number,
     draftId: number,
-    text: string,
+    text?: string,
+    options?: {
+      parse_mode?: string;
+      entities?: unknown[];
+      message_thread_id?: number;
+    },
   ) => Promise<unknown>;
   sendMessage: (
     chatId: number,
@@ -158,7 +163,12 @@ export interface TelegramPreviewControllerDeps<
   sendDraft: (
     chatId: number,
     draftId: number,
-    text: string,
+    text?: string,
+    options?: {
+      parse_mode?: string;
+      entities?: unknown[];
+      message_thread_id?: number;
+    },
   ) => Promise<unknown>;
   sendMessage: (
     chatId: number,
