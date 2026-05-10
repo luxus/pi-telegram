@@ -143,6 +143,15 @@ export function getTelegramPromptGuidanceRegistry(): TelegramPromptGuidanceRegis
   return getOrCreateGuidanceRegistry();
 }
 
+/**
+ * Eagerly create both registries on globalThis so layered extensions
+ * can register immediately without waiting for pi-telegram to query them.
+ */
+export function ensureTelegramPreferenceRegistries(): void {
+  getOrCreatePreferenceRegistry();
+  getOrCreateGuidanceRegistry();
+}
+
 export function registerTelegramPreference(
   category: string,
   key: string,

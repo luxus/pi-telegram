@@ -23,6 +23,7 @@ import * as OutboundHandlers from "./lib/outbound-handlers.ts";
 import * as Pi from "./lib/pi.ts";
 import * as Polling from "./lib/polling.ts";
 import * as Preview from "./lib/preview.ts";
+import * as PreferenceBus from "./lib/preference-bus.ts";
 import * as PromptTemplates from "./lib/prompt-templates.ts";
 import * as Prompts from "./lib/prompts.ts";
 import * as Queue from "./lib/queue.ts";
@@ -39,6 +40,10 @@ type RuntimeTelegramQueueItem = Queue.TelegramQueueItem<Pi.ExtensionContext>;
 // --- Extension Runtime ---
 
 export default function (pi: Pi.ExtensionAPI) {
+  // Eagerly create preference registries so layered extensions can
+  // register immediately without waiting for pi-telegram to query them.
+  PreferenceBus.ensureTelegramPreferenceRegistries();
+
   const piRuntime = Pi.createExtensionApiRuntimePorts(pi);
   const {
     getCommands,
@@ -143,6 +148,7 @@ export default function (pi: Pi.ExtensionAPI) {
     getUpdates,
     setMyCommands,
     sendTypingAction,
+    sendRecordVoiceAction,
     sendMessageDraft,
     sendMessage,
     downloadFile: downloadTelegramBridgeFile,
@@ -461,6 +467,7 @@ export default function (pi: Pi.ExtensionAPI) {
       execCommand: CommandTemplates.execCommandTemplate,
       sendMultipart: callMultipart,
       sendTextReply,
+      sendRecordVoiceAction,
       getHandlers: configStore.getOutboundHandlers,
       recordRuntimeEvent,
     });

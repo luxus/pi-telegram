@@ -7,7 +7,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 
 import type { TelegramInlineKeyboardMarkup } from "./keyboard.ts";
 import type { PendingTelegramTurn } from "./queue.ts";
@@ -87,6 +87,7 @@ export interface TelegramVoiceReplySenderDeps {
     replyToMessageId: number,
     text: string,
   ) => Promise<unknown>;
+  sendRecordVoiceAction?: (chatId: number) => Promise<unknown>;
   getHandlers?: () => TelegramOutboundHandlerConfig[] | undefined;
   tempDir?: string;
   cwd?: string;
@@ -919,6 +920,37 @@ export interface TelegramOutboundReplyPlan<TReplyMarkup = unknown> {
   rate?: string;
 }
 
+async function maybeTranscodeTelegramVoiceFile(
+  filePath: string,
+  execCommand: TelegramVoiceReplySenderDeps["execCommand"],
+): Promise<string> {
+  const ext = extname(filePath).toLowerCase();
+  if (ext === ".ogg" || ext === ".opus") return filePath;
+  const oggPath = filePath.replace(/\.[^.]+$/, "") + ".ogg";
+  try {
+    await execCommand("ffmpeg", [
+      "-y",
+      "-i",
+      filePath,
+      "-vn",
+      "-c:a",
+      "libopus",
+      "-b:a",
+      "48k",
+      "-ar",
+      "24000",
+      "-ac",
+      "1",
+      "-f",
+      "ogg",
+      oggPath,
+    ]);
+    return oggPath;
+  } catch {
+    return filePath;
+  }
+}
+
 export function createTelegramVoiceReplySender(
   deps: TelegramVoiceReplySenderDeps,
 ) {
@@ -934,6 +966,7 @@ export function createTelegramVoiceReplySender(
     if (handlers.length === 0) return;
     for (const handler of handlers) {
       try {
+        await deps.sendRecordVoiceAction?.(turn.chatId).catch(() => undefined);
         const filePath = await generateTelegramVoiceReplyFile(text, {
           lang: options?.lang,
           rate: options?.rate,
@@ -943,6 +976,10 @@ export function createTelegramVoiceReplySender(
           execCommand: deps.execCommand,
         });
         if (!filePath) continue;
+        const voicePath = await maybeTranscodeTelegramVoiceFile(
+          filePath,
+          deps.execCommand,
+        );
         const replyParameters = buildTelegramMultipartReplyParameters(
           options?.replyToPrompt === false ? undefined : turn.replyToMessageId,
         );
@@ -953,8 +990,8 @@ export function createTelegramVoiceReplySender(
             ...(replyParameters ? { reply_parameters: replyParameters } : {}),
           },
           "voice",
-          filePath,
-          basename(filePath),
+          voicePath,
+          basename(voicePath),
         );
         return;
       } catch (error) {
