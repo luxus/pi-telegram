@@ -372,7 +372,16 @@ function parseVoiceCommentBody(
 } {
   const trimmedHead = head.trim();
   if (body !== undefined) {
-    return { attrs: trimmedHead.replace(/^:/, "").trim(), text: body.trim() };
+    if (trimmedHead.startsWith(":")) {
+      const inlineText = trimmedHead.slice(1).trim();
+      return {
+        attrs: "",
+        text: inlineText
+          ? `${inlineText}\n${body.trim()}`
+          : body.trim(),
+      };
+    }
+    return { attrs: trimmedHead, text: body.trim() };
   }
   if (trimmedHead.startsWith(":")) {
     return { attrs: "", text: trimmedHead.slice(1).trim() };

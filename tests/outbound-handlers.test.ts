@@ -230,6 +230,19 @@ test("Voice reply planner supports compact inline comments", () => {
   });
 });
 
+test("Voice reply planner supports multiline inline comments", () => {
+  const plan = planTelegramVoiceReply(
+    "Text before.\n\n<!-- telegram_voice: Hey Kai... Lass mich wissen, ob du mich jetzt hören\nkannst! -->",
+  );
+  assert.deepEqual(plan, {
+    markdown: "Text before.",
+    voiceText: "Hey Kai... Lass mich wissen, ob du mich jetzt hören\nkannst!",
+    voiceReplies: [{
+      text: "Hey Kai... Lass mich wissen, ob du mich jetzt hören\nkannst!",
+    }],
+  });
+});
+
 test("Voice reply planner supports text attribute comments", () => {
   const plan = planTelegramVoiceReply(
     'Text before.\n\n<!-- telegram_voice lang=ru rate=+10% text="Inline spoken summary." -->',
