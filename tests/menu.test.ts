@@ -2076,12 +2076,24 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
 
 test("Settings menu marks binary config flags in the list", () => {
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(true).inline_keyboard[1],
+    buildTelegramSettingsMenuReplyMarkup(true, []).inline_keyboard[1],
     [{ text: "🟢 Proactive push", callback_data: "settings:open:proactive" }],
   );
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false).inline_keyboard[1],
+    buildTelegramSettingsMenuReplyMarkup(false, []).inline_keyboard[1],
     [{ text: "⚫️ Proactive push", callback_data: "settings:open:proactive" }],
+  );
+  assert.deepEqual(
+    buildTelegramSettingsMenuReplyMarkup(false, [
+      { label: "Voice replies", key: "xai:voicePreferred", enabled: true },
+    ]).inline_keyboard[2],
+    [{ text: "🟢 Voice replies", callback_data: "settings:open:pref:xai:voicePreferred" }],
+  );
+  assert.deepEqual(
+    buildTelegramSettingsMenuReplyMarkup(false, [
+      { label: "Voice replies", key: "xai:voicePreferred", enabled: false },
+    ]).inline_keyboard[2],
+    [{ text: "⚫️ Voice replies", callback_data: "settings:open:pref:xai:voicePreferred" }],
   );
 });
 

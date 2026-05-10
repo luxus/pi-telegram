@@ -11,6 +11,7 @@ import {
   createTelegramBeforeAgentStartHook,
   createTelegramProactiveBeforeAgentStartHook,
 } from "../lib/prompts.ts";
+import { registerTelegramPromptGuidance } from "../lib/preference-bus.ts";
 
 type BeforeAgentStartHookEvent = Parameters<
   ReturnType<typeof createTelegramBeforeAgentStartHook>
@@ -82,6 +83,33 @@ test("Prompt helpers build before-agent-start hooks", () => {
     /do not call or register transport\/TTS\/text-to-OGG tools/,
   );
   assert.match(defaultSystemPrompt, /no specific summary format is required/);
+});
+
+test("Prompt helpers inject registered extension guidance", () => {
+  const off = registerTelegramPromptGuidance("test-voice", {
+    condition: () => true,
+    text: "- The user prefers spoken replies when appropriate.",
+  });
+  const hook = createTelegramBeforeAgentStartHook({
+    telegramPrefix: "[telegram]",
+    systemPromptSuffix: "\nbridge active",
+  });
+  const withGuidance = hook(
+    createBeforeAgentStartEvent(" [telegram] hello", "base"),
+  ).systemPrompt;
+  assert.match(
+    withGuidance,
+    /prefers spoken replies when appropriate/,
+  );
+  off();
+
+  const withoutGuidance = hook(
+    createBeforeAgentStartEvent(" [telegram] hello", "base"),
+  ).systemPrompt;
+  assert.doesNotMatch(
+    withoutGuidance,
+    /prefers spoken replies when appropriate/,
+  );
 });
 
 test("Prompt helpers leave local prompts private for proactive result push", async () => {

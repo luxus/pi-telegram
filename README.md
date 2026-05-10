@@ -219,6 +219,7 @@ Unknown inline-button callbacks are forwarded to π as `[callback] <data>` when 
 - [Architecture](./docs/architecture.md): runtime and subsystem overview.
 - [Inbound Handlers](./docs/inbound-handlers.md): Telegram → π preprocessing.
 - [Outbound Handlers](./docs/outbound-handlers.md): final text, voice, and artifact pipelines.
+- [Preference Bus](./docs/preference-bus.md): extension preference and prompt guidance interop.
 - [Command Templates](./docs/command-templates.md): portable command-template contract.
 - [Callback Namespaces](./docs/callback-namespaces.md): callback interop for layered extensions.
 - [External Handlers](./docs/external-handlers.md): shared update interception.

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `[Preference Bus]` Added `lib/preference-bus.ts` with `globalThis` registries for extension preferences and prompt guidance, following the same zero-coupling pattern as `external-handlers.ts`. Extensions register boolean preferences that appear in the Telegram `/settings` menu and the pi-side `/telegram-settings` command, and conditional prompt guidance snippets that are appended to the system prompt at `before_agent_start`. Impact: pi-telegram stays fully voice-agnostic while extensions like `pi-xai-voice` can inject their own toggles and guidance without modifying pi-telegram.
+
 ## 0.9.7: Bot API 10.0 Alignment
 
 - `[Dependencies]` Migrated peer dependencies and imports from `@mariozechner/*` to `@earendil-works/*` (`pi-agent-core`, `pi-ai`, `pi-coding-agent`). Impact: the extension now tracks the new `@earendil-works` package scope; transitive `@mariozechner` packages remain in the lockfile until their upstreams migrate.

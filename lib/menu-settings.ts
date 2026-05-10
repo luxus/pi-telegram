@@ -7,6 +7,7 @@
 import type { TelegramInlineKeyboardMarkup } from "./keyboard.ts";
 import type { TelegramModelMenuState } from "./menu-model.ts";
 import type { MenuModel } from "./model.ts";
+import { getTelegramPreferenceRegistry } from "./preference-bus.ts";
 
 export type TelegramSettingsMenuReplyMarkup = TelegramInlineKeyboardMarkup;
 
@@ -102,6 +103,20 @@ export interface TelegramSettingsMenuRuntimeDeps<
 export const SETTINGS_MENU_TITLE = "<b>⚙️ Settings:</b>";
 export const PROACTIVE_PUSH_SETTINGS_TITLE = "<b>Proactive push:</b>";
 
+function getExtensionPreferences(): Array<{
+  label: string;
+  key: string;
+  enabled: boolean;
+  set: (enabled: boolean) => Promise<void>;
+}> {
+  return getTelegramPreferenceRegistry().list().map((entry) => ({
+    label: entry.label,
+    key: `${entry.category}:${entry.key}`,
+    enabled: entry.get(),
+    set: entry.set,
+  }));
+}
+
 export function buildTelegramSettingsMenuText(): string {
   return SETTINGS_MENU_TITLE;
 }
@@ -116,18 +131,26 @@ export function buildProactivePushSettingsText(): string {
 
 export function buildTelegramSettingsMenuReplyMarkup(
   proactivePushEnabled: boolean,
+  extensionPreferences: Array<{ label: string; key: string; enabled: boolean }>,
 ): TelegramSettingsMenuReplyMarkup {
-  return {
-    inline_keyboard: [
-      [{ text: "⬆️ Main menu", callback_data: "menu:back" }],
-      [
-        {
-          text: `${proactivePushEnabled ? "🟢" : "⚫️"} Proactive push`,
-          callback_data: "settings:open:proactive",
-        },
-      ],
+  const rows: TelegramSettingsMenuReplyMarkup["inline_keyboard"] = [
+    [{ text: "⬆️ Main menu", callback_data: "menu:back" }],
+    [
+      {
+        text: `${proactivePushEnabled ? "🟢" : "⚫️"} Proactive push`,
+        callback_data: "settings:open:proactive",
+      },
     ],
-  };
+  ];
+  for (const pref of extensionPreferences) {
+    rows.push([
+      {
+        text: `${pref.enabled ? "🟢" : "⚫️"} ${pref.label}`,
+        callback_data: `settings:open:pref:${pref.key}`,
+      },
+    ]);
+  }
+  return { inline_keyboard: rows };
 }
 
 export async function openTelegramSettingsMenu<
@@ -137,7 +160,10 @@ export async function openTelegramSettingsMenu<
   const messageId = await deps.sendSettingsMenu(
     state,
     buildTelegramSettingsMenuText(),
-    buildTelegramSettingsMenuReplyMarkup(deps.isProactivePushEnabled()),
+    buildTelegramSettingsMenuReplyMarkup(
+      deps.isProactivePushEnabled(),
+      getExtensionPreferences(),
+    ),
   );
   if (messageId === undefined) return;
   state.messageId = messageId;
@@ -165,12 +191,43 @@ export function buildProactivePushSettingsReplyMarkup(
   };
 }
 
+function buildExtensionPreferenceDetailReplyMarkup(
+  enabled: boolean,
+  key: string,
+): TelegramSettingsMenuReplyMarkup {
+  return {
+    inline_keyboard: [
+      [{ text: "⬆️ Back", callback_data: "settings:list" }],
+      [
+        {
+          text: enabled ? "🟢 On" : "⚫️ On",
+          callback_data: `settings:set:pref:${key}:on`,
+        },
+        {
+          text: enabled ? "⚫️ Off" : "🟡 Off",
+          callback_data: `settings:set:pref:${key}:off`,
+        },
+      ],
+    ],
+  };
+}
+
+function findExtensionPreference(key: string) {
+  for (const entry of getTelegramPreferenceRegistry().list()) {
+    if (`${entry.category}:${entry.key}` === key) return entry;
+  }
+  return undefined;
+}
+
 export async function updateTelegramSettingsMenuMessage(
   deps: TelegramSettingsMenuMessageUpdateDeps,
 ): Promise<void> {
   await deps.updateSettingsMessage(
     buildTelegramSettingsMenuText(),
-    buildTelegramSettingsMenuReplyMarkup(deps.isProactivePushEnabled()),
+    buildTelegramSettingsMenuReplyMarkup(
+      deps.isProactivePushEnabled(),
+      getExtensionPreferences(),
+    ),
   );
 }
 
@@ -211,6 +268,39 @@ export async function handleTelegramSettingsMenuCallbackAction(
       `Proactive push ${enabled ? "enabled" : "disabled"}`,
     );
     return true;
+  }
+  if (data?.startsWith("settings:open:pref:")) {
+    const key = data.slice("settings:open:pref:".length);
+    const pref = findExtensionPreference(key);
+    if (pref) {
+      await deps.updateSettingsMessage(
+        `<b>${pref.label}:</b>`,
+        buildExtensionPreferenceDetailReplyMarkup(pref.get(), key),
+      );
+      await deps.answerCallbackQuery(callbackQueryId);
+      return true;
+    }
+  }
+  if (data?.startsWith("settings:set:pref:")) {
+    const rest = data.slice("settings:set:pref:".length);
+    const lastColon = rest.lastIndexOf(":");
+    if (lastColon !== -1) {
+      const key = rest.slice(0, lastColon);
+      const enabled = rest.endsWith(":on");
+      const pref = findExtensionPreference(key);
+      if (pref) {
+        await pref.set(enabled);
+        await deps.updateSettingsMessage(
+          `<b>${pref.label}:</b>`,
+          buildExtensionPreferenceDetailReplyMarkup(enabled, key),
+        );
+        await deps.answerCallbackQuery(
+          callbackQueryId,
+          `${pref.label} ${enabled ? "enabled" : "disabled"}`,
+        );
+        return true;
+      }
+    }
   }
   await deps.answerCallbackQuery(callbackQueryId);
   return true;

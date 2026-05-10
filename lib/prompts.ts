@@ -5,6 +5,7 @@
  */
 
 import type { BeforeAgentStartEvent } from "./pi.ts";
+import { getTelegramPromptGuidanceRegistry } from "./preference-bus.ts";
 import { TELEGRAM_PREFIX } from "./turns.ts";
 
 const SYSTEM_PROMPT_SUFFIX = `
@@ -30,6 +31,12 @@ Native outbound actions:
 - If only hidden action comments would remain, add visible parent text like "Choose one:".
 `;
 
+function buildExtensionGuidanceSection(): string {
+  const guidance = getTelegramPromptGuidanceRegistry().evaluate();
+  if (guidance.length === 0) return "";
+  return "\n" + guidance.map((text) => text.trim()).join("\n");
+}
+
 export function buildTelegramBridgeSystemPrompt(options: {
   prompt: string;
   systemPrompt: string;
@@ -37,9 +44,10 @@ export function buildTelegramBridgeSystemPrompt(options: {
   systemPromptSuffix: string;
 }): { systemPrompt: string } {
   const telegramPrefix = options.telegramPrefix ?? TELEGRAM_PREFIX;
+  const extensionSection = buildExtensionGuidanceSection();
   const suffix = options.prompt.trimStart().startsWith(telegramPrefix)
-    ? `${options.systemPromptSuffix}\n- The current user message came from Telegram.`
-    : options.systemPromptSuffix;
+    ? `${options.systemPromptSuffix}${extensionSection}\n- The current user message came from Telegram.`
+    : `${options.systemPromptSuffix}${extensionSection}`;
   return { systemPrompt: options.systemPrompt + suffix };
 }
 

@@ -6,6 +6,7 @@
 
 import { pairTelegramUserIfNeeded } from "./config.ts";
 import type { ExtensionAPI, ExtensionCommandContext } from "./pi.ts";
+import { getTelegramPreferenceRegistry } from "./preference-bus.ts";
 import {
   createTelegramControlItemBuilder,
   createTelegramControlQueueController,
@@ -192,31 +193,56 @@ export function registerTelegramBridgeCommands(
   pi.registerCommand("telegram-settings", {
     description: "Open Telegram bridge settings",
     handler: async (_args, ctx) => {
-      if (!deps.isProactivePushEnabled || !deps.setProactivePushEnabled) {
-        ctx.ui.notify("Telegram settings are unavailable.", "warning");
-        return;
-      }
-      await deps.reloadConfig();
-      const enabled = deps.isProactivePushEnabled();
-      const nextEnabled = !enabled;
-      const label = `${enabled ? "🟢" : "⚫️"} Proactive push`;
-      const action = `${nextEnabled ? "Enable" : "Disable"} proactive push`;
       const select = (ctx.ui as TelegramBridgeSettingsSelectUi).select;
       if (!select) {
         ctx.ui.notify(
-          `${label}\n${action}: /telegram-settings requires interactive mode.`,
+          "/telegram-settings requires interactive mode.",
           "info",
         );
         return;
       }
-      const selected = await select("Telegram settings", [label, "Cancel"]);
-      if (selected !== label) return;
-      await deps.setProactivePushEnabled(nextEnabled);
-      deps.updateStatus(ctx);
-      ctx.ui.notify(
-        `Proactive push ${nextEnabled ? "enabled" : "disabled"}.`,
-        "info",
-      );
+      const hasProactive =
+        deps.isProactivePushEnabled && deps.setProactivePushEnabled;
+      const hasExtensionPrefs =
+        getTelegramPreferenceRegistry().list().length > 0;
+      if (!hasProactive && !hasExtensionPrefs) {
+        ctx.ui.notify("Telegram settings are unavailable.", "warning");
+        return;
+      }
+      await deps.reloadConfig();
+      const items: string[] = [];
+      if (hasProactive) {
+        const enabled = deps.isProactivePushEnabled!();
+        items.push(`${enabled ? "🟢" : "⚫️"} Proactive push`);
+      }
+      for (const pref of getTelegramPreferenceRegistry().list()) {
+        const enabled = pref.get();
+        items.push(`${enabled ? "🟢" : "⚫️"} ${pref.label}`);
+      }
+      items.push("Cancel");
+      const selected = await select("Telegram settings", items);
+      if (selected?.includes("Proactive push")) {
+        const enabled = deps.isProactivePushEnabled!();
+        await deps.setProactivePushEnabled!(!enabled);
+        deps.updateStatus(ctx);
+        ctx.ui.notify(
+          `Proactive push ${!enabled ? "enabled" : "disabled"}.`,
+          "info",
+        );
+        return;
+      }
+      for (const pref of getTelegramPreferenceRegistry().list()) {
+        if (selected?.includes(pref.label)) {
+          const enabled = pref.get();
+          await pref.set(!enabled);
+          deps.updateStatus(ctx);
+          ctx.ui.notify(
+            `${pref.label} ${!enabled ? "enabled" : "disabled"}.`,
+            "info",
+          );
+          return;
+        }
+      }
     },
   });
   pi.registerCommand("telegram-connect", {
