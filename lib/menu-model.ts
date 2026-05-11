@@ -345,7 +345,7 @@ export function formatScopedModelButtonText<
   entry: ScopedTelegramModel<TModel>,
   currentModel: TModel | undefined,
 ): string {
-  let label = `${modelsMatch(entry.model, currentModel) ? "🟢 " : ""}${entry.model.id} [${entry.model.provider}]`;
+  let label = `${modelsMatch(entry.model, currentModel) ? "🟢 " : ""}${entry.model.provider}/${entry.model.id}`;
   if (entry.thinkingLevel) {
     label += ` · ${entry.thinkingLevel}`;
   }

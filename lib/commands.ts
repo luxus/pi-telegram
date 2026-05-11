@@ -135,10 +135,6 @@ export interface TelegramBridgeCommandStartPollingResult {
   owner?: string;
 }
 
-interface TelegramBridgeSettingsSelectUi {
-  select?: (title: string, items: string[]) => Promise<string | undefined>;
-}
-
 export interface TelegramBridgeCommandRegistrationDeps {
   promptForConfig: (ctx: ExtensionCommandContext) => Promise<void>;
   getStatusLines: () => string[];
@@ -153,8 +149,6 @@ export interface TelegramBridgeCommandRegistrationDeps {
     | TelegramBridgeCommandStartPollingResult;
   stopPolling: () => Promise<void | string>;
   updateStatus: (ctx: ExtensionCommandContext) => void;
-  isProactivePushEnabled?: () => boolean;
-  setProactivePushEnabled?: (enabled: boolean) => Promise<void>;
 }
 
 function formatTelegramTakeoverTitle(ctx: ExtensionCommandContext): string {
@@ -187,36 +181,6 @@ export function registerTelegramBridgeCommands(
     description: "Show Telegram bridge status",
     handler: async (_args, ctx) => {
       ctx.ui.notify(deps.getStatusLines().join("\n"), "info");
-    },
-  });
-  pi.registerCommand("telegram-settings", {
-    description: "Open Telegram bridge settings",
-    handler: async (_args, ctx) => {
-      if (!deps.isProactivePushEnabled || !deps.setProactivePushEnabled) {
-        ctx.ui.notify("Telegram settings are unavailable.", "warning");
-        return;
-      }
-      await deps.reloadConfig();
-      const enabled = deps.isProactivePushEnabled();
-      const nextEnabled = !enabled;
-      const label = `${enabled ? "🟢" : "⚫️"} Proactive push`;
-      const action = `${nextEnabled ? "Enable" : "Disable"} proactive push`;
-      const select = (ctx.ui as TelegramBridgeSettingsSelectUi).select;
-      if (!select) {
-        ctx.ui.notify(
-          `${label}\n${action}: /telegram-settings requires interactive mode.`,
-          "info",
-        );
-        return;
-      }
-      const selected = await select("Telegram settings", [label, "Cancel"]);
-      if (selected !== label) return;
-      await deps.setProactivePushEnabled(nextEnabled);
-      deps.updateStatus(ctx);
-      ctx.ui.notify(
-        `Proactive push ${nextEnabled ? "enabled" : "disabled"}.`,
-        "info",
-      );
     },
   });
   pi.registerCommand("telegram-connect", {

@@ -5,6 +5,13 @@
  */
 
 import {
+  handleTelegramSectionCallback,
+  handleTelegramSectionOpen,
+  handleTelegramSectionSettingsOpen,
+  parseTelegramSectionCallback,
+  type TelegramSectionRegistry,
+} from "./extension-sections.ts";
+import {
   createTelegramModelMenuStateBuilder,
   handleTelegramModelMenuCallbackAction,
   openTelegramModelMenu,
@@ -14,6 +21,7 @@ import {
   type TelegramModelMenuState,
   type TelegramModelMenuStateBuilderContext,
   type TelegramModelMenuStateBuilderDeps,
+  type TelegramReplyMarkup,
 } from "./menu-model.ts";
 import {
   handleTelegramStatusMenuCallbackAction,
@@ -39,9 +47,9 @@ export {
   buildModelPageMenuReplyMarkup,
   buildTelegramModelCallbackPlan,
   buildTelegramModelMenuRenderPayload,
-  buildTelegramModelPageMenuRenderPayload,
   buildTelegramModelMenuState,
   buildTelegramModelMenuStateRuntime,
+  buildTelegramModelPageMenuRenderPayload,
   createTelegramModelMenuRuntime,
   createTelegramModelMenuStateBuilder,
   formatScopedModelButtonText,
@@ -215,6 +223,21 @@ export interface TelegramMenuCallbackRuntimeDeps<
     selection: ScopedTelegramModel<TModel>,
     ctx: TContext,
   ) => Promise<boolean> | boolean;
+  sectionRegistry?: TelegramSectionRegistry;
+  editInteractiveMessage?: (
+    chatId: number,
+    messageId: number,
+    text: string,
+    mode: "html" | "plain",
+    replyMarkup: TelegramReplyMarkup,
+  ) => Promise<void>;
+  sendInteractiveMessage?: (
+    chatId: number,
+    text: string,
+    mode: "html" | "plain",
+    replyMarkup: TelegramReplyMarkup,
+  ) => Promise<number | undefined>;
+  enqueueSectionPrompt?: (prompt: string, ctx: TContext) => Promise<void>;
 }
 
 export interface TelegramMenuActionRuntimeDeps<
@@ -237,6 +260,7 @@ export interface TelegramMenuActionRuntimeDeps<
     replyToMessageId: number,
     text: string,
   ) => Promise<unknown>;
+  sectionRegistry?: TelegramSectionRegistry;
 }
 
 export interface TelegramMenuActionRuntime<
@@ -432,6 +456,21 @@ export interface TelegramMenuCallbackRuntimeAdapterDeps<
     selection: ScopedTelegramModel<TModel>,
     ctx: TContext,
   ) => Promise<boolean> | boolean;
+  sectionRegistry?: TelegramSectionRegistry;
+  editInteractiveMessage?: (
+    chatId: number,
+    messageId: number,
+    text: string,
+    mode: "html" | "plain",
+    replyMarkup: TelegramReplyMarkup,
+  ) => Promise<void>;
+  sendInteractiveMessage?: (
+    chatId: number,
+    text: string,
+    mode: "html" | "plain",
+    replyMarkup: TelegramReplyMarkup,
+  ) => Promise<number | undefined>;
+  enqueueSectionPrompt?: (prompt: string, ctx: TContext) => Promise<void>;
 }
 
 export function createTelegramMenuCallbackHandler<
@@ -471,6 +510,10 @@ export function createTelegramMenuCallbackHandlerForContext<
     setCurrentModel: deps.setCurrentModel,
     stagePendingModelSwitch: deps.stagePendingModelSwitch,
     restartInterruptedTelegramTurn: deps.restartInterruptedTelegramTurn,
+    sectionRegistry: deps.sectionRegistry,
+    editInteractiveMessage: deps.editInteractiveMessage,
+    sendInteractiveMessage: deps.sendInteractiveMessage,
+    enqueueSectionPrompt: deps.enqueueSectionPrompt,
   });
 }
 
@@ -492,6 +535,89 @@ export async function handleTelegramMenuCallbackRuntime<
     await deps.updateStatusMessage(state, ctx);
     await deps.answerCallbackQuery(query.id);
     return;
+  }
+  // Section callbacks: dispatch before built-in menu handling
+  if (deps.sectionRegistry && query.data?.startsWith("section:")) {
+    const parsed = parseTelegramSectionCallback(query.data);
+    if (parsed) {
+      const chatId = (query as { message?: { chat?: { id?: number } } }).message
+        ?.chat?.id;
+      const messageId = (query as { message?: { message_id?: number } }).message
+        ?.message_id;
+      if (typeof chatId === "number" && typeof messageId === "number") {
+        const { token, action, payload } = parsed;
+        if (action === "open") {
+          const state = deps.getStoredModelMenuState(messageId);
+          if (!state) {
+            await deps.answerCallbackQuery(
+              query.id,
+              "Interactive message expired.",
+            );
+            return;
+          }
+          const handled = await handleTelegramSectionOpen(
+            deps.sectionRegistry,
+            token,
+            chatId,
+            messageId,
+            query.id,
+            {
+              answerCallbackQuery: deps.answerCallbackQuery,
+              editInteractiveMessage:
+                deps.editInteractiveMessage ?? (async () => {}),
+              sendInteractiveMessage:
+                deps.sendInteractiveMessage ?? (async () => undefined),
+              enqueuePrompt: deps.enqueueSectionPrompt
+                ? (prompt: string) => deps.enqueueSectionPrompt!(prompt, ctx)
+                : async () => {},
+            },
+          );
+          if (handled) return;
+        } else if (action === "settings") {
+          if (typeof chatId === "number" && typeof messageId === "number") {
+            const handled = await handleTelegramSectionSettingsOpen(
+              deps.sectionRegistry,
+              token,
+              chatId,
+              messageId,
+              query.id,
+              {
+                answerCallbackQuery: deps.answerCallbackQuery,
+                editInteractiveMessage:
+                  deps.editInteractiveMessage ?? (async () => {}),
+                sendInteractiveMessage:
+                  deps.sendInteractiveMessage ?? (async () => undefined),
+                enqueuePrompt: deps.enqueueSectionPrompt
+                  ? (prompt: string) => deps.enqueueSectionPrompt!(prompt, ctx)
+                  : async () => {},
+              },
+            );
+            if (handled) return;
+          }
+        } else {
+          const handled = await handleTelegramSectionCallback(
+            deps.sectionRegistry,
+            token,
+            action,
+            payload,
+            chatId,
+            messageId,
+            query.id,
+            {
+              answerCallbackQuery: deps.answerCallbackQuery,
+              editInteractiveMessage:
+                deps.editInteractiveMessage ?? (async () => {}),
+              sendInteractiveMessage:
+                deps.sendInteractiveMessage ?? (async () => undefined),
+              enqueuePrompt: deps.enqueueSectionPrompt
+                ? (prompt: string) => deps.enqueueSectionPrompt!(prompt, ctx)
+                : async () => {},
+            },
+          );
+          if (handled) return;
+        }
+      }
+    }
   }
   await handleStoredTelegramMenuCallback(query, {
     getStoredModelMenuState: deps.getStoredModelMenuState,
@@ -601,6 +727,7 @@ export function createTelegramMenuActionRuntimeWithStateBuilder<
     sendTextReply: deps.sendTextReply,
     editInteractiveMessage: deps.editInteractiveMessage,
     sendInteractiveMessage: deps.sendInteractiveMessage,
+    sectionRegistry: deps.sectionRegistry,
   });
 }
 
@@ -628,6 +755,7 @@ export function createTelegramMenuActionRuntime<
         deps.getThinkingLevel(),
         deps,
         deps.getQueueItemCount?.() ?? 0,
+        deps.sectionRegistry,
       ),
     sendStatusMessage: (chatId, replyToMessageId, ctx) =>
       openTelegramStatusMenu({
@@ -658,6 +786,7 @@ export function createTelegramMenuActionRuntime<
             thinkingLevel,
             deps,
             queueItemCount,
+            deps.sectionRegistry,
           ),
         storeModelMenuState: deps.storeModelMenuState,
       }),

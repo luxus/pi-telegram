@@ -8,6 +8,11 @@ import * as Api from "./lib/api.ts";
 import * as CommandTemplates from "./lib/command-templates.ts";
 import * as Commands from "./lib/commands.ts";
 import * as Config from "./lib/config.ts";
+import {
+  createTelegramExtensionSectionRegistry,
+  setGlobalTelegramSectionRegistry,
+  type TelegramSectionRegistry,
+} from "./lib/extension-sections.ts";
 import { createTelegramExternalHandleUpdate } from "./lib/external-handlers.ts";
 import * as InboundHandlers from "./lib/inbound-handlers.ts";
 import * as Keyboard from "./lib/keyboard.ts";
@@ -69,6 +74,9 @@ export default function (pi: Pi.ExtensionAPI) {
       Model.ScopedTelegramModel<ActivePiModel>
     >();
   const modelMenuRuntime = Menu.createTelegramModelMenuRuntime<ActivePiModel>();
+  const sectionRegistry: TelegramSectionRegistry =
+    createTelegramExtensionSectionRegistry();
+  setGlobalTelegramSectionRegistry(sectionRegistry);
   const runtimeEvents = Status.createTelegramRuntimeEventRecorder({
     getBotToken: configStore.getBotToken,
   });
@@ -277,6 +285,7 @@ export default function (pi: Pi.ExtensionAPI) {
     sendTextReply,
     editInteractiveMessage,
     sendInteractiveMessage,
+    sectionRegistry,
   });
 
   // --- Queue Menu ---
@@ -298,16 +307,19 @@ export default function (pi: Pi.ExtensionAPI) {
     updateStatusMessage: menuActions.updateStatusMessage,
     updateStatus,
   });
-  const settingsMenuRuntime = MenuSettings.createTelegramSettingsMenuRuntime({
-    getModelMenuState: getQueueMenuState,
-    getStoredModelMenuState: modelMenuRuntime.getState,
-    storeModelMenuState: modelMenuRuntime.storeState,
-    editInteractiveMessage,
-    sendInteractiveMessage,
-    answerCallbackQuery,
-    isProactivePushEnabled,
-    setProactivePushEnabled,
-  });
+  const settingsMenuRuntime = MenuSettings.createTelegramSettingsMenuRuntime(
+    {
+      getModelMenuState: getQueueMenuState,
+      getStoredModelMenuState: modelMenuRuntime.getState,
+      storeModelMenuState: modelMenuRuntime.storeState,
+      editInteractiveMessage,
+      sendInteractiveMessage,
+      answerCallbackQuery,
+      isProactivePushEnabled,
+      setProactivePushEnabled,
+    },
+    sectionRegistry,
+  );
 
   // --- Polling ---
 
@@ -334,11 +346,14 @@ export default function (pi: Pi.ExtensionAPI) {
     queueMenuCallbackHandler: queueMenuRuntime.handleCallbackQuery,
     openSettingsMenu: settingsMenuRuntime.openSettingsMenu,
     settingsMenuCallbackHandler: settingsMenuRuntime.handleCallbackQuery,
+    sectionRegistry,
     buttonActionStore,
     inboundHandlerRuntime,
     updateStatus,
     dispatchNextQueuedTelegramTurn,
     answerCallbackQuery,
+    editInteractiveMessage,
+    sendInteractiveMessage,
     answerGuestQuery,
     sendTextReply,
     setMyCommands,
@@ -439,8 +454,6 @@ export default function (pi: Pi.ExtensionAPI) {
     startPolling: lockedPollingRuntime.start,
     stopPolling: lockedPollingRuntime.stop,
     updateStatus,
-    isProactivePushEnabled,
-    setProactivePushEnabled,
   });
 
   // --- Lifecycle Hooks ---

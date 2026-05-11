@@ -4,21 +4,22 @@
  * Wires authorized updates into menus, commands, media grouping, and prompt queueing
  */
 
-import * as OutboundHandlers from "./outbound-handlers.ts";
-import * as Commands from "./commands.ts";
 import { readFile } from "node:fs/promises";
+import * as Commands from "./commands.ts";
 import type { TelegramConfigStore } from "./config.ts";
+import type { TelegramSectionRegistry } from "./extension-sections.ts";
 import type { TelegramInboundHandlerRuntime } from "./inbound-handlers.ts";
 import * as Media from "./media.ts";
 import * as Menu from "./menu.ts";
 import * as Model from "./model.ts";
-import * as Queue from "./queue.ts";
+import * as OutboundHandlers from "./outbound-handlers.ts";
 import * as PromptTemplates from "./prompt-templates.ts";
+import * as Queue from "./queue.ts";
 import type { TelegramBridgeRuntime } from "./runtime.ts";
 import * as TextGroups from "./text-groups.ts";
 import * as Turns from "./turns.ts";
-import * as Updates from "./updates.ts";
 import type { TelegramUser } from "./updates.ts";
+import * as Updates from "./updates.ts";
 
 export type TelegramRoutedMessage = Updates.TelegramUpdateMessage &
   Media.TelegramMediaMessage &
@@ -82,6 +83,19 @@ export interface TelegramInboundRouteRuntimeDeps<
     callbackQueryId: string,
     text?: string,
   ) => Promise<void>;
+  editInteractiveMessage?: (
+    chatId: number,
+    messageId: number,
+    text: string,
+    mode: "html" | "plain",
+    replyMarkup: Menu.TelegramReplyMarkup,
+  ) => Promise<void>;
+  sendInteractiveMessage?: (
+    chatId: number,
+    text: string,
+    mode: "html" | "plain",
+    replyMarkup: Menu.TelegramReplyMarkup,
+  ) => Promise<number | undefined>;
   answerGuestQuery: (guestQueryId: string, text?: string) => Promise<void>;
   sendTextReply: (
     chatId: number,
@@ -112,12 +126,14 @@ export interface TelegramInboundRouteRuntimeDeps<
     error: unknown,
     details?: Record<string, unknown>,
   ) => void;
+  sectionRegistry?: TelegramSectionRegistry;
 }
 
 const TELEGRAM_OWNED_CALLBACK_PREFIXES = [
   "menu:",
   "model:",
   "queue:",
+  "section:",
   "settings:",
   "status:",
   "tgbtn:",
@@ -174,6 +190,35 @@ export function createTelegramInboundRouteRuntime<
     stagePendingModelSwitch: deps.modelSwitchController.stagePendingSwitch,
     restartInterruptedTelegramTurn:
       deps.modelSwitchController.restartInterruptedTurn,
+    sectionRegistry: deps.sectionRegistry,
+    editInteractiveMessage: deps.editInteractiveMessage,
+    sendInteractiveMessage: deps.sendInteractiveMessage,
+    enqueueSectionPrompt: async (prompt: string, ctx: TContext) => {
+      const chatId = deps.configStore.getAllowedUserId();
+      if (typeof chatId !== "number") return;
+      const order = deps.bridgeRuntime.queue.allocateItemOrder();
+      const turn: Queue.PendingTelegramTurn = {
+        kind: "prompt",
+        chatId,
+        replyToMessageId: 0,
+        sourceMessageIds: [],
+        queueOrder: order,
+        queueLane: "default",
+        laneOrder: order,
+        queuedAttachments: [],
+        content: [
+          {
+            type: "text",
+            text: `[telegram] ${prompt}`,
+          },
+        ],
+        historyText: Turns.truncateTelegramQueueSummary(prompt),
+        statusSummary: Turns.truncateTelegramQueueSummary(prompt),
+      };
+      deps.queueMutationRuntime.append(turn, ctx);
+      deps.updateStatus(ctx);
+      deps.dispatchNextQueuedTelegramTurn(ctx);
+    },
   });
   const callbackHandler = async (
     query: TCallbackQuery,
@@ -376,9 +421,7 @@ export function createTelegramInboundRouteRuntime<
     // Build telegram prefix with guest context
     const fromRaw = gm.from as Record<string, unknown> | undefined;
     const fromName =
-      (fromRaw?.username as string) ||
-      (fromRaw?.first_name as string) ||
-      "";
+      (fromRaw?.username as string) || (fromRaw?.first_name as string) || "";
     const chatRaw = gm.chat as Record<string, unknown>;
     const chatTitle = chatRaw?.title as string | undefined;
     const chatType = chatRaw?.type as string;
@@ -390,20 +433,24 @@ export function createTelegramInboundRouteRuntime<
     const telegramPrefix = `[${prefixParts.join("|")}]`;
     // Extract reply context
     const replyMsg = gm.reply_to_message as Record<string, unknown> | undefined;
-    const replyText =
-      replyMsg
-        ? ((replyMsg.text as string) || (replyMsg.caption as string) || "").trim()
-        : "";
-    const replyFrom =
-      replyMsg
-        ? (replyMsg.from as Record<string, unknown> | undefined)?.username as string | undefined
-        : undefined;
+    const replyText = replyMsg
+      ? ((replyMsg.text as string) || (replyMsg.caption as string) || "").trim()
+      : "";
+    const replyFrom = replyMsg
+      ? ((replyMsg.from as Record<string, unknown> | undefined)?.username as
+          | string
+          | undefined)
+      : undefined;
     // Download files, run inbound handlers
     const guestMsg = guestMessage as unknown as Media.TelegramMediaMessage;
     const files = await Media.downloadTelegramMessageFiles([guestMsg], {
       downloadFile: deps.downloadFile,
     });
-    const processed = await deps.inboundHandlerRuntime.process(files, text, ctx);
+    const processed = await deps.inboundHandlerRuntime.process(
+      files,
+      text,
+      ctx,
+    );
     let rawText = processed.rawText || text;
     // Append reply context after handler processing
     if (replyText) {

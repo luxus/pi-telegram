@@ -1,11 +1,11 @@
 {
   "name": "@llblab/pi-telegram",
-  "version": "0.9.9",
+  "version": "0.10.0",
   "private": false,
   "publishConfig": {
     "access": "public"
   },
-  "description": "Telegram Runtime Adapter for π",
+  "description": "Telegram runtime adapter for π",
   "type": "module",
   "keywords": [
     "pi-package",

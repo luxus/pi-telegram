@@ -6,6 +6,10 @@
 
 import { formatTelegramCommandEmojiPrefix } from "./commands.ts";
 import {
+  getTelegramSectionMainMenuRows,
+  type TelegramSectionRegistry,
+} from "./extension-sections.ts";
+import {
   formatStatusButtonLabel,
   type TelegramMenuMessageRuntimeDeps,
   type TelegramMenuRenderPayload,
@@ -143,6 +147,7 @@ export function buildStatusReplyMarkup(
   activeModel: MenuModel | undefined,
   currentThinkingLevel: ThinkingLevel,
   queueItemCount = 0,
+  sectionRegistry?: TelegramSectionRegistry,
 ): TelegramReplyMarkup {
   const rows: Array<Array<{ text: string; callback_data: string }>> = [];
   rows.push([
@@ -171,6 +176,13 @@ export function buildStatusReplyMarkup(
       callback_data: "menu:queue",
     },
   ]);
+  // Extension section rows before Settings
+  if (sectionRegistry) {
+    const sectionRows = getTelegramSectionMainMenuRows(sectionRegistry);
+    for (const row of sectionRows) {
+      rows.push([{ text: row.text, callback_data: row.callback_data }]);
+    }
+  }
   rows.push([
     {
       text: "⚙️ Settings",
@@ -185,6 +197,7 @@ export function buildTelegramStatusMenuRenderPayload(
   activeModel: MenuModel | undefined,
   currentThinkingLevel: ThinkingLevel,
   queueItemCount = 0,
+  sectionRegistry?: TelegramSectionRegistry,
 ): TelegramMenuRenderPayload {
   return {
     nextMode: "status",
@@ -194,6 +207,7 @@ export function buildTelegramStatusMenuRenderPayload(
       activeModel,
       currentThinkingLevel,
       queueItemCount,
+      sectionRegistry,
     ),
   };
 }
@@ -205,6 +219,7 @@ export async function updateTelegramStatusMessage(
   currentThinkingLevel: ThinkingLevel,
   deps: TelegramMenuMessageRuntimeDeps,
   queueItemCount = 0,
+  sectionRegistry?: TelegramSectionRegistry,
 ): Promise<void> {
   await editTelegramMenuMessage(
     state,
@@ -213,6 +228,7 @@ export async function updateTelegramStatusMessage(
       activeModel,
       currentThinkingLevel,
       queueItemCount,
+      sectionRegistry,
     ),
     deps,
   );
@@ -225,6 +241,7 @@ export function sendTelegramStatusMessage(
   currentThinkingLevel: ThinkingLevel,
   deps: TelegramMenuMessageRuntimeDeps,
   queueItemCount = 0,
+  sectionRegistry?: TelegramSectionRegistry,
 ): Promise<number | undefined> {
   return sendTelegramMenuMessage(
     state,
@@ -233,6 +250,7 @@ export function sendTelegramStatusMessage(
       activeModel,
       currentThinkingLevel,
       queueItemCount,
+      sectionRegistry,
     ),
     deps,
   );

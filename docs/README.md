@@ -11,4 +11,4 @@ Living index of project documentation in `/docs`.
 - [locks.md](./locks.md) — Shared `locks.json` standard for singleton extension ownership
 - [callback-namespaces.md](./callback-namespaces.md) — Shared Telegram `callback_data` namespace standard for layered extensions
 - [external-handlers.md](./external-handlers.md) — Runtime interceptor registry that lets layered extensions observe and consume Telegram updates without owning their own polling connection
-- [extension-sections.md](./extension-sections.md) — Draft Telegram Extension Sections Standard for external menu sections and structured Telegram UI extension points
+- [extension-sections.md](./extension-sections.md) — Telegram Extension Sections Standard: registration contract, context ports, callback routing, navigation hierarchy, and demo reference for pi extensions that want Telegram UI surfaces

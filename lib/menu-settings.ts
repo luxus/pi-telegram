@@ -4,6 +4,10 @@
  * Owns hidden settings-menu rendering, settings callbacks, and persisted toggle wiring
  */
 
+import {
+  getTelegramExtensionSettingsRows,
+  type TelegramSectionRegistry,
+} from "./extension-sections.ts";
 import type { TelegramInlineKeyboardMarkup } from "./keyboard.ts";
 import type { TelegramModelMenuState } from "./menu-model.ts";
 import type { MenuModel } from "./model.ts";
@@ -39,6 +43,7 @@ export interface TelegramSettingsMenuCallbackDeps extends TelegramSettingsMutati
     callbackQueryId: string,
     text?: string,
   ) => Promise<void>;
+  sectionRegistry?: TelegramSectionRegistry;
 }
 
 export interface TelegramSettingsMenuRuntime<TContext> {
@@ -116,28 +121,41 @@ export function buildProactivePushSettingsText(): string {
 
 export function buildTelegramSettingsMenuReplyMarkup(
   proactivePushEnabled: boolean,
+  sectionRegistry?: TelegramSectionRegistry,
 ): TelegramSettingsMenuReplyMarkup {
-  return {
-    inline_keyboard: [
-      [{ text: "⬆️ Main menu", callback_data: "menu:back" }],
-      [
-        {
-          text: `${proactivePushEnabled ? "🟢" : "⚫️"} Proactive push`,
-          callback_data: "settings:open:proactive",
-        },
-      ],
-    ],
-  };
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [
+    [{ text: "⬆️ Main menu", callback_data: "menu:back" }],
+  ];
+  // Extension settings rows before built-in controls
+  if (sectionRegistry) {
+    const settingsRows = getTelegramExtensionSettingsRows(sectionRegistry);
+    for (const row of settingsRows) {
+      rows.push([{ text: row.label, callback_data: row.callback_data }]);
+    }
+  }
+  rows.push([
+    {
+      text: `${proactivePushEnabled ? "🟢" : "⚫️"} Proactive push`,
+      callback_data: "settings:open:proactive",
+    },
+  ]);
+  return { inline_keyboard: rows };
 }
 
 export async function openTelegramSettingsMenu<
   TModel extends MenuModel = MenuModel,
->(deps: TelegramSettingsMenuOpenDeps<TModel>): Promise<void> {
+>(
+  deps: TelegramSettingsMenuOpenDeps<TModel>,
+  sectionRegistry?: TelegramSectionRegistry,
+): Promise<void> {
   const state = await deps.getModelMenuState();
   const messageId = await deps.sendSettingsMenu(
     state,
     buildTelegramSettingsMenuText(),
-    buildTelegramSettingsMenuReplyMarkup(deps.isProactivePushEnabled()),
+    buildTelegramSettingsMenuReplyMarkup(
+      deps.isProactivePushEnabled(),
+      sectionRegistry,
+    ),
   );
   if (messageId === undefined) return;
   state.messageId = messageId;
@@ -167,10 +185,14 @@ export function buildProactivePushSettingsReplyMarkup(
 
 export async function updateTelegramSettingsMenuMessage(
   deps: TelegramSettingsMenuMessageUpdateDeps,
+  sectionRegistry?: TelegramSectionRegistry,
 ): Promise<void> {
   await deps.updateSettingsMessage(
     buildTelegramSettingsMenuText(),
-    buildTelegramSettingsMenuReplyMarkup(deps.isProactivePushEnabled()),
+    buildTelegramSettingsMenuReplyMarkup(
+      deps.isProactivePushEnabled(),
+      sectionRegistry,
+    ),
   );
 }
 
@@ -190,7 +212,7 @@ export async function handleTelegramSettingsMenuCallbackAction(
 ): Promise<boolean> {
   if (!data?.startsWith("settings:")) return false;
   if (data === "settings:list") {
-    await updateTelegramSettingsMenuMessage(deps);
+    await updateTelegramSettingsMenuMessage(deps, deps.sectionRegistry);
     await deps.answerCallbackQuery(callbackQueryId);
     return true;
   }
@@ -221,28 +243,40 @@ export function createTelegramSettingsMenuRuntime<
   TModel extends MenuModel = MenuModel,
 >(
   deps: TelegramSettingsMenuRuntimeDeps<TContext, TModel>,
+  sectionRegistry?: TelegramSectionRegistry,
 ): TelegramSettingsMenuRuntime<TContext> {
   return {
     openSettingsMenu: (chatId, _replyToMessageId, ctx) =>
-      openTelegramSettingsMenu({
-        getModelMenuState: () => deps.getModelMenuState(chatId, ctx),
-        isProactivePushEnabled: deps.isProactivePushEnabled,
-        sendSettingsMenu: (state, text, replyMarkup) =>
-          deps.sendInteractiveMessage(state.chatId, text, "html", replyMarkup),
-        storeModelMenuState: deps.storeModelMenuState,
-      }),
+      openTelegramSettingsMenu(
+        {
+          getModelMenuState: () => deps.getModelMenuState(chatId, ctx),
+          isProactivePushEnabled: deps.isProactivePushEnabled,
+          sendSettingsMenu: (state, text, replyMarkup) =>
+            deps.sendInteractiveMessage(
+              state.chatId,
+              text,
+              "html",
+              replyMarkup,
+            ),
+          storeModelMenuState: deps.storeModelMenuState,
+        },
+        sectionRegistry,
+      ),
     updateSettingsMenuMessage: (state) =>
-      updateTelegramSettingsMenuMessage({
-        isProactivePushEnabled: deps.isProactivePushEnabled,
-        updateSettingsMessage: (text, replyMarkup) =>
-          deps.editInteractiveMessage(
-            state.chatId,
-            state.messageId,
-            text,
-            "html",
-            replyMarkup,
-          ),
-      }),
+      updateTelegramSettingsMenuMessage(
+        {
+          isProactivePushEnabled: deps.isProactivePushEnabled,
+          updateSettingsMessage: (text, replyMarkup) =>
+            deps.editInteractiveMessage(
+              state.chatId,
+              state.messageId,
+              text,
+              "html",
+              replyMarkup,
+            ),
+        },
+        sectionRegistry,
+      ),
     handleCallbackQuery: async (query) => {
       if (!query.data?.startsWith("settings:")) return false;
       const state = deps.getStoredModelMenuState(query.message?.message_id);
@@ -265,6 +299,7 @@ export function createTelegramSettingsMenuRuntime<
             replyMarkup,
           ),
         answerCallbackQuery: deps.answerCallbackQuery,
+        sectionRegistry,
       });
     },
   };

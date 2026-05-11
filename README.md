@@ -2,7 +2,7 @@
 
 ![pi-telegram screenshot](screenshot.png)
 
-**Telegram Runtime Adapter for π.**
+**Telegram runtime adapter for π.**
 
 `pi-telegram` turns a private Telegram DM into a session-local operator console for π. It admits work, preserves context, streams readable replies, keeps busy sessions usable through queues, lets other extensions share one bot, and turns assistant-authored intent into native Telegram artifacts.
 
@@ -101,7 +101,6 @@ Run these inside π, not Telegram:
 
 - **`/telegram-setup`**: Configure or update the Telegram bot token.
 - **`/telegram-connect`**: Start polling Telegram updates in the current π session and acquire the singleton lock.
-- **`/telegram-settings`**: Open local settings and toggle proactive push using the same `telegram.json` flag as the Telegram `/settings` menu.
 - **`/telegram-disconnect`**: Stop polling in the current π session and release the singleton lock.
 - **`/telegram-status`**: Inspect adapter status, connection, polling, execution, queue, and recent redacted runtime/API failure events.
 
@@ -206,6 +205,12 @@ The agent writes intent; the adapter owns transport. Text remains readable, voic
 
 Unknown inline-button callbacks are forwarded to π as `[callback] <data>` when they do not belong to pi-telegram, so other extensions can namespace and handle Telegram buttons without polling the bot themselves. Layered extensions that need synchronous update handling can register a runtime interceptor on the shared update registry.
 
+### Extension Sections
+
+Ordinary pi extensions can register structured UI sections that appear in the main Telegram menu and Settings submenu without owning a second poller. Each section gets a narrow typed context with `edit`, `open`, `enqueuePrompt`, `answerCallback`, and `callbackData()` — enough to build interactive Telegram-native surfaces while `pi-telegram` owns transport, callback routing, navigation hierarchy, and diagnostics.
+
+Import from `@llblab/pi-telegram`, call `registerTelegramSection()`, and return a disposer on shutdown. See [`@llblab/pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) for a working reference and the [Extension Sections Standard](./docs/extension-sections.md) for the full contract.
+
 ### Proactive push
 
 `telegram.json` can set `proactivePush: true` to send successful local non-Telegram final replies to the paired Telegram chat when no Telegram turn is active. Local prompt text is not mirrored because the bot does not own terminal user messages. The mode is off by default and can be toggled from settings.
@@ -222,7 +227,7 @@ Unknown inline-button callbacks are forwarded to π as `[callback] <data>` when 
 - [Command Templates](./docs/command-templates.md): portable command-template contract.
 - [Callback Namespaces](./docs/callback-namespaces.md): callback interop for layered extensions.
 - [External Handlers](./docs/external-handlers.md): shared update interception.
-- [Extension Sections Draft](./docs/extension-sections.md): future Telegram extension sections platform.
+- [Extension Sections](./docs/extension-sections.md): Telegram extension sections platform for loading extensions that register UI surfaces.
 - [Locks](./docs/locks.md): singleton polling ownership.
 
 ## Notes

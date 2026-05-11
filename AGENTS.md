@@ -11,7 +11,7 @@
 
 ## 1. Concept
 
-`pi-telegram` is a Telegram Runtime Adapter for π: a session-local operator console that turns a private Telegram DM into a runtime surface for prompt intake, streaming previews, queue management, model/thinking/settings controls, inbound/outbound handler pipelines, voice/buttons, artifacts, and extension callback interop. Treat it as a Telegram membrane around π, not a narrow message pipe.
+`pi-telegram` is a Telegram runtime adapter for π: a session-local operator console that turns a private Telegram DM into a runtime surface for prompt intake, streaming previews, queue management, model/thinking/settings controls, inbound/outbound handler pipelines, voice/buttons, artifacts, and extension callback interop. Treat it as a Telegram membrane around π, not a narrow message pipe.
 
 ## 2. Identity & Naming Contract
 
@@ -104,6 +104,7 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 - Telegram transport and inbound flow: `api`, `polling`, `updates`, `routing`, `media`, `turns`, `inbound-handlers`, `config`, `setup`
 - Response surfaces: `preview`, `replies`, `rendering`, `keyboard`, `outbound-attachments`, `outbound-handlers`, `status`
 - Controls and application menu UI: `commands`, `menu`, `menu-model`, `menu-thinking`, `menu-status`, `menu-queue`, `model`, `prompts`
+- Extension platform: `extension-sections` owns section registry, token mapping, callback dispatch, context building, and globalThis bridge
 - Pi SDK boundary: `pi` owns direct pi imports and bound extension API ports
 
 ## 6.4 Entrypoint And Import Boundaries
@@ -139,9 +140,25 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 - Long Telegram text split recovery belongs to `text-groups`: keep it conservative, short-debounced, same chat/user/message-id contiguous, and gated by near-limit human text so normal rapid follow-ups and slash commands stay separate
 - Inbound handlers and command-backed outbound handlers use command templates as the standard integration contract; built-in outbound buttons use inline keyboards plus callback routing because no external command execution is needed
 - Telegram prompt-template commands are discovered from π slash commands with `source: "prompt"`; π template names are mapped to Bot API-compatible aliases (`fix-tests` → `/fix_tests`), aliases that conflict with built-in bridge commands or hidden shortcuts are not displayed, prompt-template aliases stay out of the Telegram bot command menu, and the bridge expands template files before queueing because extension-originated `sendUserMessage()` bypasses π's interactive template expansion
-- Unknown callback data not owned by pi-telegram prefixes (`tgbtn:`, `menu:`, `model:`, `thinking:`, `status:`, `queue:`) may be forwarded as `[callback] <data>` after built-in handlers decline it; external extensions should follow `docs/callback-namespaces.md` and must not poll the same bot independently
+- Unknown callback data not owned by pi-telegram prefixes (`tgbtn:`, `menu:`, `model:`, `thinking:`, `status:`, `queue:`, `section:`, `settings:`) may be forwarded as `[callback] <data>` after built-in handlers decline it; external extensions should follow `docs/callback-namespaces.md` and must not poll the same bot independently
 - Command templates stay compact and shell-free: no `command` field, no shell execution, inline defaults are allowed as `{name=default}`, `template` may be a string or an ordered composition array, only `args`/`defaults` inherit into leaves, top-level `timeout` wraps composed sequences, stdout pipes to the next step's stdin by default, and multi-step work should use `template: [...]` rather than provider-specific fields; `pipe` is only a legacy local alias
 - Command-template documentation examples should use portable executable placeholders such as `/path/to/stt` and `/path/to/tts`, not host-local skill paths or machine-specific install locations
+
+## 9. Extension Sections Conventions
+
+- `Section identity`: use the same identity-key rules as the Extension Locks Standard (`package.json/name` → canonical id); no separate `owner` field
+- `Token mapping`: Telegram's 64-byte `callback_data` limit forces compact numeric tokens (`section:0:action:payload`). Section authors never hand-roll `section:` strings — use `ctx.callbackData(action, payload?)`
+- `Navigation hierarchy`: Back buttons are auto-prepended by `ctx.edit()` / `ctx.open()`. Root views use `⬆️ Main menu` → `menu:back`. Nested views from `handleCallback` use `⬆️ Back` → `section:<token>:open`. Settings views use `⬆️ Back` → `settings:list`
+- `Context ports`: sections receive `TelegramSectionContext` / `TelegramSectionCallbackContext` with `answerCallback`, `edit`, `open`, `enqueuePrompt`, and `callbackData`. No filesystem access, no raw bot clients, no second poller
+- `Settings indicators`: use `settings.getLabel()` for dynamic status rows in the Settings submenu (e.g., `🟢`/`⚫️` based on internal state). Called on every Settings list render
+- `Handler fallback`: `section.handleCallback` runs first; if it returns `"pass"` and `settings.handleCallback` exists, the settings handler runs with a fresh context carrying `backCallback="settings:list"`
+- `Stale tokens`: unknown or unregistered tokens answer the callback with a short popup. Section errors are caught and surfaced as popup text — no unhandled exceptions leak to the poller
+- `Load order`: `pi-telegram` must load first (sets `globalThis.__piTelegramSectionRegistry__`). Consumer extensions load second. The typed import is the preferred path; the `globalThis` bridge exists for load-order tolerance
+- `Shutdown`: call `pi.on("shutdown", () => unregister())` in the extension's default export
+- `Section separators`: extension-injected main-menu rows appear before the **⚙️ Settings** row. Extension settings rows appear before built-in Proactive push controls
+- `Model button format`: use `provider/ModelId` format (e.g., `anthropic/claude-sonnet-4-5`) across model menu buttons and status row. The compact `provider/id` form is canonical
+- `Section domain ownership`: `lib/extension-sections.ts` owns the registry, token mapping, callback dispatch, and context building. `lib/menu.ts` dispatches `section:` callbacks before built-in handling. `lib/menu-status.ts` injects section rows. `lib/menu-settings.ts` injects settings rows and passes `sectionRegistry` through callback deps
+- `Callback routing order`: button actions → queue menu → settings menu → section callbacks → built-in menu handling → `[callback]` fallback. Settings menu callbacks always pass `sectionRegistry` to `updateTelegramSettingsMenuMessage` and `handleTelegramSettingsMenuCallbackAction`
 
 ## 9. Pre-Task Preparation Protocol
 

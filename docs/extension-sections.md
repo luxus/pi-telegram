@@ -1,83 +1,84 @@
-# Telegram Extension Sections Standard Draft
+# Telegram Extension Sections Standard
 
-**Status:** Draft. This document is a design note for the upcoming Extension Sections platform and is not an implemented or stable public API yet. Treat all names, shapes, and examples as provisional until the implementation lands.
+**Status:** Implemented in 0.10.0. Stable public API.
 
 **Meta-contract:** transportable (bit-for-bit identical across projects), high-density (zero fluff), constant (evolve by crystallizing, not speculating), optimal minimum (add only when it hurts).
 
 ---
 
-Telegram Extension Sections are a proposed registration contract that lets ordinary pi extensions add structured UI sections to the `pi-telegram` inline application menu.
+## 1. Philosophy
 
-The guiding philosophy is pi-native extensibility: `pi-telegram` should inherit π's own model of small composable extensions. The bridge should act as a shared Telegram shell for loaded π extensions, not as a closed one-off bot or a place where every feature must fork Telegram polling and transport.
+Telegram Extension Sections let ordinary pi extensions add structured UI surfaces to the `pi-telegram` inline application menu. The platform mirrors π's own extensibility model: small, composable extensions that plug into a shared shell without owning transport, polling, authorization, or menu lifecycle.
 
-They are not a new extension loader. pi still loads extensions through its normal TypeScript/package system. A loaded extension registers a Telegram section with `pi-telegram`; `pi-telegram` owns bot polling, menu rendering, callback routing, Telegram authorization, and message lifecycle.
+`pi-telegram` stays the single bot operator. Extensions register typed sections; the bridge handles rendering, callback routing, token mapping, navigation hierarchy, and diagnostics. No second poller, no new loader — just one `registerTelegramSection()` call.
 
-## Purpose
+## 2. Contract Layers
 
-Use sections when an extension needs a Telegram-native UI surface inside the existing bot shell:
+The standard operates across three integration surfaces:
 
-- File or project explorers
-- Prompt/session history viewers
-- Tool approval dashboards
-- Runtime status panels
-- Extension settings or diagnostics
-- Human-in-the-loop forms that should not become agent turns
+- **Extension API**: registration shape, context ports, `callbackData()`, `getLabel()`, navigation, disposer
+- **Telegram Bot API**: 64-byte limit → token mapping, inline keyboard, `menu:back`/`settings:list` routing, stale-token answers
+- **Pi Extension API**: typed import + `globalThis`, `pi.on("shutdown")` cleanup, load-order, identity
 
-Do not use sections for plain agent prompts, one-shot buttons authored by the assistant, or command-template pipelines. Those stay in the normal queue, outbound action comments, inbound/outbound handlers, or command-template domains.
+## 3. Identity Key
 
-## Identity key
-
-Each section has one stable identity key.
-
-Use the same identity rules as the Extension Locks Standard:
+Each section has one stable identity key. Use the same rules as the Extension Locks Standard:
 
 1. `package.json/name` for npm-style pi packages
-2. Directory name when the extension entrypoint is `index.ts` but there is no package name
-3. File basename when the extension is a single file
+2. Directory name when the entrypoint is `index.ts` without `package.json`
+3. File basename for single-file extensions
 
-For npm-style package extensions, the canonical value is the `package.json` `name`.
-
-Examples:
-
-```text
-extensions/pi-telegram-explorer/package.json name=@llblab/pi-telegram-explorer -> @llblab/pi-telegram-explorer
-extensions/pi-telegram-explorer/index.ts without package.json              -> pi-telegram-explorer
-extensions/pi-telegram-explorer.ts                                         -> pi-telegram-explorer
+```
+extensions/pi-telegram-extension-demo/package.json name=@llblab/pi-telegram-extension-demo → @llblab/pi-telegram-extension-demo
+extensions/pi-telegram-extension-demo/index.ts without package.json              → pi-telegram-extension-demo
+extensions/pi-telegram-extension-demo.ts                                         → pi-telegram-extension-demo
 ```
 
-The section `id` is also the owner identity. Do not add a separate `owner` field unless a later concrete need appears.
+The `id` is the owner identity. No separate `owner` field. Used for registry ownership, conflict detection, diagnostics, cleanup, and callback routing lookup.
 
-The identity key is used for:
-
-- Registry ownership
-- Conflict detection
-- Diagnostics
-- Cleanup
-- Callback routing lookup
-- Future capability policy
-
-## Registration shape
-
-Minimum shape:
+## 4. Registration Shape
 
 ```ts
-registerTelegramSection({
-  id: "@llblab/pi-telegram-explorer",
-  label: "🗂 Explorer",
-  render(ctx) {
-    return {
-      text: "<b>Explorer</b>",
+import { registerTelegramSection } from "@llblab/pi-telegram/lib/extension-sections.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  const unregister = registerTelegramSection({
+    id: "@llblab/pi-telegram-extension-demo",
+    label: "🧪 Demo submenu",
+    order: 10,
+    render: async (ctx) => ({
+      text: "<b>Demo</b>",
       parseMode: "html",
-      replyMarkup,
-    };
-  },
-  handleCallback(ctx) {
-    return "handled";
-  },
-});
+      replyMarkup: {
+        inline_keyboard: [
+          [{ text: "Click me", callback_data: ctx.callbackData("act", "x") }],
+        ],
+      },
+    }),
+    handleCallback: async (ctx) => {
+      if (ctx.action === "act") {
+        await ctx.answerCallback(`payload: ${ctx.payload}`);
+        return "handled";
+      }
+      return "pass";
+    },
+    settings: {
+      label: "🧪 Demo settings",
+      order: 0,
+      getLabel: () => `${flag ? "🟢" : "⚫️"} Demo settings`,
+      open: async (ctx) => ({ text: "<b>Settings</b>", parseMode: "html" }),
+      handleCallback: async (ctx) => {
+        flag = ctx.payload === "on";
+        return "handled";
+      },
+    },
+  });
+  pi.on("shutdown", () => unregister());
+}
 ```
 
-Recommended TypeScript shape:
+### Full TypeScript shape
 
 ```ts
 type TelegramSectionId = string;
@@ -88,11 +89,22 @@ interface TelegramSectionRegistration {
   label: string;
   order?: number;
   render: (
-    ctx: TelegramSectionRenderContext,
+    ctx: TelegramSectionContext,
   ) => TelegramSectionView | Promise<TelegramSectionView>;
   handleCallback?: (
     ctx: TelegramSectionCallbackContext,
   ) => TelegramSectionCallbackResult | Promise<TelegramSectionCallbackResult>;
+  settings?: {
+    label: string;
+    order?: number;
+    getLabel?: () => string;
+    open: (
+      ctx: TelegramSectionContext,
+    ) => TelegramSectionView | Promise<TelegramSectionView>;
+    handleCallback?: (
+      ctx: TelegramSectionCallbackContext,
+    ) => TelegramSectionCallbackResult | Promise<TelegramSectionCallbackResult>;
+  };
 }
 
 interface TelegramSectionView {
@@ -102,192 +114,285 @@ interface TelegramSectionView {
 }
 ```
 
-Registration returns a disposer:
+### Registration returns a disposer
 
 ```ts
 const unregister = registerTelegramSection(section);
-unregister();
+unregister(); // removes from main menu, settings, and callback routing
 ```
 
-## Loading model
+## 5. Loading Model
 
-Sections are registered by normal pi extensions:
+Two paths, same registry:
+
+**Typed import (preferred):** Extension imports `registerTelegramSection` from `@llblab/pi-telegram/lib/extension-sections.ts`. The function reads from a `globalThis` registry set by `pi-telegram` at startup.
+
+**Relative import (local):** When the extension cannot resolve `@llblab/pi-telegram` as an npm package, use a relative path:
 
 ```ts
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { registerTelegramSection } from "@llblab/pi-telegram/lib/extension-sections.ts";
-
-export default function (pi: ExtensionAPI) {
-  const unregister = registerTelegramSection({
-    id: "@llblab/pi-telegram-explorer",
-    label: "🗂 Explorer",
-    render: async (ctx) => ctx.html("<b>Explorer</b>"),
-  });
-  pi.on("shutdown", () => unregister());
-}
+import { registerTelegramSection } from "../pi-telegram/lib/extension-sections.ts";
 ```
 
-`pi-telegram` may expose a typed import and a zero-coupling `globalThis` registry. The typed import is the preferred authoring path. The global registry exists only to tolerate load order and package coupling constraints.
+**GlobalThis bridge (zero-coupling):** `pi-telegram` exposes `__piTelegramSectionRegistry__` on `globalThis`. The typed import is a thin wrapper. Extensions never touch the raw registry.
 
-## Menu integration
+**Load order:** `pi-telegram` must load first (sets the global registry). Demo/consumer extensions load second (call `registerTelegramSection`). Pi's normal extension loader guarantees this when `pi-telegram` is listed first.
 
-`pi-telegram` owns the main Telegram application menu.
+**Shutdown:** Call `pi.on("shutdown", () => unregister())` to clean up. The registry is cleared on `pi-telegram` unload.
 
-Registered sections appear as top-level menu rows after built-in core sections unless an `order` value says otherwise.
+## 6. Menu Integration
 
-Rules:
+Sections appear in two locations:
 
-- `label` must be compact enough for mobile Telegram
-- Built-in sections keep priority over external sections
-- Duplicate `id` registration is rejected or replaces only the same live owner through an explicit disposer path
-- Section errors must not break the whole main menu
-- If a section fails to render, `pi-telegram` should show a compact error row or omit the section and record diagnostics
+### Main menu
 
-## Callback routing
+Section rows are injected **before the ⚙️ Settings row**. Ordered by `order` (lower first), then `id` alphabetically.
 
-`pi-telegram` owns section callback transport.
+```
+🤖 Model: anthropic/claude-sonnet-4-5
+🧠 Thinking: off
+⌛ Queue: 0
+🧪 Demo submenu          ← extension section
+⚙️ Settings
+```
 
-A section callback must include a `pi-telegram` owned prefix plus a compact section token that maps back to the full identity key.
+Built-in core rows keep priority. Section errors do not break menu rendering — a failed section is omitted with a diagnostic entry.
 
-Conceptual form:
+### Settings submenu
+
+Extensions with a `settings` block inject rows **before built-in Proactive push**. The `getLabel()` function (if present) is called on every render to produce a dynamic label — use it for status indicators:
+
+```ts
+getLabel: () => `${flag ? "🟢" : "⚫️"} Demo settings`;
+```
+
+```
+⬆️ Main menu
+🟢 Demo settings          ← extension settings (dynamic label)
+🟢 Proactive push
+```
+
+Ordered by `settings.order` (lower first), then `id` alphabetically.
+
+## 7. Callback Routing
+
+### Token mapping
+
+Telegram limits `callback_data` to 64 bytes. Full npm names like `@llblab/pi-telegram-explorer` often exceed this. `pi-telegram` maps each registered section to a compact numeric token:
 
 ```text
 section:<token>:<action>:<payload>
 ```
 
-The token is an implementation detail. The registry maps it to the canonical section `id`. `section:` is reserved in the [Callback Namespace Standard](./callback-namespaces.md); section authors should build callbacks through section context helpers rather than hand-crafting `section:` payloads.
+Example: `section:0:counter:5`
 
-Routing order:
+The token is an implementation detail. Section authors **never** write `section:` strings manually. Use `ctx.callbackData(action, payload?)` which fills in the correct token.
+
+### Routing order
 
 1. Telegram update arrives through the single `pi-telegram` poller
-2. Existing low-level external handlers may observe or consume the update first
-3. Built-in menu callbacks are handled by built-in domains
-4. Section callbacks are resolved by token and sent to the registered section
-5. Unknown callbacks fall back to the existing callback namespace behavior when appropriate
+2. External handlers observe/consume (raw update interception)
+3. Button action store (`tgbtn:*`)
+4. Queue menu callbacks (`queue:*`)
+5. Settings menu callbacks (`settings:*`)
+6. Built-in menu callbacks (`menu:*`, `model:*`, `thinking:*`, `status:*`)
+7. Section callbacks (`section:*`) — dispatched before step 6's full handler
+8. Unknown callbacks fall back to `[callback]` prompt text
 
-Section handlers return:
+### Handler return values
 
-- `"handled"` — callback was handled, do not continue routing
-- `"pass"` — section declines this callback, allow fallback routing
+- `"handled"`: callback consumed, stop routing, `answerCallbackQuery` already called
+- `"pass"`: section declines; fallback to settings handler (if exists), then to caller
 
-Stale callbacks:
+### Fallback chain in `handleCallback`
 
-- Missing section id or token should answer the callback with a short stale/expired notice
-- Missing target state should re-render the section root when possible
-- Section errors should be caught, surfaced as a short callback answer, and recorded in diagnostics
+```
+section.handleCallback(ctx) → "handled" | "pass"
+  └─ if "pass" and settings.handleCallback exists →
+       settings.handleCallback(newCtx with backCallback="settings:list")
+```
 
-## Runtime ports
+The fallback creates a **new context** with the correct `backCallback` for the navigation level.
 
-A section receives a narrow context, not raw `pi-telegram` internals.
+### Stale tokens
 
-Initial safe ports:
+If a section is unregistered or a token is unknown, the callback is answered with a short Telegram native popup:
+
+> "This section is no longer available."
+
+Section errors are caught and surfaced as popup text. No unhandled exceptions leak to the poller.
+
+## 8. Navigation Hierarchy
+
+`ctx.edit()` and `ctx.open()` automatically prepend a Back row. The Back target depends on the navigation level:
+
+- Section root (from main menu): `⬆️ Main menu` → `menu:back`
+- Section sub-view (`ctx.edit()` in handler): `⬆️ Back` → `section:<token>:open`
+- Settings root (from Settings list): `⬆️ Back` → `settings:list`
+- Settings sub-view (`ctx.edit()` in settings handler): `⬆️ Back` → `settings:list`
+
+Section authors do not need to manage the Back button — it is added automatically and deduplicated when already present.
+
+```
+Main menu
+  ├─ 🧪 Demo submenu ──── [⬆️ Main menu]
+  │    └─ Counter ─────── [⬆️ Back → Demo submenu]
+  └─ ⚙️ Settings ──────── [⬆️ Main menu]
+       └─ Demo settings ─ [⬆️ Back → Settings list]
+            └─ toggle ─── [⬆️ Back → Settings list] (via ctx.edit)
+```
+
+## 9. Context Ports
+
+### `TelegramSectionContext` — for `render()` and `settings.open()`
 
 ```ts
 interface TelegramSectionContext {
   sectionId: string;
   chatId: number;
   messageId?: number;
+  /** Answer the callback query with an optional popup text */
+  answerCallback(text?: string): Promise<void>;
+  /** Edit the current message (auto-prepends Back row) */
+  edit(view: TelegramSectionView): Promise<void>;
+  /** Send a new message (auto-prepends Back row) */
+  open(view: TelegramSectionView): Promise<void>;
+  /** Enqueue a plain-text prompt turn */
+  enqueuePrompt(prompt: string): Promise<void>;
+  /** Build a section-namespaced callback_data string */
+  callbackData(action: string, payload?: string): string;
+}
+```
+
+### `TelegramSectionCallbackContext` — for `handleCallback()`
+
+```ts
+interface TelegramSectionCallbackContext {
+  sectionId: string;
+  chatId: number;
+  messageId?: number;
+  /** The action segment from callback_data */
+  action: string;
+  /** The payload segment from callback_data */
+  payload: string;
   answerCallback(text?: string): Promise<void>;
   edit(view: TelegramSectionView): Promise<void>;
   open(view: TelegramSectionView): Promise<void>;
   enqueuePrompt(prompt: string): Promise<void>;
-  getQueueSnapshot(): TelegramQueueSnapshot;
-  getSessionSnapshot?(): TelegramSessionSnapshot;
+  callbackData(action: string, payload?: string): string;
 }
 ```
 
-Filesystem or prompt-history mutation is not part of the baseline. Add capability-specific ports only when the first real extension needs them.
+### `enqueuePrompt` semantics
 
-## Security and authorization
+Queues a `[telegram] <prompt>` turn in the default lane with the paired user's `chatId`. Uses `queueMutationRuntime.append()` and triggers `dispatchNextQueuedTelegramTurn()`. The prompt arrives as a normal Telegram-owned turn — the agent sees it as if the user typed it.
 
-`pi-telegram` keeps Telegram authorization ownership.
+### Capability scope
 
-Baseline rules:
+Context ports are intentionally narrow. Sections **cannot**:
 
-- Section callbacks are accepted only from the paired/authorized Telegram user
-- Sections should not receive unauthorized updates
-- Sections must not start their own Telegram poller
-- Sections must not assume filesystem or session mutation rights
-- Sensitive capabilities should be exposed as explicit typed ports, not by passing raw process or bot clients
+- Read/write filesystem
+- Access raw process or bot clients
+- Start a second poller
+- Mutate session state
+- Send arbitrary Telegram API calls
 
-For filesystem explorers, default to read-only browse and file-send behavior. Deleting, writing, shell execution, or rollback-like mutations require separate explicit capabilities and confirmation UI.
+Add capability-specific ports only when the first real extension proves the need.
 
-## Diagnostics
+## 10. Telegram Bot API Integration
 
-`pi-telegram` should be able to report registered sections.
+### `callback_data` contract
 
-Minimum diagnostic fields:
-
-```text
-id
-label
-status: active | stale | error
-lastError
-```
-
-The identity key is sufficient as the owner label. Do not add a second owner field.
-
-Useful future fields:
+Section callbacks use the `section:` prefix owned by `pi-telegram`:
 
 ```text
-registeredAt
-lastRenderAt
-lastCallbackAt
-callbackCount
-errorCount
-capabilities
+section:0:open                   → open section root
+section:0:settings:open          → open settings root
+section:0:<action>:<payload>     → forwarded to handleCallback
 ```
 
-Diagnostics should be available through a status/debug surface without cluttering normal Telegram UI.
+`section:` is listed in `TELEGRAM_OWNED_CALLBACK_PREFIXES` alongside `menu:`, `model:`, `settings:`, `status:`, `tgbtn:`, `thinking:`, `queue:`. Layered extensions must not use this prefix.
 
-## Relationship to callback namespaces and external handlers
+### Inline keyboard layout
 
-[Callback Namespaces](./callback-namespaces.md) define callback ownership names. [External Handlers](./external-handlers.md) define low-level raw update interception. Extension sections define the structured Telegram UI layer above both.
+Section views return `TelegramSectionView.replyMarkup` — a standard `TelegramInlineKeyboardMarkup`. The bridge prepends the Back row and sends the result through `editMessageText` / `sendMessage` with `parse_mode: "HTML"`.
 
-Sections still use namespaced callback data, but `pi-telegram` owns the `section:` prefix and maps compact tokens to canonical section identities. That keeps Telegram's 64-byte callback limit compatible with full npm package names such as `@llblab/pi-telegram-explorer`.
+Button labels are not truncated by the bridge. Section authors should keep labels compact for mobile Telegram (under ~30 display-width cells). Use `truncateTelegramButtonLabel` for long dynamic text.
 
-Use external handlers when an extension needs direct raw Telegram update access, a custom callback namespace, or out-of-band Promise resolution.
+### Stale message handling
 
-Use extension sections when an extension needs a durable menu surface, callback routing, and Telegram UI lifecycle managed by `pi-telegram`.
+If the interactive message has expired (no stored model menu state), the callback receives:
 
-## Relationship to command templates
+> "Interactive message expired."
 
-Command templates execute local commands and pipelines through stdin/stdout.
+This applies to section callbacks as well — the state check runs before dispatch.
 
-Extension sections do not execute command templates by default. A section may call an extension-owned command or tool internally, but the section standard is a UI registration and callback-routing contract, not a shell execution contract.
+## 11. Pi Extension API Inspiration
 
-## Non-goals
+The platform inherits from π's own extension model:
+
+- `export default function(pi)` → `registerTelegramSection(section)`
+- `pi.on("shutdown", ...)` → disposer from `registerTelegramSection`
+- Typed imports → typed import from `@llblab/pi-telegram/lib/extension-sections.ts`
+- `globalThis` registry → `__piTelegramSectionRegistry__` on `globalThis`
+- Identity from `package.json/name` → same identity rules as Locks Standard
+- Narrow typed context ports → `TelegramSectionContext` / `TelegramSectionCallbackContext`
+- Extension does not own transport → `pi-telegram` owns polling, message lifecycle
+
+## 12. Diagnostics
+
+`getTelegramSectionDiagnostics()` returns:
+
+```ts
+interface TelegramSectionDiagnostic {
+  id: string;
+  token: string;
+  label: string;
+  status: "active" | "stale" | "error";
+  lastError?: string;
+}
+```
+
+Available through `pi-telegram`'s `/telegram-status` or programmatically via `getTelegramSectionDiagnostics()`.
+
+## 13. Purpose and Non-Goals
+
+### Use sections for:
+
+- File/project explorers
+- Prompt/session history viewers
+- Tool approval dashboards
+- Runtime status panels
+- Extension settings or diagnostics
+- Human-in-the-loop forms that should not become agent turns
+
+### Do not use sections for:
+
+- Plain agent prompts (use normal queue)
+- One-shot assistant-authored buttons (use `telegram_button` outbound comments)
+- Command-template pipelines (use inbound/outbound handlers)
+
+### Non-goals:
 
 - No second Telegram poller
 - No new pi extension loader
 - No generic webview system
 - No default filesystem mutation API
-- No prompt rollback semantics in the base standard
-- No separate owner field while identity key is sufficient
+- No prompt rollback semantics
+- No separate `owner` field while identity key is sufficient
 
-## Evolution path
+## 14. Relationship to Other Standards
 
-0.10.0 minimum:
+- [Callback Namespaces](./callback-namespaces.md): defines `section:` as pi-telegram-owned prefix. Sections use namespaced callbacks but authors never hand-roll them
+- [External Handlers](./external-handlers.md): raw update interception for direct Telegram update access. Sections are the structured UI layer above
+- [Extension Locks](../docs/locks.md) (external): same identity key rules (`package.json/name` → canonical id)
+- [Command Templates](./command-templates.md): sections do not execute command templates by default. UI registration + callback routing, not shell execution
 
-- Section registry
-- Main menu integration
-- Section callback routing
-- Narrow runtime ports
-- Diagnostics for registered sections
-- Documentation for extension authors
+## 15. Demo Extension
 
-First demo extension candidate:
+`@llblab/pi-telegram-extension-demo` (`extensions/pi-telegram-extension-demo/`) is the reference implementation:
 
-```text
-@llblab/pi-telegram-explorer
-```
+- Main menu: `🧪 Demo submenu` — enqueue prompt, answer callback, show info, interactive counter
+- Settings: `🧪 Demo settings` — ON/OFF toggle with dynamic `getLabel()` status indicator, enqueue from settings
+- Navigation: full Back/Main menu hierarchy across all three levels
 
-Initial demo scope:
-
-- Browse current project tree read-only
-- View compact file previews
-- Send selected files as Telegram documents
-- Browse recent prompt/session snapshots read-only
-- Enqueue a prompt derived from a selected item
-
-Defer rollback, filesystem writes, deletes, and broad mutation until the read-only and enqueue-only model is proven.
+Use it as a template for new section-based extensions.
