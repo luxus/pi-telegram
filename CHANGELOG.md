@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.6: Native Typing Keepalive Hotfix
+
+- `[Typing]` Telegram native `typing` chat actions now refresh every 2.5s instead of every 4s. Impact: the bot's Telegram-side typing animation has more headroom to stay visible during model retries, transient model/API errors, and other long-running agent work.
+- `[Queue Menu]` Empty queue refresh now rotates through a wider set of small status phrases. Impact: repeatedly refreshing an empty queue feels less repetitive while preserving the same callbacks and menu layout.
+- `[Tests]` Added coverage for the default native typing keepalive cadence.
+
 ## 0.10.5: Queue Continuity And Input Resilience Hotfix
 
 - `[Compaction]` `/compact` completion and failure callbacks now request deferred queue dispatch instead of dispatching immediately. Impact: queued Telegram turns resume after compaction state and π idle/pending-message state have a chance to settle.

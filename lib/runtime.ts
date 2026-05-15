@@ -4,7 +4,7 @@
  * Owns small session-local runtime primitives that are shared by orchestration but are not specific to queueing, rendering, polling, or Telegram transport
  */
 
-const TELEGRAM_TYPING_ACTION_INTERVAL_MS = 4000;
+const TELEGRAM_TYPING_ACTION_INTERVAL_MS = 2500;
 
 export interface TelegramRuntimeQueueCounters {
   nextQueuedTelegramItemOrder: number;

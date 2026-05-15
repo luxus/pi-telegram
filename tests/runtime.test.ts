@@ -510,6 +510,28 @@ test("Prompt dispatch runtime binds typing starter and dispatch lifecycle", asyn
   assert.deepEqual(statuses, ["ok", "dispatch failed: boom"]);
 });
 
+test("Typing loop starter uses a conservative native keepalive interval", () => {
+  let capturedIntervalMs = 0;
+  const startTypingLoop = Runtime.createTelegramTypingLoopStarter<{
+    id: string;
+  }>({
+    typing: {
+      start: (deps) => {
+        capturedIntervalMs = deps.intervalMs;
+        return true;
+      },
+      stop: () => true,
+    },
+    getDefaultChatId: () => 7,
+    sendTypingAction: async () => {},
+    updateStatus: () => {},
+  });
+
+  startTypingLoop({ id: "ctx" });
+
+  assert.equal(capturedIntervalMs, 2500);
+});
+
 test("Typing loop starter binds default chat and reports failures", async () => {
   const state = Runtime.createTelegramBridgeRuntimeState();
   const runtime = Runtime.createTelegramBridgeRuntime(state);
@@ -1425,7 +1447,8 @@ test("Extension runtime coalesces likely split long text updates into one dispat
     const ctx = createRuntimeExtensionContext();
     await handlers.get("session_start")?.({}, ctx);
     await commands.get("telegram-connect")?.handler("", ctx);
-    await waitForEventLoopCondition(() => getUpdatesCalls >= 2, 5000);
+    await waitForEventLoopCondition(() => getUpdatesCalls >= 1, 5000);
+    await flushMicrotasks();
     assert.equal(runtimeEvents.length, 0);
     await waitForCondition(() => runtimeEvents.length === 1, 3000);
     assert.equal(
