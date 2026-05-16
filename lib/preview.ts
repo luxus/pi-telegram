@@ -20,8 +20,10 @@ import {
   type TelegramRenderedChunk,
   type TelegramRenderMode,
 } from "./rendering.ts";
+
 import { buildTelegramReplyParameters } from "./replies.ts";
 import { stripTelegramCommentMarkupForPreview } from "./outbound-handlers.ts";
+import { shouldSuppressPreviewForVoice } from "./voice.ts";
 
 const TELEGRAM_PREVIEW_THROTTLE_MS = 750;
 const TELEGRAM_DRAFT_ID_MAX = 2_147_483_647;
@@ -107,8 +109,6 @@ export interface TelegramPreviewActiveTurn {
   voiceReplyPreferred?: boolean;
   voiceReplyRequired?: boolean;
 }
-
-import { shouldSuppressPreviewForVoice } from "./voice.ts";
 
 export interface TelegramAssistantMessagePreviewStartDeps<
   TMessage,

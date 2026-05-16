@@ -166,13 +166,6 @@ export interface TelegramVoiceReplySenderDeps {
  */
 export type TelegramVoiceReplyMode = "mirror" | "voice" | "manual";
 
-export interface TelegramVoiceTurnView {
-  voiceReplyPreferred?: boolean;
-  voiceReplyRequired?: boolean;
-  hasVoiceInput?: boolean;
-  userText?: string;
-}
-
 export type TelegramVoiceProviderResult =
   | string
   | {
@@ -943,12 +936,12 @@ export {
   computeVoicePromptContribution,
 } from "./voice.ts";
 
+import { VOICE_PROVIDER_REGISTRY_KEY } from "./globals.ts";
+
 
 // ======================================================
 // === Voice Provider Registry (restored to outbound-handlers.ts for load + original location)
 // ======================================================
-
-const VOICE_PROVIDER_REGISTRY_KEY = "__piTelegramVoiceProviders__";
 
 function getOrCreateVoiceProviderRegistry(): Map<string, TelegramVoiceProvider> {
   const existing = (globalThis as Record<string, unknown>)[VOICE_PROVIDER_REGISTRY_KEY];
@@ -1023,6 +1016,13 @@ export function createTelegramVoiceReplySender(
       let originalFilePath: string | undefined;
 
       try {
+        if (typeof provider !== "function") {
+          deps.recordRuntimeEvent?.("voice", new Error("Registered voice provider is not callable (policy-only object?)"), {
+            phase: "voice-provider-skip",
+          });
+          continue;
+        }
+
         const providerResult = await provider(text, {
           lang: options?.lang,
           rate: options?.rate,

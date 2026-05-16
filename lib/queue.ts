@@ -4,6 +4,8 @@
  * Owns queue item contracts, lane admission, pure queue mutations, and dispatch planning
  */
 
+import { isVoiceTurn } from "./outbound-handlers.ts";
+
 // --- Queue Items ---
 
 export interface QueuedAttachment {
@@ -86,8 +88,6 @@ export interface PendingTelegramTurn extends TelegramQueueItemBase {
   /** Turn must be delivered as voice (voice mode) */
   voiceReplyRequired?: boolean;
 }
-
-import { isVoiceTurn } from "./outbound-handlers.ts";
 
 export interface PendingTelegramControlItem<
   TContext = unknown,
