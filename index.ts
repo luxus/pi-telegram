@@ -38,6 +38,7 @@ import * as Runtime from "./lib/runtime.ts";
 import * as Setup from "./lib/setup.ts";
 import * as Status from "./lib/status.ts";
 import * as TextGroups from "./lib/text-groups.ts";
+import * as TimeInjection from "./lib/time-injection.ts";
 import * as Voice from "./lib/voice.ts";
 
 const VOICE_EVENT_RECORDER_KEY = "__piTelegramVoiceEventRecorder__";
@@ -137,6 +138,10 @@ export default function (pi: Pi.ExtensionAPI) {
     getBotToken: configStore.getBotToken,
   });
   const recordRuntimeEvent = runtimeEvents.record;
+  const timeInjectionRuntime = TimeInjection.createTimeInjectionRuntime({
+    getConfig: Config.createTelegramTimeInjectionConfigGetter(configStore),
+    recordRuntimeEvent,
+  });
   (globalThis as Record<string, unknown>)[
     VOICE_EVENT_RECORDER_KEY
   ] = recordRuntimeEvent;
@@ -435,6 +440,7 @@ export default function (pi: Pi.ExtensionAPI) {
     setMyCommands,
     getCommands,
     downloadFile: downloadTelegramBridgeFile,
+    resolveTimeLine: timeInjectionRuntime.resolveLine,
     getThinkingLevel,
     setThinkingLevel,
     persistScopedModelPatterns: Pi.createScopedModelPatternPersister({

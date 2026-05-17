@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `[Time Injection]` Added optional `telegram.json` `timeInjection` prompt context for Telegram-originated turns. Modes are `off`, `always`, and per-chat `interval`; invalid or missing timezones fall back to the host timezone. The `[time]` line renders before attachments, handler outputs, and voice context.
+
 ## 0.11.0: Voice Provider Platform
 
 - `[Voice Synthesis Provider API]` Added a first-class voice synthesis provider surface for Telegram voice replies. Providers register with `registerTelegramVoiceSynthesisProvider()` from `@llblab/pi-telegram/lib/voice.ts`, synthesize text into `.ogg`/`.opus`, may return `{ audioPath, transcriptText }`, and can contribute voice-specific prompt guidance through `getVoicePromptContribution(view)`.

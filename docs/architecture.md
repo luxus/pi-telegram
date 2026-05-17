@@ -28,7 +28,7 @@ Current runtime areas use these ownership boundaries:
 - `config` / `setup`: persisted bot/session pairing state, authorization, first-user pairing, token prompting, env fallback, validation, and config persistence.
 - `locks` / `polling`: singleton `locks.json` ownership, takeover/restart semantics, long-poll controller state, update offset persistence, and poll-loop runtime wiring.
 - `updates` / `routing`: update classification/execution planning, paired authorization, reactions, edits, callbacks, and inbound route composition.
-- `media` / `text-groups` / `turns` / `inbound-handlers`: text/media extraction, media-group debounce, long-text split coalescing, inbound downloads, configured and programmatic inbound text/media handler execution, turn building/editing, image reads, and legacy `attachmentHandlers` compatibility.
+- `media` / `text-groups` / `time-injection` / `turns` / `inbound-handlers`: text/media extraction, media-group debounce, long-text split coalescing, optional per-chat wall-clock prompt context, inbound downloads, configured and programmatic inbound text/media handler execution, turn building/editing, image reads, and legacy `attachmentHandlers` compatibility.
 - `queue`: queue item contracts, lane admission/order, stores, mutations, dispatch readiness/runtime, prompt/control enqueueing, and session/agent/tool lifecycle sequencing.
 - `runtime`: session-local coordination primitives: counters, lifecycle flags, setup guard, abort handler, typing-loop timers, prompt-dispatch flags, and agent-end reset binding.
 - `model` / `menu-model` / `menu-thinking` / `menu-status` / `menu` / `menu-queue` / `menu-settings` / `commands`: model identity/thinking levels, scoped model resolution, in-flight switching, model/thinking/status/queue/settings menu UI, inline application callback composition, slash commands, and bot command registration.
@@ -78,10 +78,11 @@ Telegram bot configuration stays in `~/.pi/agent/telegram.json`; singleton runti
 6. Files are streamed into `~/.pi/agent/tmp/telegram` with a default 50 MiB size limit, partial-download cleanup on failures, and stale temp cleanup on session start; operators can tune the limit with `PI_TELEGRAM_INBOUND_FILE_MAX_BYTES` or `TELEGRAM_MAX_FILE_SIZE_BYTES`
 7. Configured inbound handlers may run on raw text or downloaded files by MIME wildcard, Telegram attachment type, or generic match selector; command templates receive safe command-arg substitution for `{text}`, `{file}`, `{mime}`, and `{type}` where applicable
 8. Matching media/file handlers are tried in config order: a non-zero exit records diagnostics and falls back to the next matching handler, while the first successful handler stops the chain
-9. Local attachments stay visible under `[attachments] <directory>` with relative file entries, and handler stdout is appended under `[outputs]` before the agent sees the turn; failed handlers omit output while keeping the attachment entry
-10. A `PendingTelegramTurn` is created and queued locally
-11. Telegram `edited_message` updates are routed separately and update a matching queued turn when the original message has not been dispatched yet
-12. The queue dispatcher sends the turn into π only when dispatch is safe
+9. Optional `timeInjection` config may add a compact `[time]` prompt line before attachment/output/voice sections, either every turn or per-chat after the configured interval
+10. Local attachments stay visible under `[attachments] <directory>` with relative file entries, and handler stdout is appended under `[outputs]` before the agent sees the turn; failed handlers omit output while keeping the attachment entry
+11. A `PendingTelegramTurn` is created and queued locally
+12. Telegram `edited_message` updates are routed separately and update a matching queued turn when the original message has not been dispatched yet
+13. The queue dispatcher sends the turn into π only when dispatch is safe
 
 ### Queue Safety Model
 

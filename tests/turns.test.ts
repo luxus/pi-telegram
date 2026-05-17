@@ -52,6 +52,58 @@ test("Turn helpers build prompt text with history and attachments", () => {
   assert.match(prompt, /\[attachments\] \/tmp\n- \/demo.png/);
 });
 
+test("Turn helpers omit [time] section by default", () => {
+  const prompt = buildTelegramTurnPrompt({
+    telegramPrefix: "[telegram]",
+    rawText: "hello",
+    files: [],
+  });
+  assert.equal(prompt, "[telegram] hello");
+});
+
+test("Turn helpers inject [time] line after user text and before attachments", () => {
+  const prompt = buildTelegramTurnPrompt({
+    telegramPrefix: "[telegram]",
+    rawText: "current message",
+    files: [{ path: "/tmp/demo.png", fileName: "demo.png", isImage: true }],
+    timeLine: "2026-05-16 14:32:10 Europe/Berlin",
+  });
+  assert.match(
+    prompt,
+    /^\[telegram\] current message\n\n\[time\] 2026-05-16 14:32:10 Europe\/Berlin\n\n\[attachments\] /,
+  );
+});
+
+test("Turn helpers still inject [time] when raw text is empty", () => {
+  const prompt = buildTelegramTurnPrompt({
+    telegramPrefix: "[telegram]",
+    rawText: "",
+    files: [],
+    timeLine: "2026-05-16 14:32:10 UTC",
+  });
+  assert.equal(prompt, "[telegram]\n\n[time] 2026-05-16 14:32:10 UTC");
+});
+
+test("Turn runtime builder calls resolveTimeLine with chatId and embeds result", async () => {
+  const seen: number[] = [];
+  const buildTurn = createTelegramPromptTurnRuntimeBuilder({
+    allocateQueueOrder: () => 1,
+    downloadFile: async (_fileId, fileName) => `/tmp/${fileName}`,
+    resolveTimeLine: (chatId) => {
+      seen.push(chatId);
+      return "2026-05-16 14:32:10 UTC";
+    },
+  });
+  const turn = await buildTurn([
+    { message_id: 42, chat: { id: 7 }, text: "hi" },
+  ]);
+  assert.deepEqual(seen, [7]);
+  assert.match(
+    (turn.content[0] as { type: "text"; text: string }).text,
+    /\[time\] 2026-05-16 14:32:10 UTC/,
+  );
+});
+
 test("Turn helpers summarize text and attachment-only turns", () => {
   assert.equal(
     formatTelegramTurnStatusSummary("hello there from telegram", []),

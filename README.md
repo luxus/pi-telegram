@@ -238,6 +238,22 @@ Import `registerTelegramSection()` from `@llblab/pi-telegram/lib/extension-secti
 
 `telegram.json` can set `proactivePush: true` to send successful local non-Telegram final replies to the paired Telegram chat when no Telegram turn is active. Local prompt text is not mirrored because the bot does not own terminal user messages. The mode is off by default and can be toggled from settings.
 
+### Time context
+
+`telegram.json` can opt into a compact `[time]` line in Telegram-originated prompts so π has a wall-clock reference for requests such as "today", "now", or scheduling. It is off by default; invalid or missing timezones fall back to the host timezone.
+
+```json
+{
+  "timeInjection": {
+    "mode": "interval",
+    "intervalSeconds": 3600,
+    "timezone": "Europe/Berlin"
+  }
+}
+```
+
+Modes are `off`, `always`, and `interval`. `interval` rate-limits the time line per chat in memory, so back-to-back messages do not repeatedly spend context on the same timestamp.
+
 ## Docs
 
 - [Project Context](./AGENTS.md): durable engineering conventions and architecture constraints.

@@ -114,6 +114,7 @@ export interface TelegramInboundRouteRuntimeDeps<
     typeof PromptTemplates.getTelegramPromptTemplateCommands
   >[0];
   downloadFile: Media.DownloadTelegramMessageFilesDeps["downloadFile"];
+  resolveTimeLine?: (chatId: number) => string | null;
   getThinkingLevel: () => Model.ThinkingLevel;
   setThinkingLevel: (level: Model.ThinkingLevel) => void;
   persistScopedModelPatterns?: (
@@ -287,6 +288,7 @@ export function createTelegramInboundRouteRuntime<
     allocateQueueOrder: deps.bridgeRuntime.queue.allocateItemOrder,
     downloadFile: deps.downloadFile,
     processAttachments: deps.inboundHandlerRuntime.process,
+    resolveTimeLine: deps.resolveTimeLine,
 
     // Voice policy for the current turn. Missing config still behaves as manual,
     // but only explicit telegram.json voice.replyMode is shown in prompt context.
