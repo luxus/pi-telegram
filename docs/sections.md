@@ -10,7 +10,7 @@
 
 Telegram Extension Sections let ordinary pi extensions add structured UI surfaces to the `pi-telegram` inline application menu. The platform mirrors π's own extensibility model: small, composable extensions that plug into a shared shell without owning transport, polling, authorization, or menu lifecycle.
 
-`pi-telegram` stays the single bot operator. Extensions register typed sections; the bridge handles rendering, callback routing, token mapping, navigation hierarchy, and diagnostics. No second poller, no new loader — just one `registerTelegramSection()` call.
+`pi-telegram` stays the single bot operator. Extensions register typed sections; the bridge handles rendering, callback routing, token mapping, navigation hierarchy, and diagnostics. No second polling loop, no new loader — just one `registerTelegramSection()` call.
 
 ## 2. Contract Layers
 
@@ -39,7 +39,7 @@ The `id` is the owner identity. No separate `owner` field. Used for registry own
 ## 4. Registration Shape
 
 ```ts
-import { registerTelegramSection } from "@llblab/pi-telegram/lib/extension-sections.ts";
+import { registerTelegramSection } from "@llblab/pi-telegram/sections";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
@@ -127,12 +127,12 @@ unregister(); // removes from main menu, settings, and callback routing
 
 Two paths, same registry:
 
-**Typed import (preferred):** Extension imports `registerTelegramSection` from `@llblab/pi-telegram/lib/extension-sections.ts`. The function reads from a `globalThis` registry set by `pi-telegram` at startup.
+**Typed import (preferred):** Extension imports `registerTelegramSection` from `@llblab/pi-telegram/sections`. The function reads from a `globalThis` registry set by `pi-telegram` at startup. In `0.12.0`, package-private `@llblab/pi-telegram/lib/*.ts` deep imports are no longer exported.
 
-**Relative import (local):** When the extension cannot resolve `@llblab/pi-telegram` as an npm package, use a relative path:
+**Relative import (local):** When the extension cannot resolve `@llblab/pi-telegram` as an npm package, use the public API membrane via a relative path:
 
 ```ts
-import { registerTelegramSection } from "../pi-telegram/lib/extension-sections.ts";
+import { registerTelegramSection } from "../pi-telegram/api/sections.ts";
 ```
 
 **GlobalThis bridge (zero-coupling):** `pi-telegram` exposes `__piTelegramSectionRegistry__` on `globalThis`. The typed import is a thin wrapper. Extensions never touch the raw registry.
@@ -187,18 +187,19 @@ section:<token>:<action>:<payload>
 
 Example: `section:0:counter:5`
 
-The token is an implementation detail. Section authors **never** write `section:` strings manually. Use `ctx.callbackData(action, payload?)` which fills in the correct token.
+The token is an implementation detail. Section authors **never** write `section:` strings manually. Use `ctx.callbackData(action, payload?)` which fills in the correct token and rejects callback data above Telegram's 64-byte limit.
 
 ### Routing order
 
-1. Telegram update arrives through the single `pi-telegram` poller
-2. External handlers observe/consume (raw update interception)
+1. Telegram update arrives through the single `pi-telegram` polling loop
+2. Update handlers observe/consume (raw update interception)
 3. Button action store (`tgbtn:*`)
-4. Queue menu callbacks (`queue:*`)
-5. Settings menu callbacks (`settings:*`)
-6. Built-in menu callbacks (`menu:*`, `model:*`, `thinking:*`, `status:*`)
-7. Section callbacks (`section:*`) — dispatched before step 6's full handler
-8. Unknown callbacks fall back to `[callback]` prompt text
+4. Compact confirmation callbacks (`compact:*`)
+5. Queue menu callbacks (`queue:*`)
+6. Settings menu callbacks (`settings:*`)
+7. Built-in menu callbacks (`menu:*`, `model:*`, `thinking:*`, `status:*`)
+8. Section callbacks (`section:*`) — dispatched before step 7's full handler
+9. Unknown callbacks fall back to `[callback]` prompt text
 
 ### Handler return values
 
@@ -221,7 +222,7 @@ If a section is unregistered or a token is unknown, the callback is answered wit
 
 > "This section is no longer available."
 
-Section errors are caught and surfaced as popup text. No unhandled exceptions leak to the poller.
+Section errors are caught and surfaced as popup text. No unhandled exceptions leak to polling.
 
 ## 8. Navigation Hierarchy
 
@@ -298,7 +299,7 @@ Context ports are intentionally narrow. Sections **cannot**:
 
 - Read/write filesystem
 - Access raw process or bot clients
-- Start a second poller
+- Start a second polling loop
 - Mutate session state
 - Send arbitrary Telegram API calls
 
@@ -320,12 +321,15 @@ handleCallback: async (ctx) => {
       text: `<b>Delete ${ctx.payload}?</b>\n\nThis cannot be undone.`,
       parseMode: "html",
       replyMarkup: {
-        inline_keyboard: [[
-          { text: "✅ Yes, delete",
-            callback_data: ctx.callbackData("confirm-delete", ctx.payload) },
-          { text: "❌ Cancel",
-            callback_data: ctx.callbackData("cancel") },
-        ]],
+        inline_keyboard: [
+          [
+            {
+              text: "✅ Yes, delete",
+              callback_data: ctx.callbackData("confirm-delete", ctx.payload),
+            },
+            { text: "❌ Cancel", callback_data: ctx.callbackData("cancel") },
+          ],
+        ],
       },
     });
     return "handled";
@@ -339,7 +343,7 @@ handleCallback: async (ctx) => {
     await ctx.deleteMessage();
     return "handled";
   }
-}
+};
 ```
 
 `ctx.deleteMessage()` removes the dialog from chat after the user makes a choice. Callbacks from chat buttons route through the same `handleCallback` — the same `ctx.callbackData()` works regardless of where the button lives. The extension owns its callback namespace; the bridge owns transport.
@@ -356,7 +360,7 @@ section:0:settings:open          → open settings root
 section:0:<action>:<payload>     → forwarded to handleCallback
 ```
 
-`section:` is listed in `TELEGRAM_OWNED_CALLBACK_PREFIXES` alongside `menu:`, `model:`, `settings:`, `status:`, `tgbtn:`, `thinking:`, `queue:`. Layered extensions must not use this prefix.
+`section:` is listed in `TELEGRAM_OWNED_CALLBACK_PREFIXES` alongside `compact:`, `menu:`, `model:`, `settings:`, `status:`, `tgbtn:`, `thinking:`, `queue:`. Layered extensions must not use this prefix.
 
 ### Inline keyboard layout
 
@@ -378,7 +382,7 @@ The platform inherits from π's own extension model:
 
 - `export default function(pi)` → `registerTelegramSection(section)`
 - `pi.on("shutdown", ...)` → disposer from `registerTelegramSection`
-- Typed imports → typed import from `@llblab/pi-telegram/lib/extension-sections.ts`
+- Typed imports → typed import from `@llblab/pi-telegram/sections`
 - `globalThis` registry → `__piTelegramSectionRegistry__` on `globalThis`
 - Identity from `package.json/name` → same identity rules as Locks Standard
 - Narrow typed context ports → `TelegramSectionContext` / `TelegramSectionCallbackContext`
@@ -419,7 +423,7 @@ Available programmatically via `getTelegramSectionDiagnostics()`. Section runtim
 
 ### Non-goals:
 
-- No second Telegram poller
+- No second Telegram polling loop
 - No new pi extension loader
 - No generic webview system
 - No default filesystem mutation API
@@ -429,8 +433,8 @@ Available programmatically via `getTelegramSectionDiagnostics()`. Section runtim
 ## 14. Relationship to Other Standards
 
 - [Callback Namespaces](./callback-namespaces.md): defines `section:` as pi-telegram-owned prefix. Sections use namespaced callbacks but authors never hand-roll them
-- [External Handlers](./external-handlers.md): raw update interception for direct Telegram update access. Sections are the structured UI layer above
-- [Extension Locks](../docs/locks.md) (external): same identity key rules (`package.json/name` → canonical id)
+- [Updates](./updates.md): raw update interception for direct Telegram update access. Sections are the structured UI layer above
+- [Extension Locks](../docs/locks.md) (polling): same identity key rules (`package.json/name` → canonical id)
 - [Command Templates](./command-templates.md): sections do not execute command templates by default. UI registration + callback routing, not shell execution
 
 ## 15. Demo Extension

@@ -1,12 +1,21 @@
 {
   "name": "@llblab/pi-telegram",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "private": false,
   "publishConfig": {
     "access": "public"
   },
   "description": "Telegram runtime adapter for π",
   "type": "module",
+  "exports": {
+    ".": "./index.ts",
+    "./inbound": "./api/inbound.ts",
+    "./outbound": "./api/outbound.ts",
+    "./updates": "./api/updates.ts",
+    "./sections": "./api/sections.ts",
+    "./voice": "./api/voice.ts",
+    "./keyboard": "./api/keyboard.ts"
+  },
   "keywords": [
     "pi-package",
     "pi",
@@ -35,6 +44,7 @@
   },
   "files": [
     "index.ts",
+    "api/",
     "lib/",
     "README.md",
     "AGENTS.md",

@@ -1,7 +1,7 @@
 /**
  * Telegram lifecycle hook registration helpers
  * Zones: pi agent lifecycle, telegram session
- * Owns binding prepared Telegram lifecycle runtimes to pi extension lifecycle events
+ * Binds prepared Telegram lifecycle runtimes to pi extension lifecycle events
  */
 
 import type {
@@ -107,16 +107,15 @@ type TelegramLifecycleTimer = number | ReturnType<typeof setTimeout>;
 export interface TelegramCompactionObserverRuntimeDeps<TContext> {
   setCompactionInProgress: (inProgress: boolean) => void;
   updateStatus: (ctx: TContext) => void;
+  startTypingLoop?: (ctx: TContext) => void;
+  stopTypingLoop?: () => void;
   requestDeferredDispatchNextQueuedTelegramTurn: (
     dispatch: (ctx: TContext) => void,
   ) => void;
   dispatchNextQueuedTelegramTurn: (ctx: TContext) => void;
   recordRuntimeEvent?: (category: string, error: unknown) => void;
   timeoutMs?: number;
-  setTimer?: (
-    callback: () => void,
-    ms: number,
-  ) => TelegramLifecycleTimer;
+  setTimer?: (callback: () => void, ms: number) => TelegramLifecycleTimer;
   clearTimer?: (timer: TelegramLifecycleTimer) => void;
 }
 
@@ -149,11 +148,13 @@ export function createTelegramCompactionObserverRuntime<TContext>(
   return {
     onSessionBeforeCompact: (_event, ctx) => {
       deps.setCompactionInProgress(true);
+      deps.startTypingLoop?.(ctx);
       deps.updateStatus(ctx);
       clearFallbackTimer();
       fallbackTimer = setTimer(() => {
         fallbackTimer = undefined;
         deps.setCompactionInProgress(false);
+        deps.stopTypingLoop?.();
         deps.updateStatus(ctx);
         deps.recordRuntimeEvent?.(
           "compact",
@@ -165,10 +166,44 @@ export function createTelegramCompactionObserverRuntime<TContext>(
     onSessionCompact: (_event, ctx) => {
       clearFallbackTimer();
       deps.setCompactionInProgress(false);
+      deps.stopTypingLoop?.();
       deps.updateStatus(ctx);
       requestDispatch();
     },
-    onSessionShutdown: clearFallbackTimer,
+    onSessionShutdown: () => {
+      clearFallbackTimer();
+      deps.stopTypingLoop?.();
+    },
+  };
+}
+
+export interface TelegramMessageActivityTypingDeps<TContext> {
+  hasActiveTurn: () => boolean;
+  startTypingLoop: (ctx: TContext) => void;
+  onMessageStart: TelegramLifecycleRegistrationDeps["onMessageStart"];
+  onMessageUpdate: TelegramLifecycleRegistrationDeps["onMessageUpdate"];
+}
+
+export function createTelegramMessageActivityTypingHooks<
+  TContext extends ExtensionContext,
+>(
+  deps: TelegramMessageActivityTypingDeps<TContext>,
+): Pick<
+  TelegramLifecycleRegistrationDeps,
+  "onMessageStart" | "onMessageUpdate"
+> {
+  const ensureTyping = (ctx: TContext): void => {
+    if (deps.hasActiveTurn()) deps.startTypingLoop(ctx);
+  };
+  return {
+    onMessageStart: async (event, ctx) => {
+      ensureTyping(ctx as TContext);
+      await deps.onMessageStart(event, ctx);
+    },
+    onMessageUpdate: async (event, ctx) => {
+      ensureTyping(ctx as TContext);
+      await deps.onMessageUpdate(event, ctx);
+    },
   };
 }
 

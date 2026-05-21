@@ -88,9 +88,9 @@ If a matching handler fails with a non-zero exit code, the runtime records diagn
 
 ## Programmatic Inbound Handlers And STT Fallbacks
 
-Extensions can register programmatic inbound handlers with `registerTelegramInboundHandler(kind, handler)` from `@llblab/pi-telegram/lib/inbound-handlers.ts`. This is the code-level counterpart to configured `inboundHandlers`; use it for extension-owned transformations that are not voice-specific.
+Extensions can register programmatic inbound handlers with `registerTelegramInboundHandler(kind, handler)` from `@llblab/pi-telegram/inbound`. This is the code-level counterpart to configured `inboundHandlers`; use it for extension-owned transformations that are not voice-specific.
 
-Voice extensions can register STT providers with `registerTelegramVoiceTranscriptionProvider()` from `@llblab/pi-telegram/lib/voice.ts`. This is the zero-config extension path for voice/audio input: an extension such as `pi-xai-voice` can transcribe Telegram voice notes without requiring the operator to write an `inboundHandlers` command template.
+Voice extensions can register STT providers with `registerTelegramVoiceTranscriptionProvider()` from `@llblab/pi-telegram/voice`. This is the zero-config extension path for voice/audio input: an extension such as `pi-xai-voice` can transcribe Telegram voice notes without requiring the operator to write an `inboundHandlers` command template.
 
 Priority stays explicit and predictable:
 
@@ -101,14 +101,17 @@ Priority stays explicit and predictable:
 5. built-in text-file fallback for text attachments
 
 ```ts
-import { registerTelegramInboundHandler } from "@llblab/pi-telegram/lib/inbound-handlers.ts";
-import { registerTelegramVoiceTranscriptionProvider } from "@llblab/pi-telegram/lib/voice.ts";
+import { registerTelegramInboundHandler } from "@llblab/pi-telegram/inbound";
+import { registerTelegramVoiceTranscriptionProvider } from "@llblab/pi-telegram/voice";
 
-const disposeInbound = registerTelegramInboundHandler("document", async ({ file }) => {
-  if (!file?.mimeType?.includes("pdf")) return undefined;
-  const text = await extractPdf(file.path);
-  return text || undefined;
-});
+const disposeInbound = registerTelegramInboundHandler(
+  "document",
+  async ({ file }) => {
+    if (!file?.mimeType?.includes("pdf")) return undefined;
+    const text = await extractPdf(file.path);
+    return text || undefined;
+  },
+);
 
 const dispose = registerTelegramVoiceTranscriptionProvider(
   async (file) => {

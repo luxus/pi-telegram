@@ -124,6 +124,14 @@ test("Telegram time injection mode setter persists telegram.json", async () => {
     botToken: "123:abc",
     time: { interval: 5000, injectionMode: "interval" },
   });
+
+  await setMode("hidden");
+
+  assert.equal(getMode(), "hidden");
+  assert.deepEqual(await readTelegramConfig(configPath), {
+    botToken: "123:abc",
+    time: { interval: 5000 },
+  });
 });
 
 test("Telegram config runtime lets extensions update live voice config", async () => {

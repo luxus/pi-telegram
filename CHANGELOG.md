@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Nothing yet.
+
+## 0.12.0: Public API Membranes, Telegram UX Safety, And Extension Interop
+
+- `[Typing Status]` Auto-compaction now starts and stops the native Telegram `typing` keepalive like manual `/compact`, including timeout and shutdown cleanup. Active Telegram turns also re-arm typing on assistant message start/update events so transient provider/model errors cannot permanently leave a continuing run without Telegram activity feedback.
+- `[Compaction Safety]` Telegram `/compact` now opens an inline confirmation dialog before manual compaction starts, protecting the operator from accidental taps near `/start`. The dialog follows the dedicated UI style guide: a bold text-only question with emoji only on the explicit `Yes, compact` and `No` buttons. Confirming edits the dialog directly to `Compaction started.` instead of showing a separate `Compaction confirmed.` step.
+- `[Docs]` Added `docs/ui-style.md` as the focused style guide for inline buttons, toggles, tabs, option lists, cards, and dialogs.
+- `[Docs]` Restructured `docs/architecture.md` into a clearer architectural map with runtime topology, domain ownership, core flows, extension surfaces, and operational behavior while pushing detailed UI/callback rules toward focused standards.
+- `[Breaking API]` Bumped package version to `0.12.0` and renamed the public implementation domains to `lib/sections.ts`, `lib/updates.ts`, `lib/inbound.ts`, and `lib/outbound.ts`. Package exports now expose only the stable public API domains (`/sections`, `/updates`, `/inbound`, `/outbound`, `/voice`, `/keyboard`) and no longer expose the compatibility `./lib/*.ts` wildcard.
+- `[Architecture]` Folded the public update-handler interop surface into `updates` and renamed the internal long-poll loop module back to `polling`, giving the pair concise one-word domains: `updates` for update contracts/classification/handler registry and `polling` for the `getUpdates` runtime. Entrypoint extraction now lives in `bindings`, a concrete pi-facing command/tool/lifecycle wiring boundary rather than a new product domain.
+- `[Tests]` Added an architecture invariant and package self-import regressions that pin the `0.12.0` package exports to stable `/api` membranes with exact runtime export shapes and prevent accidental restoration of the removed `./lib/*.ts` wildcard.
+- `[Docs]` Added `docs/public-api.md` as the public API map for commands, config, assistant markup, extension APIs, callback ownership, and public/internal stability boundaries.
+- `[API]` Hardened Telegram Extension Sections by rejecting duplicate section ids and validating `ctx.callbackData()` against Telegram's 64-byte callback-data limit.
+- `[API]` Added `registerTelegramUpdateHandler()` as the matrix-aligned low-level update bus name.
+- `[API]` Documented the public low/high-level registration matrix: low-level buses (`updates`, `inbound`, `outbound`) intentionally have no ids, while high-level sections and voice providers use stable ids in new integrations.
+- `[Settings UI]` Refined control conventions: boolean toggles use Capitalized horizontal `On`/`Off` with green active `On`, yellow active `Off`, and black inactive markers; state/navigation rows use Capitalized status values; horizontal tabs use capitalized labels with purple default-state and yellow elevated-state active markers; vertical option lists keep only the current value marked green; submenu navigation distinguishes `⬆️ Main menu` from deeper `⬆️ Back` rows; confirmation actions use explicit `Yes, ...` labels such as `🗜 Yes, compact`; added State & Navigation Buttons section to the style guide for buttons that show state and lead to a submenu.
+- `[Config]` Time Injection Hidden mode now removes `time.injectionMode` from `telegram.json` instead of persisting `"hidden"`, matching Voice Reply Hidden semantics: missing key = default hidden state.
+
 ## 0.11.2: Queue Continuation, Compaction Safety, And Settings Polish
 
 - `[Time Context]` Renamed the disabled time injection mode from `off` to `hidden` in Settings and config defaults, matching voice reply mode semantics where no prompt-context line is injected. Legacy `off` callbacks/config values are still treated as hidden.

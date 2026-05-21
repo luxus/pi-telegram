@@ -28,7 +28,7 @@ import {
   stripTelegramCommentMarkupForDelivery,
   stripTelegramVoiceMarkupForPreview,
   normalizeMarkdownAfterVoiceExtraction,
-} from "../lib/outbound-handlers.ts";
+} from "../lib/outbound.ts";
 
 // --- Test Setup ---
 
@@ -50,14 +50,29 @@ test("getTelegramVoiceReplyMode returns 'manual' by default", () => {
 });
 
 test("getTelegramVoiceReplyMode reads valid mode from config", () => {
-  assert.equal(getTelegramVoiceReplyMode({ voice: { replyMode: "mirror" } }), "mirror");
-  assert.equal(getTelegramVoiceReplyMode({ voice: { replyMode: "always" } }), "always");
-  assert.equal(getTelegramVoiceReplyMode({ voice: { replyMode: "manual" } }), "manual");
+  assert.equal(
+    getTelegramVoiceReplyMode({ voice: { replyMode: "mirror" } }),
+    "mirror",
+  );
+  assert.equal(
+    getTelegramVoiceReplyMode({ voice: { replyMode: "always" } }),
+    "always",
+  );
+  assert.equal(
+    getTelegramVoiceReplyMode({ voice: { replyMode: "manual" } }),
+    "manual",
+  );
 });
 
 test("getTelegramVoiceReplyMode ignores invalid config values", () => {
-  assert.equal(getTelegramVoiceReplyMode({ voice: { replyMode: "invalid" as any } }), "manual");
-  assert.equal(getTelegramVoiceReplyMode({ voice: { replyMode: "foo" as any } }), "manual");
+  assert.equal(
+    getTelegramVoiceReplyMode({ voice: { replyMode: "invalid" as any } }),
+    "manual",
+  );
+  assert.equal(
+    getTelegramVoiceReplyMode({ voice: { replyMode: "foo" as any } }),
+    "manual",
+  );
 });
 
 test("getTelegramVoiceReplyMode ignores provider policy without config", () => {
@@ -127,8 +142,14 @@ test("computeVoiceTurnFlags works for all modes", () => {
 test("isVoiceTurn detects voice-tagged turns correctly", () => {
   assert.equal(isVoiceTurn({ voiceReplyPreferred: true }), true);
   assert.equal(isVoiceTurn({ voiceReplyRequired: true }), true);
-  assert.equal(isVoiceTurn({ voiceReplyPreferred: true, voiceReplyRequired: true }), true);
-  assert.equal(isVoiceTurn({ voiceReplyPreferred: false, voiceReplyRequired: false }), false);
+  assert.equal(
+    isVoiceTurn({ voiceReplyPreferred: true, voiceReplyRequired: true }),
+    true,
+  );
+  assert.equal(
+    isVoiceTurn({ voiceReplyPreferred: false, voiceReplyRequired: false }),
+    false,
+  );
   assert.equal(isVoiceTurn(null), false);
   assert.equal(isVoiceTurn(undefined), false);
   assert.equal(isVoiceTurn({}), false);
@@ -137,9 +158,21 @@ test("isVoiceTurn detects voice-tagged turns correctly", () => {
 // --- Preview Suppression ---
 
 test("shouldSuppressPreviewForVoice works correctly", () => {
-  assert.equal(shouldSuppressPreviewForVoice({ voiceReplyPreferred: true }), true);
-  assert.equal(shouldSuppressPreviewForVoice({ voiceReplyRequired: true }), true);
-  assert.equal(shouldSuppressPreviewForVoice({ voiceReplyPreferred: false, voiceReplyRequired: false }), false);
+  assert.equal(
+    shouldSuppressPreviewForVoice({ voiceReplyPreferred: true }),
+    true,
+  );
+  assert.equal(
+    shouldSuppressPreviewForVoice({ voiceReplyRequired: true }),
+    true,
+  );
+  assert.equal(
+    shouldSuppressPreviewForVoice({
+      voiceReplyPreferred: false,
+      voiceReplyRequired: false,
+    }),
+    false,
+  );
   assert.equal(shouldSuppressPreviewForVoice(null), false);
   assert.equal(shouldSuppressPreviewForVoice(undefined), false);
 });
@@ -147,7 +180,9 @@ test("shouldSuppressPreviewForVoice works correctly", () => {
 // --- Voice Markup Parsing ---
 
 test("planTelegramVoiceReply extracts simple voice text", () => {
-  const result = planTelegramVoiceReply("Hello\n\n<!-- telegram_voice: World -->");
+  const result = planTelegramVoiceReply(
+    "Hello\n\n<!-- telegram_voice: World -->",
+  );
   assert.equal(result.voiceText, "World");
   assert.ok(result.voiceReplies?.length === 1);
 });
@@ -162,7 +197,9 @@ test("planTelegramVoiceReply extracts lang and rate attributes", () => {
 });
 
 test("planTelegramVoiceReply handles colon shorthand form", () => {
-  const result = planTelegramVoiceReply("Text\n\n<!-- telegram_voice: This is the voice text -->");
+  const result = planTelegramVoiceReply(
+    "Text\n\n<!-- telegram_voice: This is the voice text -->",
+  );
   assert.equal(result.voiceText, "This is the voice text");
   assert.ok(result.voiceReplies?.length === 1);
 });
@@ -179,7 +216,9 @@ test("planTelegramVoiceReply handles multiple voice blocks", () => {
 });
 
 test("planTelegramVoiceReply returns cleaned markdown", () => {
-  const result = planTelegramVoiceReply("Normal\n\n<!-- telegram_voice: Voice only -->\n\ntext");
+  const result = planTelegramVoiceReply(
+    "Normal\n\n<!-- telegram_voice: Voice only -->\n\ntext",
+  );
   assert.ok(result.markdown.includes("Normal"));
   assert.ok(result.markdown.includes("text"));
   assert.equal(result.voiceText, "Voice only");
@@ -192,7 +231,10 @@ test("Voice synthesis provider registry - basic register / get / has / clear", (
   assert.equal(hasTelegramVoiceSynthesisProvider(), false);
   assert.equal(getTelegramVoiceSynthesisProviders().length, 0);
 
-  const dispose1 = registerTelegramVoiceSynthesisProvider(() => Promise.resolve("audio.mp3"), { id: "p1" });
+  const dispose1 = registerTelegramVoiceSynthesisProvider(
+    () => Promise.resolve("audio.mp3"),
+    { id: "p1" },
+  );
   assert.equal(hasTelegramVoiceSynthesisProvider(), true);
   assert.equal(getTelegramVoiceSynthesisProviders().length, 1);
 
@@ -214,7 +256,9 @@ test("Voice synthesis provider registry - basic register / get / has / clear", (
 
 test("Voice synthesis provider registry accepts both function and object form", () => {
   // Function form (backward compat)
-  registerTelegramVoiceSynthesisProvider(() => Promise.resolve("audio1"), { id: "fn" });
+  registerTelegramVoiceSynthesisProvider(() => Promise.resolve("audio1"), {
+    id: "fn",
+  });
 
   // Object form
   registerTelegramVoiceSynthesisProvider(
@@ -231,7 +275,9 @@ test("Voice synthesis provider registry accepts both function and object form", 
 });
 
 test("Voice synthesis provider registry clear works reliably for tests", () => {
-  registerTelegramVoiceSynthesisProvider(() => Promise.resolve("x"), { id: "tmp" });
+  registerTelegramVoiceSynthesisProvider(() => Promise.resolve("x"), {
+    id: "tmp",
+  });
   assert.equal(hasTelegramVoiceSynthesisProvider(), true);
 
   clearTelegramVoiceSynthesisProviders();

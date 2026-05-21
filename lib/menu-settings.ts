@@ -7,7 +7,7 @@
 import {
   getTelegramExtensionSettingsRows,
   type TelegramSectionRegistry,
-} from "./extension-sections.ts";
+} from "./sections.ts";
 import type { TelegramTimeMode } from "./config.ts";
 import type { TelegramInlineKeyboardMarkup } from "./keyboard.ts";
 import type { TelegramModelMenuState } from "./menu-model.ts";
@@ -115,13 +115,18 @@ export interface TelegramSettingsMenuRuntimeDeps<
 
 export const SETTINGS_MENU_TITLE = "<b>⚙️ Settings:</b>";
 export const PROACTIVE_PUSH_SETTINGS_TITLE = "<b>📌 Proactive push:</b>";
-export const TIME_INJECTION_MODE_SETTINGS_TITLE = "<b>🕒 Time injection mode:</b>";
+export const TIME_INJECTION_MODE_SETTINGS_TITLE =
+  "<b>🕒 Time injection mode:</b>";
 export const VOICE_REPLY_MODE_SETTINGS_TITLE = "<b>👄 Voice reply mode:</b>";
 
 type TelegramVoiceReplyModeSetting = TelegramVoiceReplyMode | "hidden";
 
 function getVoiceReplyModeLabel(mode: TelegramVoiceReplyModeSetting): string {
   return mode;
+}
+
+function getTelegramSettingsStateValueLabel(value: string): string {
+  return value.length > 0 ? value[0]!.toUpperCase() + value.slice(1) : value;
 }
 
 function getVoiceReplyModeSetting(
@@ -197,21 +202,23 @@ export function buildTelegramSettingsMenuReplyMarkup(
   rows.push(
     [
       {
-        text: `👄 Voice reply: ${getVoiceReplyModeLabel(
-          getVoiceReplyModeSetting(voiceReplyMode, voiceReplyModeConfigured),
+        text: `👄 Voice reply: ${getTelegramSettingsStateValueLabel(
+          getVoiceReplyModeLabel(
+            getVoiceReplyModeSetting(voiceReplyMode, voiceReplyModeConfigured),
+          ),
         )}`,
         callback_data: "settings:open:voice-reply",
       },
     ],
     [
       {
-        text: `🕒 Time injection: ${timeInjectionMode}`,
+        text: `🕒 Time injection: ${getTelegramSettingsStateValueLabel(timeInjectionMode)}`,
         callback_data: "settings:open:time-injection",
       },
     ],
     [
       {
-        text: `📌 Proactive push: ${proactivePushEnabled ? "on" : "off"}`,
+        text: `📌 Proactive push: ${proactivePushEnabled ? "On" : "Off"}`,
         callback_data: "settings:open:proactive",
       },
     ],
@@ -251,11 +258,11 @@ export function buildProactivePushSettingsReplyMarkup(
       [{ text: "⬆️ Back", callback_data: "settings:list" }],
       [
         {
-          text: proactivePushEnabled ? "🟢 on" : "⚫️ on",
+          text: proactivePushEnabled ? "🟢 On" : "⚫️ On",
           callback_data: "settings:set:proactive:on",
         },
         {
-          text: proactivePushEnabled ? "⚫️ off" : "🟡 off",
+          text: proactivePushEnabled ? "⚫️ Off" : "🟡 Off",
           callback_data: "settings:set:proactive:off",
         },
       ],
@@ -372,7 +379,10 @@ export async function handleTelegramSettingsMenuCallbackAction(
     await deps.answerCallbackQuery(callbackQueryId);
     return true;
   }
-  if (data === "settings:open:time-injection" || data === "settings:open:time") {
+  if (
+    data === "settings:open:time-injection" ||
+    data === "settings:open:time"
+  ) {
     await updateTimeInjectionModeSettingsMessage(deps);
     await deps.answerCallbackQuery(callbackQueryId);
     return true;
@@ -506,7 +516,8 @@ export function createTelegramSettingsMenuRuntime<
           ? query.data.slice("settings:set:time-injection:".length)
           : query.data.slice("settings:set:time:".length);
         if (
-          (hasTimeInjectionPrefix || query.data.startsWith("settings:set:time:")) &&
+          (hasTimeInjectionPrefix ||
+            query.data.startsWith("settings:set:time:")) &&
           (timeMode === "off" ||
             timeMode === "hidden" ||
             timeMode === "always" ||

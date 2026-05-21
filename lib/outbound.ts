@@ -1,7 +1,7 @@
 /**
- * Telegram outbound handler helpers
+ * Telegram outbound surface helpers
  * Zones: telegram outbound, assistant markup, command templates, callback routing
- * Owns assistant-authored outbound markup extraction, configured artifact generation, callback actions, and Telegram outbound delivery
+ * Owns assistant-authored outbound markup extraction, configured artifact generation, callback actions, runtime-event bridge, and Telegram outbound delivery
  */
 
 import { randomUUID } from "node:crypto";
@@ -61,6 +61,18 @@ const DEFAULT_VOICE_TIMEOUT_MS = 120_000;
  * diagnostics alongside pi-telegram's own events. Events are silently dropped
  * when pi-telegram is not loaded.
  */
+export type TelegramRuntimeEventRecorder = (
+  category: string,
+  error: unknown,
+  details?: Record<string, unknown>,
+) => void;
+
+export function bindTelegramRuntimeEventRecorder(
+  recorder: TelegramRuntimeEventRecorder,
+): void {
+  (globalThis as Record<string, unknown>)[VOICE_EVENT_RECORDER_KEY] = recorder;
+}
+
 export function recordTelegramRuntimeEvent(
   category: string,
   error: unknown,
@@ -70,13 +82,7 @@ export function recordTelegramRuntimeEvent(
     VOICE_EVENT_RECORDER_KEY
   ];
   if (typeof recorder === "function") {
-    (
-      recorder as (
-        category: string,
-        error: unknown,
-        details?: Record<string, unknown>,
-      ) => void
-    )(category, error, details);
+    (recorder as TelegramRuntimeEventRecorder)(category, error, details);
   }
 }
 
@@ -1028,7 +1034,9 @@ export function createTelegramVoiceReplySender(
         });
         return;
       } catch (error) {
-        deps.recordRuntimeEvent?.("voice", error, { phase: "template-handler-send" });
+        deps.recordRuntimeEvent?.("voice", error, {
+          phase: "template-handler-send",
+        });
       }
     }
 
@@ -1045,7 +1053,9 @@ export function createTelegramVoiceReplySender(
         });
         return;
       } catch (error) {
-        deps.recordRuntimeEvent?.("voice", error, { phase: "programmatic-handler-send" });
+        deps.recordRuntimeEvent?.("voice", error, {
+          phase: "programmatic-handler-send",
+        });
       }
     }
 

@@ -1,7 +1,7 @@
 /**
  * Telegram bridge config and pairing helpers
  * Zones: telegram config, pairing, filesystem
- * Owns persisted bot/session pairing state, local config storage, authorization policy, and first-user pairing side effects
+ * Owns persisted bot/session pairing state, local config storage, live config controls, authorization policy, and first-user pairing side effects
  */
 
 import { existsSync } from "node:fs";
@@ -9,7 +9,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import type { TelegramInboundHandlerConfig } from "./inbound-handlers.ts";
+import type { TelegramInboundHandlerConfig } from "./inbound.ts";
 import type { CommandTemplateObjectConfig } from "./command-templates.ts";
 
 const CONFIG_RUNTIME_KEY = "__piTelegramConfigRuntime__";
@@ -108,6 +108,22 @@ export function updateTelegramVoiceConfig(
   if (!runtime || typeof runtime.updateVoiceConfig !== "function") return false;
   runtime.updateVoiceConfig(voice);
   return true;
+}
+
+export function bindGlobalTelegramConfigRuntime(
+  configStore: Pick<TelegramConfigStore, "get" | "set" | "persist">,
+): void {
+  setGlobalTelegramConfigRuntime({
+    updateVoiceConfig(voice) {
+      const current = configStore.get();
+      const next = {
+        ...current,
+        voice: { ...(current.voice ?? {}), ...voice },
+      };
+      configStore.set(next);
+      void configStore.persist(next);
+    },
+  });
 }
 
 export async function readTelegramConfig(
@@ -266,6 +282,16 @@ export function createTelegramTimeInjectionModeSetter(
 ): (injectionMode: TelegramTimeMode) => Promise<void> {
   return async (injectionMode) => {
     const current = configStore.get();
+    if (injectionMode === "hidden") {
+      const { injectionMode: _injectionMode, ...remainingTime } =
+        current.time ?? {};
+      const next = { ...current };
+      if (Object.keys(remainingTime).length > 0) next.time = remainingTime;
+      else delete next.time;
+      configStore.set(next);
+      await configStore.persist(next);
+      return;
+    }
     const next = {
       ...current,
       time: { ...(current.time ?? {}), injectionMode },
@@ -280,6 +306,21 @@ export function createTelegramProactivePushChatIdGetter(deps: {
   getAllowedUserId: () => number | undefined;
 }): () => number | undefined {
   return () => deps.getActiveTurnChatId() ?? deps.getAllowedUserId();
+}
+
+export function createTelegramConfigControls(
+  configStore: Pick<TelegramConfigStore, "get" | "set" | "persist">,
+) {
+  return {
+    isProactivePushEnabled: createTelegramProactivePushChecker(configStore),
+    setProactivePushEnabled: createTelegramProactivePushSetter(configStore),
+    getVoiceReplyMode: createTelegramVoiceReplyModeGetter(configStore),
+    isVoiceReplyModeConfigured:
+      createTelegramVoiceReplyModeConfiguredChecker(configStore),
+    setVoiceReplyMode: createTelegramVoiceReplyModeSetter(configStore),
+    getTimeInjectionMode: createTelegramTimeInjectionModeGetter(configStore),
+    setTimeInjectionMode: createTelegramTimeInjectionModeSetter(configStore),
+  };
 }
 
 export type TelegramAuthorizationState =

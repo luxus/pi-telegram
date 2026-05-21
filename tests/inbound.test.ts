@@ -15,7 +15,7 @@ import {
   processTelegramInboundHandlers,
   registerTelegramInboundHandler,
   telegramInboundHandlerMatchesFile,
-} from "../lib/inbound-handlers.ts";
+} from "../lib/inbound.ts";
 import {
   clearTelegramVoiceTranscriptionProviders,
   registerTelegramVoiceTranscriptionProvider,
@@ -42,10 +42,7 @@ test("Inbound handlers match MIME wildcards and Telegram file types", () => {
     true,
   );
   assert.equal(
-    telegramInboundHandlerMatchesFile(
-      { match: "application/pdf" },
-      voiceFile,
-    ),
+    telegramInboundHandlerMatchesFile({ match: "application/pdf" }, voiceFile),
     false,
   );
   assert.equal(telegramInboundHandlerMatchesFile({}, voiceFile), true);
@@ -220,7 +217,12 @@ test("Built-in text attachment handling injects text files into outputs", async 
     rawText: "see attached",
     handlers: [],
     cwd: "/work",
-    execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+    execCommand: async () => ({
+      stdout: "",
+      stderr: "",
+      code: 0,
+      killed: false,
+    }),
   });
   assert.deepEqual(result.handlerOutputs, ["[note.txt]\nhello from file"]);
 });
@@ -241,7 +243,12 @@ test("Built-in text attachment handling accepts text wildcards", async () => {
     rawText: "see attached",
     handlers: [],
     cwd: "/work",
-    execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+    execCommand: async () => ({
+      stdout: "",
+      stderr: "",
+      code: 0,
+      killed: false,
+    }),
   });
   assert.deepEqual(result.handlerOutputs, ["[note.md]\n# Hello"]);
 });
@@ -490,7 +497,10 @@ test("Inbound handler composition: non-critical failure continues to next step",
 });
 
 test("Programmatic inbound text handlers transform text after configured text handlers", async () => {
-  const dispose = registerTelegramInboundHandler("text", async ({ text }) => `${text} world`);
+  const dispose = registerTelegramInboundHandler(
+    "text",
+    async ({ text }) => `${text} world`,
+  );
   try {
     const result = await processTelegramInboundHandlers({
       files: [],
@@ -516,9 +526,12 @@ test("Programmatic inbound text handlers transform text after configured text ha
 });
 
 test("Programmatic inbound media handlers run before voice transcription providers", async () => {
-  const disposeInbound = registerTelegramInboundHandler("voice", async ({ file }) => ({
-    text: `programmatic transcript for ${file?.fileName}`,
-  }));
+  const disposeInbound = registerTelegramInboundHandler(
+    "voice",
+    async ({ file }) => ({
+      text: `programmatic transcript for ${file?.fileName}`,
+    }),
+  );
   const disposeProvider = registerTelegramVoiceTranscriptionProvider(
     async () => "provider transcript",
   );
@@ -535,7 +548,12 @@ test("Programmatic inbound media handlers run before voice transcription provide
       rawText: "",
       handlers: [],
       cwd: "/work",
-      execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      execCommand: async () => ({
+        stdout: "",
+        stderr: "",
+        code: 0,
+        killed: false,
+      }),
     });
     assert.deepEqual(result.handlerOutputs, [
       "programmatic transcript for programmatic.ogg",
@@ -564,7 +582,12 @@ test("Inbound voice transcription providers handle voice files when no handler m
       rawText: "",
       handlers: [],
       cwd: "/work",
-      execCommand: async () => ({ stdout: "", stderr: "", code: 0, killed: false }),
+      execCommand: async () => ({
+        stdout: "",
+        stderr: "",
+        code: 0,
+        killed: false,
+      }),
     });
     assert.deepEqual(result.handlerOutputs, [
       "provider transcript for provider.ogg",
@@ -576,7 +599,9 @@ test("Inbound voice transcription providers handle voice files when no handler m
 });
 
 test("Inbound handlers take precedence over voice transcription providers", async () => {
-  const dispose = registerTelegramVoiceTranscriptionProvider(async () => "provider transcript");
+  const dispose = registerTelegramVoiceTranscriptionProvider(
+    async () => "provider transcript",
+  );
   try {
     const result = await processTelegramInboundHandlers({
       files: [{ path: "/tmp/in.ogg", mimeType: "audio/ogg", kind: "voice" }],

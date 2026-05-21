@@ -307,6 +307,10 @@ export interface TelegramRuntimeEventRecorderPort {
   ) => void;
 }
 
+export interface TelegramCompactConfirmationReplyMarkup {
+  inline_keyboard: { text: string; callback_data: string }[][];
+}
+
 export interface TelegramCompactCommandDeps extends TelegramRuntimeEventRecorderPort {
   isIdle: () => boolean;
   hasPendingMessages: () => boolean;
@@ -327,6 +331,42 @@ export interface TelegramCompactCommandDeps extends TelegramRuntimeEventRecorder
     onError: (error: unknown) => void;
   }) => void;
   sendTextReply: (text: string) => Promise<void>;
+  suppressStartNotice?: boolean;
+}
+
+export interface TelegramCompactConfirmationDeps {
+  sendInteractiveMessage: (
+    chatId: number,
+    text: string,
+    mode: "html" | "plain",
+    replyMarkup: TelegramCompactConfirmationReplyMarkup,
+  ) => Promise<number | undefined>;
+}
+
+export interface TelegramCompactConfirmationCallbackQuery {
+  id: string;
+  data?: string;
+  message?: { chat?: { id?: number }; message_id?: number };
+}
+
+export interface TelegramCompactConfirmationCallbackDeps<TContext> {
+  ctx: TContext;
+  answerCallbackQuery: (
+    callbackQueryId: string,
+    text?: string,
+  ) => Promise<void>;
+  editInteractiveMessage: (
+    chatId: number,
+    messageId: number,
+    text: string,
+    mode: "html" | "plain",
+    replyMarkup: TelegramCompactConfirmationReplyMarkup,
+  ) => Promise<void>;
+  runCompact: (
+    ctx: TContext,
+    chatId: number,
+    replyToMessageId: number,
+  ) => Promise<void>;
 }
 
 export type TelegramControlCommandType =
@@ -580,6 +620,7 @@ export interface TelegramCommandRuntimeDeps<
   getPromptTemplateCommands?: () => readonly TelegramPromptTemplateMenuCommand[];
   persistConfig: () => Promise<void>;
   sendTextReply: (message: TMessage, text: string) => Promise<void>;
+  sendInteractiveMessage?: TelegramCompactConfirmationDeps["sendInteractiveMessage"];
 }
 
 export const TELEGRAM_APP_MENU_INTRO_HTML = [
@@ -784,6 +825,69 @@ function dispatchNextQueuedTelegramTurnAfterCompact(
   deps.dispatchNextQueuedTelegramTurn();
 }
 
+export function buildTelegramCompactConfirmationReplyMarkup(): TelegramCompactConfirmationReplyMarkup {
+  return {
+    inline_keyboard: [
+      [
+        { text: "🗜 Yes, compact", callback_data: "compact:confirm" },
+        { text: "❌ No", callback_data: "compact:cancel" },
+      ],
+    ],
+  };
+}
+
+export function getTelegramCompactConfirmationHtml(): string {
+  return "<b>Compact session?</b>";
+}
+
+export async function openTelegramCompactConfirmation(
+  chatId: number,
+  deps: TelegramCompactConfirmationDeps,
+): Promise<void> {
+  await deps.sendInteractiveMessage(
+    chatId,
+    getTelegramCompactConfirmationHtml(),
+    "html",
+    buildTelegramCompactConfirmationReplyMarkup(),
+  );
+}
+
+export async function handleTelegramCompactConfirmationCallback<TContext>(
+  query: TelegramCompactConfirmationCallbackQuery,
+  deps: TelegramCompactConfirmationCallbackDeps<TContext>,
+): Promise<boolean> {
+  if (query.data !== "compact:confirm" && query.data !== "compact:cancel") {
+    return false;
+  }
+  const chatId = query.message?.chat?.id;
+  const messageId = query.message?.message_id;
+  if (typeof chatId !== "number" || typeof messageId !== "number") {
+    await deps.answerCallbackQuery(query.id, "Interactive message expired.");
+    return true;
+  }
+  if (query.data === "compact:cancel") {
+    await deps.editInteractiveMessage(
+      chatId,
+      messageId,
+      "Compaction cancelled.",
+      "plain",
+      { inline_keyboard: [] },
+    );
+    await deps.answerCallbackQuery(query.id);
+    return true;
+  }
+  await deps.editInteractiveMessage(
+    chatId,
+    messageId,
+    "Compaction started.",
+    "plain",
+    { inline_keyboard: [] },
+  );
+  await deps.answerCallbackQuery(query.id);
+  await deps.runCompact(deps.ctx, chatId, messageId);
+  return true;
+}
+
 export async function handleTelegramCompactCommand(
   deps: TelegramCompactCommandDeps,
 ): Promise<void> {
@@ -834,7 +938,9 @@ export async function handleTelegramCompactCommand(
     await deps.sendTextReply(`Compaction failed: ${errorMessage}`);
     return;
   }
-  await deps.sendTextReply("Compaction started.");
+  if (!deps.suppressStartNotice) {
+    await deps.sendTextReply("Compaction started.");
+  }
   if (compactionStillInProgress) deps.startTypingLoop?.();
 }
 
@@ -978,6 +1084,7 @@ export function createTelegramCommandHandlerTargetRuntime<
     stopTypingLoop: deps.stopTypingLoop,
     enqueueContinueTurn: deps.enqueueContinueTurn,
     compact: deps.compact,
+    sendInteractiveMessage: deps.sendInteractiveMessage,
     enqueueControlItem: commandTargetRuntime.enqueueControlItem,
     showStatus: commandTargetRuntime.showStatus,
     openModelMenu: commandTargetRuntime.openModelMenu,
@@ -1110,6 +1217,12 @@ async function handleTelegramCommandRuntime<
         await deps.openQueueMenu(nextMessage, commandCtx);
       },
       handleCompact: async (nextMessage, commandCtx) => {
+        if (deps.sendInteractiveMessage) {
+          await openTelegramCompactConfirmation(nextMessage.chat.id, {
+            sendInteractiveMessage: deps.sendInteractiveMessage,
+          });
+          return;
+        }
         await handleTelegramCompactCommand({
           isIdle: () => deps.isIdle(commandCtx),
           hasPendingMessages: () => deps.hasPendingMessages(commandCtx),

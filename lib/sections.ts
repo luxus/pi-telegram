@@ -1,12 +1,13 @@
 /**
  * Telegram Extension Sections registry and callback routing
  * Zones: telegram ui, extension platform, callback routing
- * Owns section registration, token mapping, main-menu/settings row injection, and section callback dispatch
+ * Owns section registration, global registry binding, token mapping, main-menu/settings row injection, and section callback dispatch
  */
 
 import type { TelegramInlineKeyboardMarkup } from "./keyboard.ts";
 
 const SECTION_REGISTRY_KEY = "__piTelegramSectionRegistry__";
+const TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64;
 
 // --- Core Types ---
 
@@ -181,9 +182,7 @@ function buildTelegramSectionContext(
         .then(() => {}),
     enqueuePrompt: deps.enqueuePrompt,
     callbackData: (action, payload) =>
-      payload
-        ? `section:${token}:${action}:${payload}`
-        : `section:${token}:${action}`,
+      buildTelegramSectionCallbackData(token, action, payload),
     deleteMessage: () =>
       messageId !== undefined
         ? deps.deleteMessage(chatId, messageId)
@@ -231,9 +230,7 @@ function buildTelegramSectionCallbackContext(
         .then(() => {}),
     enqueuePrompt: deps.enqueuePrompt,
     callbackData: (action, payload) =>
-      payload
-        ? `section:${token}:${action}:${payload}`
-        : `section:${token}:${action}`,
+      buildTelegramSectionCallbackData(token, action, payload),
     deleteMessage: () =>
       messageId !== undefined
         ? deps.deleteMessage(chatId, messageId)
@@ -248,6 +245,13 @@ export function setGlobalTelegramSectionRegistry(
   registry: TelegramSectionRegistry,
 ): void {
   (globalThis as Record<string, unknown>)[SECTION_REGISTRY_KEY] = registry;
+}
+
+/** @internal */
+export function createAndBindTelegramSectionRegistry(): TelegramSectionRegistry {
+  const registry = createTelegramExtensionSectionRegistry();
+  setGlobalTelegramSectionRegistry(registry);
+  return registry;
 }
 
 /**
@@ -271,8 +275,8 @@ export function registerTelegramSection(
 
 /**
  * Get current section diagnostics. Returns empty array when registry is absent.
+ * @internal
  */
-/** @internal */
 export function getTelegramSectionDiagnostics(): TelegramSectionDiagnostic[] {
   const registry = (globalThis as Record<string, unknown>)[
     SECTION_REGISTRY_KEY
@@ -290,6 +294,27 @@ const MAIN_MENU_ROW = {
 const BACK_NAV_ROW = {
   text: "⬆️ Back",
 } as const;
+
+function getUtf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
+}
+
+function buildTelegramSectionCallbackData(
+  token: TelegramSectionToken,
+  action: string,
+  payload?: string,
+): string {
+  const data = payload
+    ? `section:${token}:${action}:${payload}`
+    : `section:${token}:${action}`;
+  const byteLength = getUtf8ByteLength(data);
+  if (byteLength > TELEGRAM_CALLBACK_DATA_MAX_BYTES) {
+    throw new Error(
+      `Telegram section callback_data exceeds ${TELEGRAM_CALLBACK_DATA_MAX_BYTES} bytes (${byteLength}). Use a shorter action/payload or store state behind a compact key.`,
+    );
+  }
+  return data;
+}
 
 function prependBackRow(
   replyMarkup: TelegramInlineKeyboardMarkup | undefined,
@@ -319,6 +344,10 @@ export function createTelegramExtensionSectionRegistry(): TelegramSectionRegistr
   let nextToken = 0;
 
   function register(section: TelegramSectionRegistration): () => void {
+    const duplicate = [...sections.values()].find((s) => s.id === section.id);
+    if (duplicate) {
+      throw new Error(`Telegram section id already registered: ${section.id}`);
+    }
     const token = String(nextToken++);
     const registered: RegisteredTelegramSection = {
       id: section.id,

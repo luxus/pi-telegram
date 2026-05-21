@@ -1,5 +1,5 @@
 /**
- * Telegram polling domain helpers
+ * Telegram polling runtime domain helpers
  * Zones: telegram transport, polling runtime
  * Owns polling request builders, stop conditions, and the long-poll loop runtime for Telegram updates
  */
@@ -91,8 +91,9 @@ export function createTelegramPollingActivityReader(
   return () => isTelegramPollingControllerActive(state);
 }
 
-export interface TelegramPollingRuntimeDeps<TContext>
-  extends TelegramRuntimeEventRecorderPort {
+export interface TelegramPollingRuntimeDeps<
+  TContext,
+> extends TelegramRuntimeEventRecorderPort {
   hasBotToken: () => boolean;
   getPollingPromise: () => Promise<void> | undefined;
   setPollingPromise: (promise: Promise<void> | undefined) => void;

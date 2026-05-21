@@ -13,7 +13,7 @@ An outbound handler is selected by `type`. Text replies and assistant markup map
 | Source            | Handler                       | Action                  |
 | ----------------- | ----------------------------- | ----------------------- |
 | Final text        | `outboundHandlers[type=text]` | Transform before render |
-| `telegram_voice`  | Voice pipeline                | OGG/Opus `sendVoice`   |
+| `telegram_voice`  | Voice pipeline                | OGG/Opus `sendVoice`    |
 | `telegram_button` | Built-in                      | Attach inline button    |
 
 The voice pipeline is detailed below: configured `type: "voice"` handlers first, then programmatic handlers, then registered synthesis providers.
@@ -60,24 +60,27 @@ Voice replies use one fallback pipeline:
 
 1. configured `outboundHandlers` with `type: "voice"` in `telegram.json` order
 2. programmatic `registerTelegramOutboundHandler("voice", ...)` handlers
-3. registered voice synthesis providers from `@llblab/pi-telegram/lib/voice.ts`
+3. registered voice synthesis providers from `@llblab/pi-telegram/voice`
 
 This makes provider extensions a zero-config convenience without overriding explicit operator-owned `telegram.json` handlers. If several synthesis providers are registered, they are tried in registration order; the first provider that returns a valid `.ogg`/`.opus` artifact handles the reply. Returning `undefined` passes to the next provider, while thrown errors or invalid files are recorded before the next fallback is tried.
 
 ## Voice Synthesis Provider API
 
-Voice replies can be delivered by synthesis providers registered through `@llblab/pi-telegram/lib/voice.ts`:
+Voice replies can be delivered by synthesis providers registered through `@llblab/pi-telegram/voice`:
 
 ```ts
-import { registerTelegramVoiceSynthesisProvider } from "@llblab/pi-telegram/lib/voice.ts";
+import { registerTelegramVoiceSynthesisProvider } from "@llblab/pi-telegram/voice";
 
-const dispose = registerTelegramVoiceSynthesisProvider(async (text, options) => {
-  const audioPath = await synthesizeToOggOpus(text, options);
-  return { audioPath, transcriptText: text };
-});
+const dispose = registerTelegramVoiceSynthesisProvider(
+  async (text, options) => {
+    const audioPath = await synthesizeToOggOpus(text, options);
+    return { audioPath, transcriptText: text };
+  },
+  { id: "my-extension/tts" },
+);
 ```
 
-Synthesis providers receive the extracted `telegram_voice` text plus optional `lang`/`rate` hints. They own translation, TTS, speech rewriting, transcript choice, and OGG/Opus conversion. The bridge validates that the returned file ends in `.ogg` or `.opus`, sends it through Telegram `sendVoice`, and falls back to planned text if delivery fails before any visible text was delivered. Providers run after configured and programmatic voice handlers in the priority chain above.
+Synthesis providers receive the extracted `telegram_voice` text plus optional `lang`/`rate` hints. Stable registrations pass a durable `id`; omitted ids remain a compatibility path for older providers. Providers own translation, TTS, speech rewriting, transcript choice, and OGG/Opus conversion. The bridge validates that the returned file ends in `.ogg` or `.opus`, sends it through Telegram `sendVoice`, and falls back to planned text if delivery fails before any visible text was delivered. Providers run after configured and programmatic voice handlers in the priority chain above.
 
 ## Voice Markup
 

@@ -5,17 +5,11 @@
  */
 
 import * as Api from "./lib/api.ts";
+import * as Bindings from "./lib/bindings.ts";
 import * as CommandTemplates from "./lib/command-templates.ts";
 import * as Commands from "./lib/commands.ts";
 import * as Config from "./lib/config.ts";
-import {
-  createTelegramExtensionSectionRegistry,
-  setGlobalTelegramSectionRegistry,
-  type TelegramSectionRegistry,
-} from "./lib/extension-sections.ts";
-import { createTelegramExternalHandleUpdate } from "./lib/external-handlers.ts";
-import * as InboundHandlers from "./lib/inbound-handlers.ts";
-import * as Keyboard from "./lib/keyboard.ts";
+import * as Inbound from "./lib/inbound.ts";
 import * as Lifecycle from "./lib/lifecycle.ts";
 import * as Locks from "./lib/locks.ts";
 import * as Media from "./lib/media.ts";
@@ -23,27 +17,23 @@ import * as MenuQueue from "./lib/menu-queue.ts";
 import * as MenuSettings from "./lib/menu-settings.ts";
 import * as Menu from "./lib/menu.ts";
 import * as Model from "./lib/model.ts";
-import * as OutboundAttachments from "./lib/outbound-attachments.ts";
-import * as OutboundHandlers from "./lib/outbound-handlers.ts";
+import * as Outbound from "./lib/outbound.ts";
 import * as Pi from "./lib/pi.ts";
 import * as Polling from "./lib/polling.ts";
 import * as Preview from "./lib/preview.ts";
 import * as PromptTemplates from "./lib/prompt-templates.ts";
-import * as Prompts from "./lib/prompts.ts";
 import * as Queue from "./lib/queue.ts";
 import * as Replies from "./lib/replies.ts";
 import * as Routing from "./lib/routing.ts";
 import * as Runtime from "./lib/runtime.ts";
-import * as Setup from "./lib/setup.ts";
+import * as Sections from "./lib/sections.ts";
 import * as Status from "./lib/status.ts";
 import * as TextGroups from "./lib/text-groups.ts";
 import * as TimeInjection from "./lib/time-injection.ts";
+import * as Updates from "./lib/updates.ts";
 import * as Voice from "./lib/voice.ts";
 
-const VOICE_EVENT_RECORDER_KEY = "__piTelegramVoiceEventRecorder__";
-
 type ActivePiModel = NonNullable<Pi.ExtensionContext["model"]>;
-type RuntimeTelegramQueueItem = Queue.TelegramQueueItem<Pi.ExtensionContext>;
 
 // --- Extension Runtime ---
 
@@ -59,31 +49,8 @@ export default function (pi: Pi.ExtensionAPI) {
   const bridgeRuntime = Runtime.createTelegramBridgeRuntime();
   const { abort, lifecycle, queue, setup, typing } = bridgeRuntime;
   const configStore = Config.createTelegramConfigStore();
-  Config.setGlobalTelegramConfigRuntime({
-    updateVoiceConfig(voice) {
-      const current = configStore.get();
-      const next = {
-        ...current,
-        voice: { ...(current.voice ?? {}), ...voice },
-      };
-      configStore.set(next);
-      void configStore.persist(next);
-    },
-  });
-  const isProactivePushEnabled =
-    Config.createTelegramProactivePushChecker(configStore);
-  const setProactivePushEnabled =
-    Config.createTelegramProactivePushSetter(configStore);
-  const getVoiceReplyMode =
-    Config.createTelegramVoiceReplyModeGetter(configStore);
-  const isVoiceReplyModeConfigured =
-    Config.createTelegramVoiceReplyModeConfiguredChecker(configStore);
-  const setVoiceReplyMode =
-    Config.createTelegramVoiceReplyModeSetter(configStore);
-  const getTimeInjectionMode =
-    Config.createTelegramTimeInjectionModeGetter(configStore);
-  const setTimeInjectionMode =
-    Config.createTelegramTimeInjectionModeSetter(configStore);
+  Config.bindGlobalTelegramConfigRuntime(configStore);
+  const configControls = Config.createTelegramConfigControls(configStore);
   const lockRuntime = Locks.createTelegramLockRuntime<Pi.ExtensionContext>();
   const lockOwnershipGuard =
     Locks.createTelegramLockOwnershipGuard(lockRuntime);
@@ -93,15 +60,13 @@ export default function (pi: Pi.ExtensionAPI) {
       getActiveTurnChatId: activeTurnRuntime.getChatId,
       getAllowedUserId: configStore.getAllowedUserId,
     });
-  const buttonActionStore = OutboundHandlers.createTelegramButtonActionStore();
+  const buttonActionStore = Outbound.createTelegramButtonActionStore();
   const pendingModelSwitchStore =
     Model.createPendingModelSwitchStore<
       Model.ScopedTelegramModel<ActivePiModel>
     >();
   const modelMenuRuntime = Menu.createTelegramModelMenuRuntime<ActivePiModel>();
-  const sectionRegistry: TelegramSectionRegistry =
-    createTelegramExtensionSectionRegistry();
-  setGlobalTelegramSectionRegistry(sectionRegistry);
+  const sectionRegistry = Sections.createAndBindTelegramSectionRegistry();
 
   const runtimeEvents = Status.createTelegramRuntimeEventRecorder({
     getBotToken: configStore.getBotToken,
@@ -111,8 +76,7 @@ export default function (pi: Pi.ExtensionAPI) {
     getConfig: Config.createTelegramTimeConfigGetter(configStore),
     recordRuntimeEvent,
   });
-  (globalThis as Record<string, unknown>)[VOICE_EVENT_RECORDER_KEY] =
-    recordRuntimeEvent;
+  Outbound.bindTelegramRuntimeEventRecorder(recordRuntimeEvent);
   const getContextModel = Pi.getExtensionContextModel;
   const isIdle = Pi.isExtensionContextIdle;
   const hasPendingMessages = Pi.hasExtensionContextPendingMessages;
@@ -136,7 +100,7 @@ export default function (pi: Pi.ExtensionAPI) {
   const { getStatusLines, updateStatus } =
     Status.createTelegramBridgeStatusRuntime<
       Pi.ExtensionContext,
-      RuntimeTelegramQueueItem
+      Queue.TelegramQueueItem<Pi.ExtensionContext>
     >({
       getConfig: configStore.get,
       isPollingActive: Polling.createTelegramPollingActivityReader(
@@ -153,28 +117,23 @@ export default function (pi: Pi.ExtensionAPI) {
       getRecentRuntimeEvents: runtimeEvents.getEvents,
       getRuntimeLockState: lockRuntime.getStatusLabel,
     });
-  const currentModelRuntime = Model.createCurrentModelRuntime<
-    Pi.ExtensionContext,
-    ActivePiModel
-  >({
+  const currentModelRuntime = Model.createCurrentModelRuntime({
     getContextModel,
     updateStatus,
   });
-  const queueMutationRuntime =
-    Queue.createTelegramQueueMutationController<Pi.ExtensionContext>({
-      ...telegramQueueStore,
-      getNextPriorityReactionOrder: queue.getNextPriorityReactionOrder,
-      incrementNextPriorityReactionOrder:
-        queue.incrementNextPriorityReactionOrder,
-      updateStatus,
-    });
-  const inboundHandlerRuntime =
-    InboundHandlers.createTelegramInboundHandlerRuntime<Pi.ExtensionContext>({
-      getHandlers: configStore.getInboundHandlers,
-      execCommand: CommandTemplates.execCommandTemplate,
-      getCwd: Pi.getExtensionContextCwd,
-      recordRuntimeEvent,
-    });
+  const queueMutationRuntime = Queue.createTelegramQueueMutationController({
+    ...telegramQueueStore,
+    getNextPriorityReactionOrder: queue.getNextPriorityReactionOrder,
+    incrementNextPriorityReactionOrder:
+      queue.incrementNextPriorityReactionOrder,
+    updateStatus,
+  });
+  const inboundHandlerRuntime = Inbound.createTelegramInboundHandlerRuntime({
+    getHandlers: configStore.getInboundHandlers,
+    execCommand: CommandTemplates.execCommandTemplate,
+    getCwd: Pi.getExtensionContextCwd,
+    recordRuntimeEvent,
+  });
 
   // --- Telegram API ---
 
@@ -199,36 +158,32 @@ export default function (pi: Pi.ExtensionAPI) {
     recordRuntimeEvent,
   });
 
-  // --- Message Delivery & Preview ---
+  // --- Message Delivery ---
 
   const sendGuestReply = Replies.createGuestMarkdownReplySender({
     renderTelegramMessage: Replies.renderTelegramMessage,
     answerGuestQuery,
   });
 
-  const promptDispatchRuntime =
-    Runtime.createTelegramPromptDispatchRuntime<Pi.ExtensionContext>({
-      lifecycle,
-      typing,
-      getDefaultChatId: activeTurnRuntime.getChatId,
-      sendTypingAction,
-      updateStatus,
-      recordRuntimeEvent,
-    });
+  const promptDispatchRuntime = Runtime.createTelegramPromptDispatchRuntime({
+    lifecycle,
+    typing,
+    getDefaultChatId: proactivePushChatIdGetter,
+    sendTypingAction,
+    updateStatus,
+    recordRuntimeEvent,
+  });
 
-  // --- Reply Runtime Wiring ---
+  // --- Reply Runtime & Preview ---
 
-  const replyRuntime =
-    Replies.createTelegramRenderedMessageDeliveryRuntime<Keyboard.TelegramInlineKeyboardMarkup>(
-      {
-        sendMessage,
-        editMessage: editTelegramMessageText,
-      },
-    );
+  const replyRuntime = Replies.createTelegramRenderedMessageDeliveryRuntime({
+    sendMessage,
+    editMessage: editTelegramMessageText,
+  });
   const { replyTransport, editInteractiveMessage, sendInteractiveMessage } =
     replyRuntime;
   const { sendTextReply, sendMarkdownReply } =
-    OutboundHandlers.createTelegramOutboundTextReplyRuntime({
+    Outbound.createTelegramOutboundTextReplyRuntime({
       sendTextReply: replyRuntime.sendTextReply,
       sendMarkdownReply: replyRuntime.sendMarkdownReply,
       execCommand: CommandTemplates.execCommandTemplate,
@@ -236,7 +191,7 @@ export default function (pi: Pi.ExtensionAPI) {
       recordRuntimeEvent,
     });
   const dispatchNextQueuedTelegramTurn =
-    Queue.createTelegramQueueDispatchRuntime<Pi.ExtensionContext>({
+    Queue.createTelegramQueueDispatchRuntime({
       ...telegramQueueStore,
       isCompactionInProgress: lifecycle.isCompactionInProgress,
       hasActiveTurn: activeTurnRuntime.has,
@@ -250,10 +205,7 @@ export default function (pi: Pi.ExtensionAPI) {
       ...promptDispatchRuntime,
       sendUserMessage,
     }).dispatchNext;
-  const previewRuntime = Preview.createTelegramAssistantPreviewRuntime<
-    unknown,
-    Keyboard.TelegramInlineKeyboardMarkup
-  >({
+  const previewRuntime = Preview.createTelegramAssistantPreviewRuntime({
     getActiveTurn: activeTurnRuntime.get,
     isAssistantMessage: Replies.isAssistantAgentMessage,
     getMessageText: Replies.getAgentMessageText,
@@ -266,20 +218,17 @@ export default function (pi: Pi.ExtensionAPI) {
     ...replyTransport,
   });
   const { finalizeMarkdownPreview } =
-    OutboundHandlers.createTelegramOutboundTextPreviewRuntime({
+    Outbound.createTelegramOutboundTextPreviewRuntime({
       finalizeMarkdownPreview: previewRuntime.finalizeMarkdown,
       execCommand: CommandTemplates.execCommandTemplate,
       getHandlers: configStore.getOutboundHandlers,
       recordRuntimeEvent,
     });
 
-  // --- Bridge Setup ---
+  // --- Model And Menu Setup ---
 
   const modelSwitchController =
-    Model.createTelegramModelSwitchControllerRuntime<
-      Pi.ExtensionContext,
-      Model.ScopedTelegramModel<ActivePiModel>
-    >({
+    Model.createTelegramModelSwitchControllerRuntime({
       isIdle,
       getPendingModelSwitch: pendingModelSwitchStore.get,
       setPendingModelSwitch: pendingModelSwitchStore.set,
@@ -299,10 +248,7 @@ export default function (pi: Pi.ExtensionAPI) {
       getCommands,
       reservedCommandNames: Commands.TELEGRAM_RESERVED_COMMAND_NAMES,
     });
-  const menuActions = Menu.createTelegramMenuActionRuntimeWithStateBuilder<
-    ActivePiModel,
-    Pi.ExtensionContext
-  >({
+  const menuActions = Menu.createTelegramMenuActionRuntimeWithStateBuilder({
     runtime: modelMenuRuntime,
     createSettingsManager: Pi.createSettingsManager,
     getActiveModel: currentModelRuntime.get,
@@ -323,14 +269,14 @@ export default function (pi: Pi.ExtensionAPI) {
     sendInteractiveMessage,
     sectionRegistry,
 
-    // Used by the menu/status system to know whether the current turn is a voice reply
+    // Menu/status UI uses this to reflect whether the active Telegram turn expects voice delivery.
     isVoiceReplyActive: function () {
       const turn = activeTurnRuntime.get();
       return Voice.isVoiceTurn(turn);
     },
   });
 
-  // --- Queue Menu ---
+  // --- Queue And Settings Menus ---
 
   const getQueueMenuState = Menu.createTelegramModelMenuStateBuilder({
     runtime: modelMenuRuntime,
@@ -357,26 +303,14 @@ export default function (pi: Pi.ExtensionAPI) {
       editInteractiveMessage,
       sendInteractiveMessage,
       answerCallbackQuery,
-      isProactivePushEnabled,
-      getVoiceReplyMode,
-      isVoiceReplyModeConfigured,
-      getTimeInjectionMode,
-      setProactivePushEnabled,
-      setVoiceReplyMode,
-      setTimeInjectionMode,
+      ...configControls,
     },
     sectionRegistry,
   );
 
   // --- Polling ---
 
-  const inboundRouteRuntime = Routing.createTelegramInboundRouteRuntime<
-    Api.TelegramUpdate,
-    Api.TelegramMessage,
-    Api.TelegramCallbackQuery,
-    Pi.ExtensionContext,
-    ActivePiModel
-  >({
+  const inboundRouteRuntime = Routing.createTelegramInboundRouteRuntime({
     configStore,
     bridgeRuntime,
     activeTurnRuntime,
@@ -425,17 +359,14 @@ export default function (pi: Pi.ExtensionAPI) {
     compact,
     recordRuntimeEvent,
   });
-  const pollingRuntime = Polling.createTelegramPollingControllerRuntime<
-    Api.TelegramUpdate,
-    Pi.ExtensionContext
-  >({
+  const pollingRuntime = Polling.createTelegramPollingControllerRuntime({
     state: pollingControllerState,
     getConfig: configStore.get,
     hasBotToken: configStore.hasBotToken,
     deleteWebhook,
     getUpdates,
     persistConfig: configStore.persist,
-    handleUpdate: createTelegramExternalHandleUpdate({
+    handleUpdate: Updates.createTelegramUpdateHandle({
       defaultHandle: inboundRouteRuntime.handleUpdate,
     }),
     stopTypingLoop: typing.stop,
@@ -450,11 +381,7 @@ export default function (pi: Pi.ExtensionAPI) {
     updateStatus,
     recordRuntimeEvent,
   });
-  const queueSessionLifecycle = Queue.createTelegramSessionLifecycleRuntime<
-    Pi.ExtensionContext,
-    RuntimeTelegramQueueItem,
-    ActivePiModel
-  >({
+  const queueSessionLifecycle = Queue.createTelegramSessionLifecycleRuntime({
     getCurrentModel: getContextModel,
     loadConfig: configStore.load,
     setQueuedItems: telegramQueueStore.setQueuedItems,
@@ -487,131 +414,50 @@ export default function (pi: Pi.ExtensionAPI) {
 
   // --- Extension API Bindings ---
 
-  OutboundAttachments.registerTelegramOutboundAttachmentTool(pi, {
-    getActiveTurn: activeTurnRuntime.get,
-    recordRuntimeEvent,
-  });
-
-  Commands.registerTelegramBridgeCommands(pi, {
-    promptForConfig: Setup.createTelegramSetupPromptRuntime({
-      getConfig: configStore.get,
-      setConfig: configStore.set,
-      setupGuard: setup,
-      getMe: Api.fetchTelegramBotIdentity,
-      persistConfig: configStore.persist,
-      startPolling: lockedPollingRuntime.start,
-      updateStatus,
-      recordRuntimeEvent,
-    }),
+  Bindings.registerTelegramCommandsAndTools({
+    pi,
+    configStore,
+    setup,
+    activeTurnRuntime,
+    lockedPollingRuntime,
     getStatusLines,
-    reloadConfig: configStore.load,
-    hasBotToken: configStore.hasBotToken,
-    startPolling: lockedPollingRuntime.start,
-    stopPolling: lockedPollingRuntime.stop,
     updateStatus,
+    recordRuntimeEvent,
   });
 
   // --- Lifecycle Hooks ---
 
-  const agentEndResetter = Runtime.createTelegramAgentEndResetter({
+  Bindings.registerTelegramLifecycleRuntimeHooks({
+    pi,
+    sessionLifecycleRuntime: {
+      ...sessionLifecycleRuntime,
+      onModelSelect: currentModelRuntime.onModelSelect,
+    },
+    queueSessionLifecycle,
+    configStore,
     abort,
     typing,
-    clearActiveTurn: activeTurnRuntime.clear,
-    resetToolExecutions: lifecycle.resetActiveToolExecutions,
-    clearPendingModelSwitch: modelSwitchController.clearPendingSwitch,
-    clearDispatchPending: lifecycle.clearDispatchPending,
-  });
-  const queuedAttachmentSender =
-    OutboundAttachments.createTelegramQueuedOutboundAttachmentSender({
-      sendMultipart: callMultipart,
-      sendTextReply,
-      recordRuntimeEvent,
-    });
-  const outboundReplyPlanner =
-    OutboundHandlers.createTelegramOutboundReplyPlanner(buttonActionStore);
-  const outboundReplyArtifactSender =
-    OutboundHandlers.createTelegramOutboundReplyArtifactSender({
-      execCommand: CommandTemplates.execCommandTemplate,
-      sendMultipart: callMultipart,
-      sendTextReply,
-      sendChatAction,
-      sendRecordVoiceAction,
-      getHandlers: configStore.getOutboundHandlers,
-      recordRuntimeEvent,
-    });
-  const agentLifecycleHooks = Queue.createTelegramAgentLifecycleHooks<
-    Queue.PendingTelegramTurn,
-    Pi.ExtensionContext,
-    unknown,
-    Keyboard.TelegramInlineKeyboardMarkup
-  >({
-    setAbortHandler: Runtime.createTelegramContextAbortHandlerSetter(abort),
-    getQueuedItems: telegramQueueStore.getQueuedItems,
-    hasPendingDispatch: lifecycle.hasDispatchPending,
-    hasActiveTurn: activeTurnRuntime.has,
-    resetToolExecutions: lifecycle.resetActiveToolExecutions,
-    resetPendingModelSwitch: modelSwitchController.clearPendingSwitch,
-    setQueuedItems: telegramQueueStore.setQueuedItems,
-    clearDispatchPending: lifecycle.clearDispatchPending,
-    setActiveTurn: activeTurnRuntime.set,
-    createPreviewState: previewRuntime.resetState,
-    startTypingLoop: promptDispatchRuntime.startTypingLoop,
-    updateStatus,
-    getActiveTurn: activeTurnRuntime.get,
-    extractAssistant: Replies.extractLatestAssistantMessageText,
-    getPreserveQueuedTurnsAsHistory:
-      lifecycle.shouldPreserveQueuedTurnsAsHistory,
-    resetRuntimeState: agentEndResetter,
-    dispatchNextQueuedTelegramTurn,
-    requestDeferredDispatchNextQueuedTelegramTurn:
-      deferredQueueDispatchRuntime.request,
-    clearPreview: previewRuntime.clear,
-    setPreviewPendingText: previewRuntime.setPendingText,
-    finalizeMarkdownPreview,
+    lifecycle,
+    activeTurnRuntime,
+    telegramQueueStore,
+    modelSwitchController,
+    previewRuntime,
+    promptDispatchRuntime,
+    deferredQueueDispatchRuntime,
+    lockOwnershipGuard,
+    buttonActionStore,
+    callMultipart,
+    sendChatAction,
+    sendRecordVoiceAction,
     sendMarkdownReply,
     sendTextReply,
-    sendQueuedAttachments: queuedAttachmentSender,
+    dispatchNextQueuedTelegramTurn,
     answerGuestQuery,
     sendGuestReply,
-    planOutboundReply: outboundReplyPlanner,
-    sendOutboundReplyArtifacts: outboundReplyArtifactSender,
-    isCurrentOwner: lockOwnershipGuard.ownsContext,
-    getDefaultChatId: proactivePushChatIdGetter,
-    isProactivePushEnabled,
-    recordRuntimeEvent,
-    getActiveToolExecutions: lifecycle.getActiveToolExecutions,
-    setActiveToolExecutions: lifecycle.setActiveToolExecutions,
-    triggerPendingModelSwitchAbort: modelSwitchController.triggerPendingAbort,
-  });
-  // Wire transport-level reply dedup reset via lifecycle
-  Lifecycle.setResetTransportReplyDedup(Replies.resetTransportReplyDedup);
-  const agentStartWithDedupReset = Lifecycle.createAgentStartDedupHook(
-    agentLifecycleHooks.onAgentStart,
-  );
-  const compactionObserver = Lifecycle.createTelegramCompactionObserverRuntime({
-    setCompactionInProgress: lifecycle.setCompactionInProgress,
+    finalizeMarkdownPreview,
+    proactivePushChatIdGetter,
+    isProactivePushEnabled: configControls.isProactivePushEnabled,
     updateStatus,
-    requestDeferredDispatchNextQueuedTelegramTurn:
-      deferredQueueDispatchRuntime.request,
-    dispatchNextQueuedTelegramTurn,
     recordRuntimeEvent,
-  });
-  Lifecycle.registerTelegramLifecycleHooks(pi, {
-    ...sessionLifecycleRuntime,
-    ...agentLifecycleHooks,
-    async onSessionShutdown(event, ctx) {
-      compactionObserver.onSessionShutdown();
-      await sessionLifecycleRuntime.onSessionShutdown(event, ctx);
-    },
-    onSessionBeforeCompact: compactionObserver.onSessionBeforeCompact,
-    onSessionCompact: compactionObserver.onSessionCompact,
-    onAgentStart: agentStartWithDedupReset,
-    onBeforeAgentStart: Prompts.createTelegramProactiveBeforeAgentStartHook({
-      isProactivePushEnabled,
-      isCurrentOwner: lockOwnershipGuard.ownsContext,
-    }),
-    onModelSelect: currentModelRuntime.onModelSelect,
-    onMessageStart: previewRuntime.onMessageStart,
-    onMessageUpdate: previewRuntime.onMessageUpdate,
   });
 }

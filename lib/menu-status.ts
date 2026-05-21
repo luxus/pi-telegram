@@ -8,7 +8,7 @@ import { formatTelegramCommandEmojiPrefix } from "./commands.ts";
 import {
   getTelegramSectionMainMenuRows,
   type TelegramSectionRegistry,
-} from "./extension-sections.ts";
+} from "./sections.ts";
 import {
   formatStatusButtonLabel,
   type TelegramMenuMessageRuntimeDeps,

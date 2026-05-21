@@ -983,7 +983,7 @@ export function buildModelMenuReplyMarkup(
         callback_data: "model:scope:scoped",
       },
       {
-        text: state.scope === "all" ? "🟡 All" : "⚫️ All",
+        text: state.scope === "all" ? "🟣 All" : "⚫️ All",
         callback_data: "model:scope:all",
       },
     ]);
@@ -1050,7 +1050,7 @@ export function buildModelDetailMenuReplyMarkup(
           callback_data: "model:scope-enable",
         },
         {
-          text: scoped ? "⚫️ All" : "🟡 All",
+          text: scoped ? "⚫️ All" : "🟣 All",
           callback_data: "model:scope-disable",
         },
       ],
@@ -1091,7 +1091,7 @@ export function buildModelPageMenuReplyMarkup(
           return {
             text:
               pageIndex === menuPage.page
-                ? `🟢 ${pageIndex + 1}`
+                ? `🟣 ${pageIndex + 1}`
                 : String(pageIndex + 1),
             callback_data: `model:page:${pageIndex}`,
           };

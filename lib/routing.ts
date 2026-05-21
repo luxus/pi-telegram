@@ -7,12 +7,12 @@
 import { readFile } from "node:fs/promises";
 import * as Commands from "./commands.ts";
 import type { TelegramConfigStore } from "./config.ts";
-import type { TelegramSectionRegistry } from "./extension-sections.ts";
-import type { TelegramInboundHandlerRuntime } from "./inbound-handlers.ts";
+import type { TelegramSectionRegistry } from "./sections.ts";
+import type { TelegramInboundHandlerRuntime } from "./inbound.ts";
 import * as Media from "./media.ts";
 import * as Menu from "./menu.ts";
 import * as Model from "./model.ts";
-import * as OutboundHandlers from "./outbound-handlers.ts";
+import * as OutboundHandlers from "./outbound.ts";
 import * as PromptTemplates from "./prompt-templates.ts";
 import * as Queue from "./queue.ts";
 import type { TelegramBridgeRuntime } from "./runtime.ts";
@@ -138,6 +138,7 @@ export interface TelegramInboundRouteRuntimeDeps<
 }
 
 const TELEGRAM_OWNED_CALLBACK_PREFIXES = [
+  "compact:",
   "menu:",
   "model:",
   "queue:",
@@ -262,6 +263,45 @@ export function createTelegramInboundRouteRuntime<
       );
       if (handled) return;
     }
+    const handledByCompact =
+      await Commands.handleTelegramCompactConfirmationCallback(query, {
+        ctx,
+        answerCallbackQuery: deps.answerCallbackQuery,
+        editInteractiveMessage: deps.editInteractiveMessage ?? (async () => {}),
+        runCompact: async (compactCtx, chatId, replyToMessageId) => {
+          await Commands.handleTelegramCompactCommand({
+            isIdle: () => deps.isIdle(compactCtx),
+            hasPendingMessages: () => deps.hasPendingMessages(compactCtx),
+            hasActiveTelegramTurn: deps.activeTurnRuntime.has,
+            hasDispatchPending: deps.bridgeRuntime.lifecycle.hasDispatchPending,
+            hasQueuedTelegramItems: deps.telegramQueueStore.hasQueuedItems,
+            isCompactionInProgress:
+              deps.bridgeRuntime.lifecycle.isCompactionInProgress,
+            setCompactionInProgress:
+              deps.bridgeRuntime.lifecycle.setCompactionInProgress,
+            updateStatus: () => deps.updateStatus(compactCtx),
+            dispatchNextQueuedTelegramTurn: () =>
+              deps.dispatchNextQueuedTelegramTurn(compactCtx),
+            requestDeferredDispatchNextQueuedTelegramTurn:
+              deps.requestDeferredDispatchNextQueuedTelegramTurn
+                ? (dispatch) =>
+                    deps.requestDeferredDispatchNextQueuedTelegramTurn?.(() =>
+                      dispatch(),
+                    )
+                : undefined,
+            compact: (callbacks) => deps.compact(compactCtx, callbacks),
+            startTypingLoop: deps.startTypingLoop
+              ? () => deps.startTypingLoop?.(compactCtx, chatId)
+              : undefined,
+            stopTypingLoop: deps.stopTypingLoop,
+            sendTextReply: (text) =>
+              deps.sendTextReply(chatId, replyToMessageId, text).then(() => {}),
+            suppressStartNotice: true,
+            recordRuntimeEvent: deps.recordRuntimeEvent,
+          });
+        },
+      });
+    if (handledByCompact) return;
     const handledByQueue = await deps.queueMenuCallbackHandler(query, ctx);
     if (handledByQueue) return;
     const handledBySettings = await deps.settingsMenuCallbackHandler?.(
@@ -372,6 +412,7 @@ export function createTelegramInboundRouteRuntime<
     getPromptTemplateCommands,
     persistConfig: deps.configStore.persist,
     sendTextReply: deps.sendTextReply,
+    sendInteractiveMessage: deps.sendInteractiveMessage,
     recordRuntimeEvent: deps.recordRuntimeEvent,
   });
   const promptEnqueue = Queue.createTelegramPromptEnqueueController<

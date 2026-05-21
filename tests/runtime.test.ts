@@ -1227,6 +1227,7 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
       }
     | undefined;
   const secondUpdates = createRuntimeDeferredResponse();
+  const thirdUpdates = createRuntimeDeferredResponse();
   const { handlers, commands, pi } = createRuntimePiHarness({
     sendUserMessage: (content) => {
       recordRuntimeDispatchEvent(runtimeEvents, content);
@@ -1258,6 +1259,9 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
       if (getUpdatesCalls === 2) {
         return secondUpdates.promise;
       }
+      if (getUpdatesCalls === 3) {
+        return thirdUpdates.promise;
+      }
       throw new DOMException("stop", "AbortError");
     }
     if (method === "sendMessage") {
@@ -1267,7 +1271,17 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
       });
     }
     if (method === "sendChatAction") {
-      runtimeEvents.push(`typing:${String(body?.chat_id ?? "")}:${String(body?.action ?? "")}`);
+      runtimeEvents.push(
+        `typing:${String(body?.chat_id ?? "")}:${String(body?.action ?? "")}`,
+      );
+      return createRuntimeTelegramApiResponse(true);
+    }
+    if (method === "editMessageText") {
+      runtimeEvents.push(`edit:${String(body?.text ?? "")}`);
+      return createRuntimeTelegramApiResponse(true);
+    }
+    if (method === "answerCallbackQuery") {
+      runtimeEvents.push(`answer:${String(body?.callback_query_id ?? "")}`);
       return createRuntimeTelegramApiResponse(true);
     }
     throw new Error(`Unexpected Telegram API method: ${method}`);
@@ -1290,21 +1304,42 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
     });
     await handlers.get("session_start")?.({}, ctx);
     await commands.get("telegram-connect")?.handler("", ctx);
-    await waitForCondition(() => runtimeEvents.includes("compact:start"));
     await waitForCondition(() =>
-      runtimeEvents.includes("send:Compaction started.") &&
-      runtimeEvents.includes("typing:99:typing"),
-    );
-    assert.equal(
-      runtimeEvents.indexOf("send:Compaction started.") <
-        runtimeEvents.indexOf("typing:99:typing"),
-      true,
+      runtimeEvents.includes("send:<b>Compact session?</b>"),
     );
     secondUpdates.resolve(
       createRuntimeTelegramApiResponse([
         {
           _: "other",
           update_id: 2,
+          callback_query: {
+            id: "confirm-compact",
+            from: { id: 77, is_bot: false, first_name: "Test" },
+            message: {
+              message_id: 101,
+              chat: { id: 99, type: "private" },
+            },
+            data: "compact:confirm",
+          },
+        },
+      ]),
+    );
+    await waitForCondition(() => runtimeEvents.includes("compact:start"));
+    await waitForCondition(
+      () =>
+        runtimeEvents.includes("edit:Compaction started.") &&
+        runtimeEvents.includes("typing:99:typing"),
+    );
+    assert.equal(
+      runtimeEvents.indexOf("edit:Compaction started.") <
+        runtimeEvents.indexOf("typing:99:typing"),
+      true,
+    );
+    thirdUpdates.resolve(
+      createRuntimeTelegramApiResponse([
+        {
+          _: "other",
+          update_id: 3,
           message: {
             message_id: 31,
             chat: { id: 99, type: "private" },
@@ -1353,7 +1388,8 @@ test("Extension runtime blocks queued dispatch during observed auto-compaction",
   const restoreFetch = setRuntimeTestFetch(async (input, init) => {
     const method = getRuntimeTelegramApiMethod(input);
     const body = parseJsonRequestBody(init);
-    if (method === "deleteWebhook") return createRuntimeTelegramApiResponse(true);
+    if (method === "deleteWebhook")
+      return createRuntimeTelegramApiResponse(true);
     if (method === "getUpdates") {
       getUpdatesCalls += 1;
       if (getUpdatesCalls === 1) {
@@ -1375,9 +1411,15 @@ test("Extension runtime blocks queued dispatch during observed auto-compaction",
     }
     if (method === "sendMessage") {
       runtimeEvents.push(`send:${String(body?.text ?? "")}`);
-      return createRuntimeTelegramApiResponse({ message_id: 100 + runtimeEvents.length });
+      return createRuntimeTelegramApiResponse({
+        message_id: 100 + runtimeEvents.length,
+      });
     }
-    if (method === "sendMessageDraft" || method === "sendChatAction" || method === "editMessageText") {
+    if (
+      method === "sendMessageDraft" ||
+      method === "sendChatAction" ||
+      method === "editMessageText"
+    ) {
       return createRuntimeTelegramApiResponse(true);
     }
     throw new Error(`Unexpected Telegram API method: ${method}`);

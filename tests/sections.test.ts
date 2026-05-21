@@ -15,7 +15,7 @@ import {
   type TelegramSectionRegistration,
   type TelegramSectionCallbackHandlerDeps,
   type TelegramSectionView,
-} from "../lib/extension-sections.ts";
+} from "../lib/sections.ts";
 
 function noop(): void {}
 function noopAsync(): Promise<void> {
@@ -71,6 +71,15 @@ test("Registry assigns unique tokens to each section", () => {
   assert.notEqual(sections[0].token, sections[1].token);
   u1();
   u2();
+});
+
+test("Registry rejects duplicate section ids", () => {
+  const registry = createTelegramExtensionSectionRegistry();
+  registry.register(stubSection("@test/a", "A"));
+  assert.throws(
+    () => registry.register(stubSection("@test/a", "A2")),
+    /already registered/,
+  );
 });
 
 test("Registry sorts sections by order then id", () => {
@@ -239,6 +248,30 @@ test("handleTelegramSectionOpen renders section view with back row", async () =>
   assert.equal(markup.inline_keyboard[0][0].callback_data, "menu:back");
   // Second row is the section's own button
   assert.equal(markup.inline_keyboard[1][0].text, "Do");
+});
+
+test("section callbackData rejects payloads above Telegram's byte limit", async () => {
+  const registry = createTelegramExtensionSectionRegistry();
+  registry.register(
+    stubSection("@test/a", "A", {
+      render: async (ctx) => {
+        assert.throws(
+          () => ctx.callbackData("act", "x".repeat(80)),
+          /64 bytes/,
+        );
+        return { text: "ok" };
+      },
+    }),
+  );
+  const handled = await handleTelegramSectionOpen(
+    registry,
+    "0",
+    123,
+    456,
+    "cb-id",
+    stubDeps(),
+  );
+  assert.equal(handled, true);
 });
 
 test("handleTelegramSectionOpen preserves existing back button", async () => {
@@ -453,7 +486,6 @@ test("handleTelegramSectionSettingsOpen handles section without settings gracefu
 
 // --- Integration: menu-status rows ---
 
-
 test("buildStatusReplyMarkup includes extension section rows before Settings", async () => {
   // Import dynamically to avoid circular deps in test
   const { buildStatusReplyMarkup } = await import("../lib/menu-status.ts");
@@ -497,7 +529,12 @@ test("buildTelegramSettingsMenuReplyMarkup injects extension settings rows", asy
     }),
   );
 
-  const markup = buildTelegramSettingsMenuReplyMarkup(false, "manual", "hidden", registry);
+  const markup = buildTelegramSettingsMenuReplyMarkup(
+    false,
+    "manual",
+    "hidden",
+    registry,
+  );
   const rows = markup.inline_keyboard;
 
   // First row: Main menu back

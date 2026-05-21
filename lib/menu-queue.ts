@@ -162,7 +162,7 @@ function buildTelegramQueueItemSubmenuReplyMarkup(
           callback_data: `queue:prio-set:${chatId}:${replyToMessageId}:priority`,
         },
         {
-          text: isPriority ? "⚫️ Normal" : "🟡 Normal",
+          text: isPriority ? "⚫️ Normal" : "🟣 Normal",
           callback_data: `queue:prio-set:${chatId}:${replyToMessageId}:normal`,
         },
       ],

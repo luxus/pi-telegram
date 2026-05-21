@@ -1,5 +1,5 @@
 /**
- * Regression tests for the Telegram polling domain
+ * Regression tests for the Telegram polling runtime domain
  * Covers polling request helpers, stop conditions, and the long-poll loop runtime in one suite
  */
 

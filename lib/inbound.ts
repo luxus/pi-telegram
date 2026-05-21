@@ -216,9 +216,7 @@ function matchesWildcard(pattern: string, value: string | undefined): boolean {
   return new RegExp(`^${escaped}$`).test(normalizedValue);
 }
 
-function handlerHasSelectors(
-  handler: TelegramInboundHandlerConfig,
-): boolean {
+function handlerHasSelectors(handler: TelegramInboundHandlerConfig): boolean {
   return (
     normalizeStringList(handler.match).length > 0 ||
     normalizeStringList(handler.mime).length > 0 ||
@@ -642,7 +640,10 @@ async function readBuiltInTelegramTextAttachment(
   if (!isTelegramTextMimeType(file.mimeType)) return undefined;
   const content = await readFile(file.path, "utf8");
   const normalized = content.trim();
-  if (!normalized || Buffer.byteLength(normalized, "utf8") > BUILT_IN_TEXT_ATTACHMENT_MAX_BYTES) {
+  if (
+    !normalized ||
+    Buffer.byteLength(normalized, "utf8") > BUILT_IN_TEXT_ATTACHMENT_MAX_BYTES
+  ) {
     return undefined;
   }
   const name = file.fileName || basename(file.path);

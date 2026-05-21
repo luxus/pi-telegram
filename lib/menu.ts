@@ -10,7 +10,7 @@ import {
   handleTelegramSectionSettingsOpen,
   parseTelegramSectionCallback,
   type TelegramSectionRegistry,
-} from "./extension-sections.ts";
+} from "./sections.ts";
 import {
   createTelegramModelMenuStateBuilder,
   handleTelegramModelMenuCallbackAction,

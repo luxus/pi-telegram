@@ -85,7 +85,7 @@ What it feels like:
 Use these inside the Telegram DM with your bot. The main entrypoint is `/start`: it opens the operator menu and exposes many of the important agent controls that normally live in the CLI, adapted for Telegram.
 
 - **`/start`**: Pair the first Telegram user when needed, register bot commands, and open the inline application menu with command help, prompt-template commands, status rows, model controls, thinking controls, settings, and queue controls.
-- **`/compact`**: Start session compaction when the session is idle; Telegram shows the native typing indicator while compaction is running.
+- **`/compact`**: Ask for inline confirmation, then start session compaction when the session is idle; Telegram shows the native typing indicator while manual or automatic compaction is running.
 - **`/next`**: Dispatch the next queued turn, aborting π first if needed.
 - **`/continue`**: Enqueue a priority `continue` prompt.
 - **`/abort`**: Abort the active run without touching the queue.
@@ -199,11 +199,11 @@ If `telegram.json` explicitly sets a valid `voice.replyMode`, prompts include co
 
 In `mirror` and `always` modes, the bridge transparently intercepts agent text responses and routes them through the outbound voice pipeline. Configured `outboundHandlers` with `type: "voice"` run first in their configured order; zero-config registered synthesis providers run after them as progressive fallbacks. If several synthesis providers are installed, they are tried in registration order and the first one that returns a valid `.ogg`/`.opus` artifact handles the reply; `undefined`, errors, or invalid output fall through to the next provider. If every voice generator fails, the bridge falls back to sending the text reply instead.
 
-Voice synthesis provider extensions (e.g. `pi-xai-voice`) register a TTS backend at runtime:
+Voice synthesis provider extensions (e.g. `pi-xai-voice`) register a TTS backend at runtime through public API domain subpaths:
 
 ```typescript
-import { registerTelegramVoiceSynthesisProvider } from "@llblab/pi-telegram/lib/voice.ts";
-import { recordTelegramRuntimeEvent } from "@llblab/pi-telegram/lib/outbound-handlers.ts";
+import { registerTelegramVoiceSynthesisProvider } from "@llblab/pi-telegram/voice";
+import { recordTelegramRuntimeEvent } from "@llblab/pi-telegram/outbound";
 
 // Return path only (backward compatible)
 const dispose = registerTelegramVoiceSynthesisProvider(
@@ -211,6 +211,7 @@ const dispose = registerTelegramVoiceSynthesisProvider(
     const path = await myTTS(text, { language: lang });
     return path; // must be .ogg or .opus
   },
+  { id: "pi-xai-voice/tts" },
 );
 
 // Return path + transcript caption
@@ -220,6 +221,7 @@ const dispose2 = registerTelegramVoiceSynthesisProvider(
     const path = await myTTS(rewritten, { language: lang });
     return { audioPath: path, transcriptText: text };
   },
+  { id: "pi-xai-voice/tts-with-transcript" },
 );
 
 // Surface diagnostics in /telegram-status
@@ -229,17 +231,17 @@ recordTelegramRuntimeEvent("xai-voice", new Error("TTS complete"), {
 });
 ```
 
-Multiple synthesis providers can be registered; the bridge tries configured `type: "voice"` handlers first, then programmatic handlers, then registered synthesis providers in registration order until one succeeds. Providers and handlers receive the text to synthesize and optional `lang`/`rate` hints from `<!-- telegram_voice -->` markup or the automatic interception path. Voice delivery must produce `.ogg` or `.opus` files.
+Multiple synthesis providers can be registered; stable provider registrations pass a durable `id`, while omitted ids remain a compatibility path for older providers. The bridge tries configured `type: "voice"` handlers first, then programmatic handlers, then registered synthesis providers in registration order until one succeeds. Providers and handlers receive the text to synthesize and optional `lang`/`rate` hints from `<!-- telegram_voice -->` markup or the automatic interception path. Voice delivery must produce `.ogg` or `.opus` files.
 
 ### Extension interop
 
-Unknown inline-button callbacks are forwarded to π as `[callback] <data>` when they do not belong to pi-telegram, so other extensions can namespace and handle Telegram buttons without polling the bot themselves. Layered extensions that need synchronous update handling can register a runtime interceptor on the shared update registry.
+Unknown inline-button callbacks are forwarded to π as `[callback] <data>` when they do not belong to pi-telegram, so other extensions can namespace and handle Telegram buttons without polling the bot themselves. Layered extensions that need synchronous update handling can register a handler on the shared update registry.
 
 ### Extension Sections
 
-Ordinary pi extensions can register structured UI sections that appear in the main Telegram menu and Settings submenu without owning a second poller. Each section gets a narrow typed context with `edit`, `open`, `enqueuePrompt`, `answerCallback`, and `callbackData()` — enough to build interactive Telegram-native surfaces while `pi-telegram` owns transport, callback routing, navigation hierarchy, and diagnostics.
+Ordinary pi extensions can register structured UI sections that appear in the main Telegram menu and Settings submenu without owning a second polling loop. Each section gets a narrow typed context with `edit`, `open`, `enqueuePrompt`, `answerCallback`, and `callbackData()` — enough to build interactive Telegram-native surfaces while `pi-telegram` owns transport, callback routing, navigation hierarchy, and diagnostics.
 
-Import `registerTelegramSection()` from `@llblab/pi-telegram/lib/extension-sections.ts` and return a disposer on shutdown. Sections can send interactive messages directly into the chat via `ctx.open()` — confirmation dialogs, approve/deny gates, and multi-step forms live outside the menu hierarchy while callbacks route through the same typed handler. See [`@llblab/pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) for a working reference and the [Extension Sections Standard](./docs/extension-sections.md) for the full contract.
+Import `registerTelegramSection()` from `@llblab/pi-telegram/sections` and return a disposer on shutdown. Sections can send interactive messages directly into the chat via `ctx.open()` — confirmation dialogs, approve/deny gates, and multi-step forms live outside the menu hierarchy while callbacks route through the same typed handler. See [`@llblab/pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) for a working reference and the [Extension Sections Standard](./docs/sections.md) for the full contract.
 
 ### Proactive push
 
@@ -267,14 +269,16 @@ Modes are `hidden`, `always`, and `interval`. `hidden` means no time line is add
 - [Changelog](./CHANGELOG.md): completed delivery history.
 - [Documentation Index](./docs/README.md): technical docs hub.
 - [Architecture](./docs/architecture.md): runtime and subsystem overview.
-- [Inbound Handlers](./docs/inbound-handlers.md): Telegram → π preprocessing.
-- [Outbound Handlers](./docs/outbound-handlers.md): final text, voice, and artifact pipelines.
-- [Voice Integration](./docs/voice.md): voice reply policies, transparent interception, and provider extension API.
+- [Public API](./docs/public-api.md): stable commands, config, package entrypoints, assistant markup, and extension APIs.
+- [Inbound Handlers](./docs/inbound.md): Telegram → π preprocessing.
+- [Outbound Handlers](./docs/outbound.md): final text, voice, and artifact pipelines.
 - [Command Templates](./docs/command-templates.md): portable command-template contract.
 - [Callback Namespaces](./docs/callback-namespaces.md): callback interop for layered extensions.
-- [External Handlers](./docs/external-handlers.md): shared update interception.
-- [Extension Sections](./docs/extension-sections.md): Telegram extension sections platform for loading extensions that register UI surfaces.
+- [Updates](./docs/updates.md): shared update interception.
+- [Extension Sections](./docs/sections.md): Telegram extension sections platform for loading extensions that register UI surfaces.
+- [Voice Integration](./docs/voice.md): voice reply policies, transparent interception, and provider extension API.
 - [Locks](./docs/locks.md): singleton polling ownership.
+- [UI Style](./docs/ui-style.md): inline button, toggle, tab, option-list, card, and dialog style guide.
 
 ## Notes
 
@@ -292,7 +296,7 @@ Third-party extensions that integrate with `pi-telegram`:
 pi install npm:pi-telegram-tool-status
 ```
 
-- [`pi-xai-voice`](https://github.com/luxus/pi-xai-voice) — xAI voice companion for Telegram voice replies through the `pi-telegram` voice provider API.
+- [`pi-xai-voice`](https://github.com/luxus/pi-xai-voice) — Companion extension that adds xAI-powered TTS for voice reply policies and `telegram_voice` markup.
 
 ```bash
 pi install npm:pi-xai-voice

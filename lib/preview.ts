@@ -22,7 +22,7 @@ import {
 } from "./rendering.ts";
 
 import { buildTelegramReplyParameters } from "./replies.ts";
-import { stripTelegramCommentMarkupForPreview } from "./outbound-handlers.ts";
+import { stripTelegramCommentMarkupForPreview } from "./outbound.ts";
 import { shouldSuppressPreviewForVoice } from "./voice.ts";
 
 const TELEGRAM_PREVIEW_THROTTLE_MS = 750;

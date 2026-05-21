@@ -12,13 +12,14 @@
  *
  * Separation of concerns:
  * - All decision logic and domain rules live here.
- * - Actual delivery (sending the audio via Telegram) stays in outbound-handlers.ts.
+ * - Actual delivery (sending the audio via Telegram) stays in outbound.ts.
  *
  * Keeps voice policy, turn tagging, prompt contributions, and markup helpers
  * out of the queue, preview, turn-building, and delivery domains.
  */
 
-const VOICE_SYNTHESIS_PROVIDER_REGISTRY_KEY = "__piTelegramVoiceSynthesisProviders__";
+const VOICE_SYNTHESIS_PROVIDER_REGISTRY_KEY =
+  "__piTelegramVoiceSynthesisProviders__";
 const VOICE_TRANSCRIPTION_PROVIDER_REGISTRY_KEY =
   "__piTelegramVoiceTranscriptionProviders__";
 
@@ -81,11 +82,20 @@ function getOrCreateVoiceSynthesisProviderRegistry(): Map<
   if (existing instanceof Map)
     return existing as Map<string, TelegramVoiceSynthesisProvider>;
   const registry = new Map<string, TelegramVoiceSynthesisProvider>();
-  (globalThis as Record<string, unknown>)[VOICE_SYNTHESIS_PROVIDER_REGISTRY_KEY] =
-    registry;
+  (globalThis as Record<string, unknown>)[
+    VOICE_SYNTHESIS_PROVIDER_REGISTRY_KEY
+  ] = registry;
   return registry;
 }
 
+/**
+ * Register a high-level Telegram voice synthesis provider.
+ *
+ * Stable public API callers must pass a stable `options.id` so diagnostics,
+ * replacement, and cleanup can identify the provider. Omitted ids remain a
+ * compatibility path for pre-matrix callers and receive generated session-local
+ * ids.
+ */
 export function registerTelegramVoiceSynthesisProvider(
   provider:
     | TelegramVoiceSynthesisProvider
@@ -103,9 +113,11 @@ export function registerTelegramVoiceSynthesisProvider(
           (text: string, options?: { lang?: string; rate?: string }) =>
             provider(text, options),
           {
-            getVoicePolicy: (provider as TelegramVoiceSynthesisProvider).getVoicePolicy,
-            getVoicePromptContribution: (provider as TelegramVoiceSynthesisProvider)
-              .getVoicePromptContribution,
+            getVoicePolicy: (provider as TelegramVoiceSynthesisProvider)
+              .getVoicePolicy,
+            getVoicePromptContribution: (
+              provider as TelegramVoiceSynthesisProvider
+            ).getVoicePromptContribution,
           },
         ) as TelegramVoiceSynthesisProvider)
       : provider;
@@ -144,6 +156,13 @@ function getOrCreateVoiceTranscriptionProviderRegistry(): Map<
   return registry;
 }
 
+/**
+ * Register a high-level Telegram voice transcription provider.
+ *
+ * Stable public API callers must pass a stable `options.id`. Omitted ids remain
+ * a compatibility path for pre-matrix callers and receive generated
+ * session-local ids.
+ */
 export function registerTelegramVoiceTranscriptionProvider(
   provider: TelegramVoiceTranscriptionProvider,
   options?: { id?: string },
@@ -182,9 +201,9 @@ export const TELEGRAM_VOICE_REPLY_MODES = [
  * Pi-telegram owns reply-mode policy through telegram.json. If
  * config.voice.replyMode is missing or invalid, the safe default is manual.
  */
-export function getTelegramVoiceReplyMode(
-  config?: { voice?: { replyMode?: string } },
-): TelegramVoiceReplyMode {
+export function getTelegramVoiceReplyMode(config?: {
+  voice?: { replyMode?: string };
+}): TelegramVoiceReplyMode {
   const configMode = config?.voice?.replyMode;
   if (
     configMode &&
@@ -202,9 +221,9 @@ export function getTelegramVoiceReplyMode(
  * Reads from `config.voice.sendTranscript`.
  * Default: false (no transcript text sent at all).
  */
-export function getTelegramVoiceSendTranscript(
-  config?: { voice?: { sendTranscript?: boolean } },
-): boolean {
+export function getTelegramVoiceSendTranscript(config?: {
+  voice?: { sendTranscript?: boolean };
+}): boolean {
   return !!config?.voice?.sendTranscript;
 }
 
@@ -292,4 +311,4 @@ export {
   stripTelegramCommentMarkupForDelivery,
   stripTelegramVoiceMarkupForPreview,
   normalizeMarkdownAfterVoiceExtraction,
-} from "./outbound-handlers.ts";
+} from "./outbound.ts";

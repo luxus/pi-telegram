@@ -410,7 +410,7 @@ test("Menu helpers build model page selector markup and payloads", () => {
   );
   assert.deepEqual(
     markup.inline_keyboard[1]?.map((button) => button.text),
-    ["1", "🟢 2", "3", "4"],
+    ["1", "🟣 2", "3", "4"],
   );
   assert.deepEqual(
     markup.inline_keyboard[2]?.map((button) => button.text),
@@ -1728,7 +1728,7 @@ test("Queue menu keeps main-menu navigation on top", async () => {
   ]);
   assert.deepEqual(markups[3]?.inline_keyboard[1], [
     { text: "⚫️ Priority", callback_data: "queue:prio-set:1:10:priority" },
-    { text: "🟡 Normal", callback_data: "queue:prio-set:1:10:normal" },
+    { text: "🟣 Normal", callback_data: "queue:prio-set:1:10:normal" },
   ]);
   assert.deepEqual(markups[4]?.inline_keyboard, [
     [{ text: "⬆️ Main menu", callback_data: "menu:back" }],
@@ -1984,9 +1984,18 @@ test("Queue refresh rotates empty queue title", async () => {
     "<b>🫙 Still nothing in queue.</b>",
     "<b>🍃 Queue remains empty.</b>",
   ]);
-  assert.equal(markups[0]?.inline_keyboard[1]?.[0]?.callback_data, "queue:refresh:1");
-  assert.equal(markups[1]?.inline_keyboard[1]?.[0]?.callback_data, "queue:refresh:2");
-  assert.equal(markups[2]?.inline_keyboard[1]?.[0]?.callback_data, "queue:refresh:3");
+  assert.equal(
+    markups[0]?.inline_keyboard[1]?.[0]?.callback_data,
+    "queue:refresh:1",
+  );
+  assert.equal(
+    markups[1]?.inline_keyboard[1]?.[0]?.callback_data,
+    "queue:refresh:2",
+  );
+  assert.equal(
+    markups[2]?.inline_keyboard[1]?.[0]?.callback_data,
+    "queue:refresh:3",
+  );
 });
 
 test("Menu helpers build model, thinking, and status UI payloads", () => {
@@ -2082,12 +2091,24 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
 
 test("Settings menu labels proactive push with state text", () => {
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(true, "manual", "hidden").inline_keyboard[3],
-    [{ text: "📌 Proactive push: on", callback_data: "settings:open:proactive" }],
+    buildTelegramSettingsMenuReplyMarkup(true, "manual", "hidden")
+      .inline_keyboard[3],
+    [
+      {
+        text: "📌 Proactive push: On",
+        callback_data: "settings:open:proactive",
+      },
+    ],
   );
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, "manual", "hidden").inline_keyboard[3],
-    [{ text: "📌 Proactive push: off", callback_data: "settings:open:proactive" }],
+    buildTelegramSettingsMenuReplyMarkup(false, "manual", "hidden")
+      .inline_keyboard[3],
+    [
+      {
+        text: "📌 Proactive push: Off",
+        callback_data: "settings:open:proactive",
+      },
+    ],
   );
 });
 
@@ -2095,20 +2116,40 @@ test("Settings menu exposes time injection mode selection", () => {
   assert.deepEqual(
     buildTelegramSettingsMenuReplyMarkup(false, "manual", "hidden")
       .inline_keyboard[2],
-    [{ text: "🕒 Time injection: hidden", callback_data: "settings:open:time-injection" }],
+    [
+      {
+        text: "🕒 Time injection: Hidden",
+        callback_data: "settings:open:time-injection",
+      },
+    ],
   );
   assert.deepEqual(
     buildTelegramSettingsMenuReplyMarkup(false, "manual", "interval")
       .inline_keyboard[2],
-    [{ text: "🕒 Time injection: interval", callback_data: "settings:open:time-injection" }],
+    [
+      {
+        text: "🕒 Time injection: Interval",
+        callback_data: "settings:open:time-injection",
+      },
+    ],
   );
   assert.deepEqual(
     buildTimeInjectionModeSettingsReplyMarkup("hidden").inline_keyboard[1],
-    [{ text: "🟢 hidden", callback_data: "settings:set:time-injection:hidden" }],
+    [
+      {
+        text: "🟢 hidden",
+        callback_data: "settings:set:time-injection:hidden",
+      },
+    ],
   );
   assert.deepEqual(
     buildTimeInjectionModeSettingsReplyMarkup("always").inline_keyboard[2],
-    [{ text: "🟢 always", callback_data: "settings:set:time-injection:always" }],
+    [
+      {
+        text: "🟢 always",
+        callback_data: "settings:set:time-injection:always",
+      },
+    ],
   );
 });
 
@@ -2122,13 +2163,29 @@ test("Settings menu marks voice mode selection with model-style dot", () => {
     [{ text: "🟢 mirror", callback_data: "settings:set:voice-reply:mirror" }],
   );
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, "manual", "hidden", undefined, false)
-      .inline_keyboard[1],
-    [{ text: "👄 Voice reply: hidden", callback_data: "settings:open:voice-reply" }],
+    buildTelegramSettingsMenuReplyMarkup(
+      false,
+      "manual",
+      "hidden",
+      undefined,
+      false,
+    ).inline_keyboard[1],
+    [
+      {
+        text: "👄 Voice reply: Hidden",
+        callback_data: "settings:open:voice-reply",
+      },
+    ],
   );
   assert.deepEqual(
-    buildTelegramSettingsMenuReplyMarkup(false, "always", "hidden").inline_keyboard[1],
-    [{ text: "👄 Voice reply: always", callback_data: "settings:open:voice-reply" }],
+    buildTelegramSettingsMenuReplyMarkup(false, "always", "hidden")
+      .inline_keyboard[1],
+    [
+      {
+        text: "👄 Voice reply: Always",
+        callback_data: "settings:open:voice-reply",
+      },
+    ],
   );
 });
 
@@ -2166,11 +2223,14 @@ test("Settings menu persists voice mode even when the menu message state expired
   });
 
   assert.equal(
-    await runtime.handleCallbackQuery({
-      id: "cb1",
-      data: "settings:set:voice-reply:manual",
-      message: { message_id: 99 },
-    }, {}),
+    await runtime.handleCallbackQuery(
+      {
+        id: "cb1",
+        data: "settings:set:voice-reply:manual",
+        message: { message_id: 99 },
+      },
+      {},
+    ),
     true,
   );
 
@@ -2197,15 +2257,15 @@ test("Settings menu marks one-line on/off checkbox controls symmetrically", () =
   assert.deepEqual(
     buildProactivePushSettingsReplyMarkup(true).inline_keyboard[1],
     [
-      { text: "🟢 on", callback_data: "settings:set:proactive:on" },
-      { text: "⚫️ off", callback_data: "settings:set:proactive:off" },
+      { text: "🟢 On", callback_data: "settings:set:proactive:on" },
+      { text: "⚫️ Off", callback_data: "settings:set:proactive:off" },
     ],
   );
   assert.deepEqual(
     buildProactivePushSettingsReplyMarkup(false).inline_keyboard[1],
     [
-      { text: "⚫️ on", callback_data: "settings:set:proactive:on" },
-      { text: "🟡 off", callback_data: "settings:set:proactive:off" },
+      { text: "⚫️ On", callback_data: "settings:set:proactive:on" },
+      { text: "🟡 Off", callback_data: "settings:set:proactive:off" },
     ],
   );
 });

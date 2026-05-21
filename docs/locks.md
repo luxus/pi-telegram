@@ -58,13 +58,13 @@ During a user-initiated start/connect event, an extension should:
 1. Read its lock entry
 2. If `pid` is stale, replace the entry
 3. If `pid` and `cwd` match the current pi instance, refresh or keep the entry
-4. If a live external owner exists, ask interactively whether to move singleton ownership here
+4. If a live polling owner exists, ask interactively whether to move singleton ownership here
 
 ## Acquisition timing
 
 Lock writes must be caused by an explicit user-initiated runtime event, such as a start/connect command or a confirmed takeover prompt.
 
-Extension initialization and session-start hooks may read `locks.json`, update local status, install ownership watchers, and resume local work when the existing lock already points at the current `pid`/`cwd`. After a full process restart, a session-start hook may replace a stale lock from the same `cwd` to restore explicitly requested ownership. They must not create ownership from an inactive lock, take over a live external owner, or replace a stale lock from another directory by themselves. Such locks should stay visible as state until the user runs the start/connect command. Session replacement should suspend local runtime work and ownership watchers without releasing the lock, so the next session in the same `pid`/`cwd` can resume from explicit ownership.
+Extension initialization and session-start hooks may read `locks.json`, update local status, install ownership watchers, and resume local work when the existing lock already points at the current `pid`/`cwd`. After a full process restart, a session-start hook may replace a stale lock from the same `cwd` to restore explicitly requested ownership. They must not create ownership from an inactive lock, take over a live polling owner, or replace a stale lock from another directory by themselves. Such locks should stay visible as state until the user runs the start/connect command. Session replacement should suspend local runtime work and ownership watchers without releasing the lock, so the next session in the same `pid`/`cwd` can resume from explicit ownership.
 
 ## Optional fields
 
@@ -105,7 +105,7 @@ Extensions may prefix those states with their own compact name, such as `wakeup 
 Start/connect commands should make singleton moves easy:
 
 1. If no live owner exists, take ownership without an extra prompt
-2. If a live external owner exists, ask whether to move singleton ownership to this pi instance
+2. If a live polling owner exists, ask whether to move singleton ownership to this pi instance
 3. On confirmation, write the current `{ "pid": ..., "cwd": ... }` to this extension's key in `locks.json`
 4. The previous owner must notice that `locks.json` no longer points at its own `pid`/`cwd` and stop local runtime work without deleting the new lock
 

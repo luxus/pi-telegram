@@ -8,6 +8,8 @@ import test from "node:test";
 
 import {
   appendTelegramLifecycleHooks,
+  createTelegramCompactionObserverRuntime,
+  createTelegramMessageActivityTypingHooks,
   registerTelegramLifecycleHooks,
 } from "../lib/lifecycle.ts";
 import type { ExtensionAPI, ExtensionContext } from "../lib/pi.ts";
@@ -68,6 +70,139 @@ test("Lifecycle helpers compose session hooks in order", async () => {
     "base-shutdown",
     "extra-shutdown",
   ]);
+});
+
+test("Compaction observer mirrors active work with native typing", () => {
+  const events: string[] = [];
+  const timers = new Map<number, () => void>();
+  let nextTimer = 0;
+  const observer = createTelegramCompactionObserverRuntime({
+    setCompactionInProgress(inProgress) {
+      events.push(`compact:${String(inProgress)}`);
+    },
+    updateStatus() {
+      events.push("status");
+    },
+    startTypingLoop() {
+      events.push("typing:start");
+    },
+    stopTypingLoop() {
+      events.push("typing:stop");
+    },
+    requestDeferredDispatchNextQueuedTelegramTurn(dispatch) {
+      events.push("dispatch:request");
+      dispatch(createLifecycleContext());
+    },
+    dispatchNextQueuedTelegramTurn() {
+      events.push("dispatch");
+    },
+    recordRuntimeEvent(category, error) {
+      events.push(`${category}:${(error as Error).message}`);
+    },
+    timeoutMs: 10,
+    setTimer(callback) {
+      nextTimer += 1;
+      timers.set(nextTimer, callback);
+      return nextTimer;
+    },
+    clearTimer(timer) {
+      timers.delete(timer as number);
+    },
+  });
+  observer.onSessionBeforeCompact({} as never, createLifecycleContext());
+  observer.onSessionCompact({} as never, createLifecycleContext());
+  assert.deepEqual(events, [
+    "compact:true",
+    "typing:start",
+    "status",
+    "compact:false",
+    "typing:stop",
+    "status",
+    "dispatch:request",
+    "dispatch",
+  ]);
+});
+
+test("Compaction observer stops typing on timeout and shutdown", () => {
+  const events: string[] = [];
+  let timerCallback: (() => void) | undefined;
+  const observer = createTelegramCompactionObserverRuntime({
+    setCompactionInProgress(inProgress) {
+      events.push(`compact:${String(inProgress)}`);
+    },
+    updateStatus() {
+      events.push("status");
+    },
+    startTypingLoop() {
+      events.push("typing:start");
+    },
+    stopTypingLoop() {
+      events.push("typing:stop");
+    },
+    requestDeferredDispatchNextQueuedTelegramTurn() {
+      events.push("dispatch:request");
+    },
+    dispatchNextQueuedTelegramTurn() {
+      events.push("dispatch");
+    },
+    recordRuntimeEvent(category, error) {
+      events.push(`${category}:${(error as Error).message}`);
+    },
+    setTimer(callback) {
+      timerCallback = callback;
+      return 1;
+    },
+    clearTimer() {
+      timerCallback = undefined;
+    },
+  });
+  observer.onSessionBeforeCompact({} as never, createLifecycleContext());
+  timerCallback?.();
+  observer.onSessionBeforeCompact({} as never, createLifecycleContext());
+  observer.onSessionShutdown();
+  assert.deepEqual(events, [
+    "compact:true",
+    "typing:start",
+    "status",
+    "compact:false",
+    "typing:stop",
+    "status",
+    "compact:Compaction observer timed out",
+    "dispatch:request",
+    "compact:true",
+    "typing:start",
+    "status",
+    "typing:stop",
+  ]);
+});
+
+test("Message activity hooks re-arm typing for active Telegram turns", async () => {
+  const events: string[] = [];
+  let active = true;
+  const hooks = createTelegramMessageActivityTypingHooks({
+    hasActiveTurn() {
+      return active;
+    },
+    startTypingLoop() {
+      events.push("typing:start");
+    },
+    async onMessageStart() {
+      events.push("message:start");
+    },
+    async onMessageUpdate() {
+      events.push("message:update");
+    },
+  });
+  await hooks.onMessageStart(
+    { message: {} as never },
+    createLifecycleContext(),
+  );
+  active = false;
+  await hooks.onMessageUpdate(
+    { message: {} as never },
+    createLifecycleContext(),
+  );
+  assert.deepEqual(events, ["typing:start", "message:start", "message:update"]);
 });
 
 test("Lifecycle helpers register pi hooks and delegate to handlers", async () => {

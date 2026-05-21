@@ -24,10 +24,12 @@
 ## 3. Project Topology
 
 - `/index.ts`: Main extension entrypoint and runtime composition layer for the bridge
-- `/lib/*.ts`: Flat domain modules for reusable runtime logic. Favor domain files such as queueing/runtime, replies, polling, updates, outbound-attachments, commands, lifecycle hooks, prompts, prompt-templates, pi SDK adapter, Telegram API, config, turns, media, setup, rendering, app menu, menu-model, menu-thinking, menu-queue, status/model-resolution support, and other cohesive bridge subsystems; use `shared` only when a type or constant truly spans multiple domains
-- `/tests/*.test.ts`: Domain-mirrored regression suites that follow the same flat naming as `/lib`
+- `/api/*.ts`: Public package entrypoint membranes. Export only stable companion-extension symbols documented in `/docs/public-api.md`; keep runtime helpers in `/lib` package-private.
+- `/lib/*.ts`: Flat domain modules for reusable runtime logic. Favor domain files such as queueing/runtime, replies, polling, updates, outbound-attachments, commands, lifecycle hooks, prompts, prompt-templates, pi SDK adapter/bindings, Telegram API, config, turns, media, setup, rendering, app menu, menu-model, menu-thinking, menu-queue, status/model-resolution support, and other cohesive bridge subsystems; use `shared` only when a type or constant truly spans multiple domains
+- `/tests/*.test.ts`: Domain-mirrored regression suites that follow the same flat naming as `/lib` plus public package-boundary regressions for `/api`
 - `/docs/README.md`: Documentation index for technical project docs
 - `/docs/architecture.md`: Runtime and subsystem overview for the bridge
+- `/docs/public-api.md`: Stable public API map for commands, config, assistant markup, extension APIs, package entrypoints, and compatibility boundaries
 - `/README.md`: User-facing project entry point. Keep its rhythm as install → connect → use → core features → docs, with vivid examples that explain the runtime adapter/operator-console model without duplicating full docs.
 - `/AGENTS.md`: Durable engineering and runtime conventions
 - `/BACKLOG.md`: Canonical open work
@@ -106,11 +108,11 @@
 The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/architecture.md). Keep this section as a compact agent-facing index, not a second copy of the full map.
 
 - Scheduling and lifecycle: `queue`, `runtime`, `lifecycle`, `locks`
-- Telegram transport and inbound flow: `api`, `polling`, `updates`, `routing`, `media`, `turns`, `inbound-handlers`, `config`, `setup`
-- Response surfaces: `preview`, `replies`, `rendering`, `keyboard`, `outbound-attachments`, `outbound-handlers`, `voice`, `status`
+- Telegram transport and inbound flow: `api`, `polling`, `updates`, `routing`, `media`, `turns`, `inbound`, `config`, `setup`
+- Response surfaces: `preview`, `replies`, `rendering`, `keyboard`, `outbound-attachments`, `outbound`, `voice`, `status`
 - Controls and application menu UI: `commands`, `menu`, `menu-model`, `menu-thinking`, `menu-status`, `menu-queue`, `model`, `prompts`
-- Extension platform: `extension-sections` owns section registry, token mapping, callback dispatch, context building, and its globalThis bridge; `voice` owns the voice-provider registry and its globalThis bridge
-- Pi SDK boundary: `pi` owns direct pi imports and bound extension API ports
+- Extension platform: `sections` owns section registry, token mapping, callback dispatch, context building, and its globalThis bridge; `voice` owns the voice-provider registry and its globalThis bridge
+- Pi SDK boundary: `pi` owns direct pi imports and bound extension API ports; `bindings` owns pi-facing command/tool/lifecycle registration wiring extracted from the entrypoint
 
 ## 6.4 Entrypoint And Import Boundaries
 
@@ -142,11 +144,13 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 - Command help plus prompt-template commands and status/model/thinking/queue controls are driven through `/start`'s Telegram inline application menu and callback queries; the Queue button shows the queued-item count, model-menu scope/pagination controls stay at the top under Main menu, the model pagination indicator opens a compact page picker, and thinking-menu text stays a compact heading because the current level is marked by button state; `/status`, `/model`, `/thinking`, and `/queue` are hidden compatibility shortcuts
 - Shared inline-keyboard structure belongs to `keyboard`; application-control button labels, callback data, and callback behavior stay in `menu`/`menu-model`/`menu-thinking`/`menu-status`/`menu-queue` while core queue mechanics stay in `queue`
 - Telegram `/settings` options should open nested detail submenus by default: checkbox options show a description plus Back, `on`, and `off`; list options show Back plus selectable values. One-shot actions such as syncing may run directly without a submenu when there is no meaningful choice or description step.
+- Inline UI labels and dialogs follow [`docs/ui-style.md`](./docs/ui-style.md): action buttons use emoji plus capitalized action text, state & navigation buttons show state and lead to a submenu, first-level submenus start with `⬆️ Main menu` while deeper submenus start with `⬆️ Back`, boolean toggles use Capitalized horizontal `On`/`Off` with green active `On`, yellow active `Off`, and black inactive dots, tabs use capitalized labels with purple default-state and yellow elevated-state active dots and black inactive dots, vertical option lists mark only the current value green, and confirmation dialogs use a single bold text-only question with emoji on buttons only.
 - Inbound text/media may be transformed through configured `inboundHandlers` before queueing; legacy `attachmentHandlers` are deprecated compatibility aliases appended after `inboundHandlers`; outbound files must flow through `telegram_attach`
 - Long Telegram text split recovery belongs to `text-groups`: keep it conservative, short-debounced, same chat/user/message-id contiguous, and gated by near-limit human text so normal rapid follow-ups and slash commands stay separate
-- Public handler API matrix: use `registerTelegramInboundHandler(kind, handler)` for generic programmatic inbound transforms, `registerTelegramOutboundHandler(kind, handler)` for generic programmatic outbound transforms, `registerTelegramVoiceTranscriptionProvider()` for voice/audio STT providers, and `registerTelegramVoiceSynthesisProvider()` for TTS/voice-output providers. Inbound handlers and command-backed outbound handlers use command templates as the standard config contract; built-in outbound buttons use inline keyboards plus callback routing because no external command execution is needed
+- Public API boundaries live in [`docs/public-api.md`](./docs/public-api.md): companion extensions must use public API domain subpaths such as `@llblab/pi-telegram/sections`, `/voice`, `/inbound`, `/outbound`, and `/updates`; `0.12.0` intentionally removes the published `@llblab/pi-telegram/lib/*.ts` compatibility wildcard
+- Public handler API matrix: low-level buses use `registerTelegramUpdateHandler(handler)`, `registerTelegramInboundHandler(kind, handler)`, and `registerTelegramOutboundHandler(kind, handler)` without ids; high-level surfaces use stable identity (`registerTelegramSection({ id, ... })`, `registerTelegramVoiceTranscriptionProvider(provider, { id })`, and `registerTelegramVoiceSynthesisProvider(provider, { id })`). Inbound handlers and command-backed outbound handlers use command templates as the standard config contract; built-in outbound buttons use inline keyboards plus callback routing because no polling command execution is needed
 - Telegram prompt-template commands are discovered from π slash commands with `source: "prompt"`; π template names are mapped to Bot API-compatible aliases (`fix-tests` → `/fix_tests`), aliases that conflict with built-in bridge commands or hidden shortcuts are not displayed, prompt-template aliases stay out of the Telegram bot command menu, and the bridge expands template files before queueing because extension-originated `sendUserMessage()` bypasses π's interactive template expansion
-- Unknown callback data not owned by pi-telegram prefixes (`tgbtn:`, `menu:`, `model:`, `thinking:`, `status:`, `queue:`, `section:`, `settings:`) may be forwarded as `[callback] <data>` after built-in handlers decline it; external extensions should follow `docs/callback-namespaces.md` and must not poll the same bot independently
+- Unknown callback data not owned by pi-telegram prefixes (`compact:`, `tgbtn:`, `menu:`, `model:`, `thinking:`, `status:`, `queue:`, `section:`, `settings:`) may be forwarded as `[callback] <data>` after built-in handlers decline it; update-handler extensions should follow `docs/callback-namespaces.md` and must not poll the same bot independently
 - Command templates stay compact and shell-free: no `command` field, no shell execution, inline defaults are allowed as `{name=default}`, `template` may be a string or an ordered composition array, only `args`/`defaults` inherit into leaves, top-level `timeout` wraps composed sequences, stdout pipes to the next step's stdin by default, and multi-step work should use `template: [...]` rather than provider-specific fields; `pipe` is only a legacy local alias
 - Command-template documentation examples should use portable executable placeholders such as `/path/to/stt` and `/path/to/tts`, not host-local skill paths or machine-specific install locations
 
@@ -155,15 +159,15 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 - `Section identity`: use the same identity-key rules as the Extension Locks Standard (`package.json/name` → canonical id); no separate `owner` field
 - `Token mapping`: Telegram's 64-byte `callback_data` limit forces compact numeric tokens (`section:0:action:payload`). Section authors never hand-roll `section:` strings — use `ctx.callbackData(action, payload?)`
 - `Navigation hierarchy`: Back buttons are auto-prepended by `ctx.edit()` / `ctx.open()`. Root views use `⬆️ Main menu` → `menu:back`. Nested views from `handleCallback` use `⬆️ Back` → `section:<token>:open`. Settings views use `⬆️ Back` → `settings:list`
-- `Context ports`: sections receive `TelegramSectionContext` / `TelegramSectionCallbackContext` with `answerCallback`, `edit`, `open`, `enqueuePrompt`, and `callbackData`. No filesystem access, no raw bot clients, no second poller
+- `Context ports`: sections receive `TelegramSectionContext` / `TelegramSectionCallbackContext` with `answerCallback`, `edit`, `open`, `enqueuePrompt`, and `callbackData`. No filesystem access, no raw bot clients, no second polling loop
 - `Settings indicators`: use `settings.getLabel()` for dynamic status rows in the Settings submenu (e.g., `🟢`/`⚫️` based on internal state). Called on every Settings list render
 - `Handler fallback`: `section.handleCallback` runs first; if it returns `"pass"` and `settings.handleCallback` exists, the settings handler runs with a fresh context carrying `backCallback="settings:list"`
-- `Stale tokens`: unknown or unregistered tokens answer the callback with a short popup. Section errors are caught and surfaced as popup text — no unhandled exceptions leak to the poller
+- `Stale tokens`: unknown or unregistered tokens answer the callback with a short popup. Section errors are caught and surfaced as popup text — no unhandled exceptions leak to polling
 - `Load order`: `pi-telegram` must load first (sets `globalThis.__piTelegramSectionRegistry__`). Consumer extensions load second. The typed import is the preferred path; the `globalThis` bridge exists for load-order tolerance
 - `Shutdown`: call `pi.on("shutdown", () => unregister())` in the extension's default export
 - `Section separators`: extension-injected main-menu rows appear before the **⚙️ Settings** row. Extension settings rows appear before built-in Proactive push controls
 - `Model button format`: use `provider/ModelId` format (e.g., `anthropic/claude-sonnet-4-5`) across model menu buttons and status row. The compact `provider/id` form is canonical
-- `Section domain ownership`: `lib/extension-sections.ts` owns the registry, token mapping, callback dispatch, and context building. `lib/menu.ts` dispatches `section:` callbacks before built-in handling. `lib/menu-status.ts` injects section rows. `lib/menu-settings.ts` injects settings rows and passes `sectionRegistry` through callback deps
+- `Section domain ownership`: `lib/sections.ts` owns the registry, token mapping, callback dispatch, and context building. `lib/menu.ts` dispatches `section:` callbacks before built-in handling. `lib/menu-status.ts` injects section rows. `lib/menu-settings.ts` injects settings rows and passes `sectionRegistry` through callback deps
 - `Callback routing order`: button actions → queue menu → settings menu → section callbacks → built-in menu handling → `[callback]` fallback. Settings menu callbacks always pass `sectionRegistry` to `updateTelegramSettingsMenuMessage` and `handleTelegramSettingsMenuCallbackAction`
 
 ## 9. Pre-Task Preparation Protocol

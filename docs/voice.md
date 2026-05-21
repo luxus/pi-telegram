@@ -1,6 +1,6 @@
 # Voice Integration
 
-Voice messages flow through an **inbound transcription → outbound voice reply** pipeline. This document describes the bridge's role in that pipeline; provider-specific mechanics (TTS/STT backends, voice IDs, languages) are owned by voice provider extensions. In `0.11.0`, this is a first-class extension surface: one companion extension can provide STT fallbacks for inbound voice/audio files and TTS fallbacks for outbound Telegram voice replies without owning a second bot poller.
+Voice messages flow through an **inbound transcription → outbound voice reply** pipeline. This document describes the bridge's role in that pipeline; provider-specific mechanics (TTS/STT backends, voice IDs, languages) are owned by voice provider extensions. In `0.11.0`, this is a first-class extension surface: one companion extension can provide STT fallbacks for inbound voice/audio files and TTS fallbacks for outbound Telegram voice replies without owning a second bot polling loop.
 
 ## Overview
 
@@ -29,7 +29,7 @@ Inbound handlers match `kind: "voice"` or `mime: "audio/*"` to run a transcripti
 
 The transcription output becomes the raw text of the prompt.
 
-Voice provider extensions can also register STT backends with `registerTelegramVoiceTranscriptionProvider()` from `@llblab/pi-telegram/lib/voice.ts`. Inbound command-template handlers and programmatic inbound handlers remain the stronger generic paths and run first; if no matching handler produces output for a voice/audio file, registered transcription providers are tried as fallback in registration order. The first provider that returns non-empty text wins; providers that return `undefined` pass to the next provider, and provider failures are recorded before trying the next provider. This lets a full voice extension provide both TTS and STT without requiring `telegram.json` handler templates, while still preserving operator-configured inbound handlers as the stronger choice.
+Voice provider extensions can also register STT backends with `registerTelegramVoiceTranscriptionProvider()` from `@llblab/pi-telegram/voice`. Inbound command-template handlers and programmatic inbound handlers remain the stronger generic paths and run first; if no matching handler produces output for a voice/audio file, registered transcription providers are tried as fallback in registration order. The first provider that returns non-empty text wins; providers that return `undefined` pass to the next provider, and provider failures are recorded before trying the next provider. This lets a full voice extension provide both TTS and STT without requiring `telegram.json` handler templates, while still preserving operator-configured inbound handlers as the stronger choice.
 
 ## Voice Reply Policy
 
@@ -79,7 +79,7 @@ The bridge shows a `record_voice` action while delivering and sends the final au
 
 Providers can implement `getVoicePromptContribution(view)` to inject voice-specific instructions into voice-tagged prompts (for example: "Reply only with the spoken text"). The bridge appends the first non-empty provider contribution when `mirror` or `always` mode tags the turn.
 
-See the TSDoc on `registerTelegramVoiceSynthesisProvider` and `TelegramVoiceSynthesisProviderResult` in `lib/voice.ts` for the exact interface.
+Import provider APIs from `@llblab/pi-telegram/voice`; see the TSDoc on `registerTelegramVoiceSynthesisProvider` and `TelegramVoiceSynthesisProviderResult` there for the exact interface.
 
 The provider receives the raw agent text plus optional `{ lang?, rate? }`.
 
@@ -93,7 +93,7 @@ It must return one of:
 
 **File format:** Telegram `sendVoice` requires **OGG/Opus** to display the message as a native voice note (waveform, inline playback). MP3 and other formats are accepted by the API but render as regular audio attachments (music note icon, filename visible). **Providers and outbound voice handlers must return `.ogg` or `.opus` files.** Returning non-OGG files causes the bridge to throw and fall back to text delivery.
 
-Registration returns a disposer function for cleanup. Extensions should call it on shutdown or re-register safely on session start when their runtime is recreated.
+Registration returns a disposer function for cleanup. Stable provider registrations pass a durable `id` in options; omitted ids remain a compatibility path for older providers and receive generated session-local ids. Extensions should call disposers on shutdown or re-register safely on session start when their runtime is recreated.
 
 ## Outbound Voice Handlers
 
@@ -124,14 +124,17 @@ Priority for outbound voice delivery is: configured `outboundHandlers` with `typ
 When the user's "Send Transcript" toggle is ON, return the clean spoken text as `transcriptText`. The bridge attaches it as the caption on the voice message. When the toggle is OFF, return only the audio path (no `transcriptText`).
 
 ```typescript
-import { registerTelegramVoiceSynthesisProvider } from "@llblab/pi-telegram/lib/voice.ts";
+import { registerTelegramVoiceSynthesisProvider } from "@llblab/pi-telegram/voice";
 
-registerTelegramVoiceSynthesisProvider(async (text, options) => {
-  const rewritten = rewriteWithSpeechTags(text);
-  const audioPath = await myTTS(rewritten, { language: options?.lang });
-  const sendTranscript = getUserSendTranscriptPreference(); // from your UI + telegram.json
-  return sendTranscript ? { audioPath, transcriptText: text } : { audioPath };
-});
+registerTelegramVoiceSynthesisProvider(
+  async (text, options) => {
+    const rewritten = rewriteWithSpeechTags(text);
+    const audioPath = await myTTS(rewritten, { language: options?.lang });
+    const sendTranscript = getUserSendTranscriptPreference(); // from your UI + telegram.json
+    return sendTranscript ? { audioPath, transcriptText: text } : { audioPath };
+  },
+  { id: "my-voice-provider/tts" },
+);
 ```
 
 The bridge never sends a separate transcript message. Caption-only is the "ON" behavior.
@@ -141,7 +144,7 @@ The bridge never sends a separate transcript message. Caption-only is the "ON" b
 Voice provider extensions can record runtime events that appear in `/telegram-status` alongside pi-telegram's own events:
 
 ```typescript
-import { recordTelegramRuntimeEvent } from "@llblab/pi-telegram/lib/outbound-handlers.ts";
+import { recordTelegramRuntimeEvent } from "@llblab/pi-telegram/outbound";
 
 recordTelegramRuntimeEvent("xai-voice", new Error("TTS failed"), {
   phase: "tts",
@@ -155,7 +158,7 @@ recordTelegramRuntimeEvent("xai-voice", new Error("TTS failed"), {
 
 Voice provider extensions can register a Voice Extension Section (settings UI) via `registerTelegramSection`. The section can expose provider-specific controls such as TTS voice, language, speech style, transcript behavior, or STT/TTS enablement. Reply mode is a core pi-telegram setting and belongs in the built-in Settings menu.
 
-**Note on resume:** Because the previous automatic persistent re-registration system has been removed, extensions are responsible for re-registering their Voice Extension Section on `session_start` if they want the menu to survive a `pi resume`. See `registerTelegramSection` in `lib/extension-sections.ts`.
+**Note on resume:** Because the previous automatic persistent re-registration system has been removed, extensions are responsible for re-registering their Voice Extension Section on `session_start` if they want the menu to survive a `pi resume`. See `registerTelegramSection` from `@llblab/pi-telegram/sections`.
 
 ## Prompt Guidance
 

@@ -1,7 +1,7 @@
 /**
  * Telegram updates domain helpers
  * Zones: telegram inbound, authorization, routing plans
- * Owns update extraction, authorization, classification, execution planning, and runtime execution for Telegram updates
+ * Owns update extraction, authorization, classification, execution planning, runtime execution, and the public update-handler registry
  */
 
 import {
@@ -850,4 +850,124 @@ export async function executeTelegramUpdatePlan<
   } catch (error) {
     if (!isTelegramStaleContextError(error)) throw error;
   }
+}
+
+// --- Public update handler registry ---
+
+/**
+ * Verdict returned by a public Telegram update handler.
+ *
+ * - `"consume"` — the handler processed this update; pi-telegram skips default routing.
+ * - `"pass"` (or `void`/`undefined`) — pi-telegram routes the update normally.
+ */
+export type TelegramUpdateHandlerVerdict = "consume" | "pass";
+
+export type TelegramUpdateHandler = (
+  update: unknown,
+) =>
+  | TelegramUpdateHandlerVerdict
+  | void
+  | Promise<TelegramUpdateHandlerVerdict | void>;
+
+export interface TelegramUpdateHandlerRegistry {
+  /** Schema version of this registry shape. */
+  readonly version: 1;
+  /**
+   * Register an update handler. Returns a disposer that removes it.
+   *
+   * Handlers are invoked in registration order on every Telegram update,
+   * before pi-telegram's own routing. The first handler that returns
+   * `"consume"` wins and stops the chain for that update.
+   */
+  add: (handler: TelegramUpdateHandler) => () => void;
+  /**
+   * Run all registered handlers against an update.
+   *
+   * Used by pi-telegram's polling runtime; companion extensions should call
+   * {@link registerTelegramUpdateHandler} or `add` instead of dispatching directly.
+   */
+  dispatch: (update: unknown) => Promise<TelegramUpdateHandlerVerdict>;
+}
+
+const UPDATE_HANDLER_REGISTRY_KEY = "__piTelegramUpdateHandlerRegistry__";
+
+function isValidV1UpdateHandlerRegistry(
+  candidate: unknown,
+): candidate is TelegramUpdateHandlerRegistry {
+  if (!candidate || typeof candidate !== "object") return false;
+  const r = candidate as Partial<TelegramUpdateHandlerRegistry>;
+  return (
+    r.version === 1 &&
+    typeof r.add === "function" &&
+    typeof r.dispatch === "function"
+  );
+}
+
+function getOrCreateUpdateHandlerRegistry(): TelegramUpdateHandlerRegistry {
+  const g = globalThis as Record<string, unknown>;
+  const existing = g[UPDATE_HANDLER_REGISTRY_KEY];
+  if (isValidV1UpdateHandlerRegistry(existing)) return existing;
+  const handlers = new Set<TelegramUpdateHandler>();
+  const registry: TelegramUpdateHandlerRegistry = {
+    version: 1,
+    add(handler) {
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    async dispatch(update) {
+      for (const handler of handlers) {
+        try {
+          const result = await handler(update);
+          if (result === "consume") return "consume";
+        } catch {
+          // Update handler errors must not break polling.
+        }
+      }
+      return "pass";
+    },
+  };
+  g[UPDATE_HANDLER_REGISTRY_KEY] = registry;
+  return registry;
+}
+
+/**
+ * Called by pi-telegram's own runtime to obtain the registry it dispatches
+ * through. Companion extensions should not call this; use
+ * {@link registerTelegramUpdateHandler} instead.
+ */
+export function getTelegramUpdateHandlerRegistry(): TelegramUpdateHandlerRegistry {
+  return getOrCreateUpdateHandlerRegistry();
+}
+
+export interface TelegramUpdateHandlerWrapDeps<TUpdate, TContext> {
+  defaultHandle: (update: TUpdate, ctx: TContext) => Promise<void>;
+  registry?: TelegramUpdateHandlerRegistry;
+}
+
+/**
+ * Wrap a default polling `handleUpdate` with the public update handler registry.
+ */
+export function createTelegramUpdateHandle<TUpdate, TContext>(
+  deps: TelegramUpdateHandlerWrapDeps<TUpdate, TContext>,
+): (update: TUpdate, ctx: TContext) => Promise<void> {
+  const registry = deps.registry ?? getOrCreateUpdateHandlerRegistry();
+  const { defaultHandle } = deps;
+  return async function handleTelegramUpdate(update, ctx) {
+    const verdict = await registry.dispatch(update);
+    if (verdict === "consume") return;
+    await defaultHandle(update, ctx);
+  };
+}
+
+/**
+ * Register a handler that runs before pi-telegram routes a Telegram update
+ * through its built-in handlers.
+ *
+ * This is the low-level public surface for companion extensions that share
+ * the same bot and pi process with pi-telegram.
+ */
+export function registerTelegramUpdateHandler(
+  handler: TelegramUpdateHandler,
+): () => void {
+  return getOrCreateUpdateHandlerRegistry().add(handler);
 }

@@ -24,6 +24,7 @@ import {
   getTelegramCommandExecutionMode,
   getTelegramCommandMessageTarget,
   handleTelegramCompactCommand,
+  handleTelegramCompactConfirmationCallback,
   handleTelegramModelCommand,
   handleTelegramStatusCommand,
   handleTelegramStopCommand,
@@ -623,6 +624,106 @@ test("Command helpers guard and complete compact command flow", async () => {
     "status",
     "dispatch",
     "reply:Compaction completed.",
+  ]);
+});
+
+test("Command helpers open compact confirmation and handle callbacks", async () => {
+  const events: string[] = [];
+  const message = { chat: { id: 42 }, message_id: 99 };
+  const handleCommand = createTelegramCommandHandler({
+    hasAbortHandler: () => false,
+    clearPendingModelSwitch: () => {},
+    hasQueuedTelegramItems: () => false,
+    clearQueuedTelegramItems: () => 0,
+    setPreserveQueuedTurnsAsHistory: () => {},
+    abortCurrentTurn: () => {},
+    isIdle: () => true,
+    hasPendingMessages: () => false,
+    hasActiveTelegramTurn: () => false,
+    hasDispatchPending: () => false,
+    isCompactionInProgress: () => false,
+    setCompactionInProgress: () => {
+      events.push("unexpected:compact");
+    },
+    updateStatus: () => {},
+    dispatchNextQueuedTelegramTurn: () => {},
+    compact: () => {},
+    enqueueContinueTurn: async () => {},
+    enqueueControlItem: () => {},
+    showStatus: async () => {},
+    openModelMenu: async () => {},
+    openThinkingMenu: async () => {},
+    openQueueMenu: async () => {},
+    getAllowedUserId: () => 1,
+    setAllowedUserId: () => {},
+    registerBotCommands: async () => {},
+    persistConfig: async () => {},
+    sendTextReply: async () => {},
+    sendInteractiveMessage: async (chatId, text, mode, replyMarkup) => {
+      events.push(`${chatId}:${mode}:${text}`);
+      events.push(JSON.stringify(replyMarkup.inline_keyboard));
+      return 77;
+    },
+  });
+  assert.equal(await handleCommand("compact", message, {}), true);
+  assert.deepEqual(events, [
+    "42:html:<b>Compact session?</b>",
+    '[[{"text":"🗜 Yes, compact","callback_data":"compact:confirm"},{"text":"❌ No","callback_data":"compact:cancel"}]]',
+  ]);
+  events.length = 0;
+  const cancelled = await handleTelegramCompactConfirmationCallback(
+    {
+      id: "cb-cancel",
+      data: "compact:cancel",
+      message: { chat: { id: 42 }, message_id: 77 },
+    },
+    {
+      ctx: {},
+      answerCallbackQuery: async (id) => {
+        events.push(`answer:${id}`);
+      },
+      editInteractiveMessage: async (chatId, messageId, text, mode, markup) => {
+        events.push(`${chatId}:${messageId}:${mode}:${text}`);
+        events.push(JSON.stringify(markup.inline_keyboard));
+      },
+      runCompact: async () => {
+        events.push("unexpected:run");
+      },
+    },
+  );
+  assert.equal(cancelled, true);
+  assert.deepEqual(events, [
+    "42:77:plain:Compaction cancelled.",
+    "[]",
+    "answer:cb-cancel",
+  ]);
+  events.length = 0;
+  const confirmed = await handleTelegramCompactConfirmationCallback(
+    {
+      id: "cb-confirm",
+      data: "compact:confirm",
+      message: { chat: { id: 42 }, message_id: 77 },
+    },
+    {
+      ctx: { id: "ctx" },
+      answerCallbackQuery: async (id) => {
+        events.push(`answer:${id}`);
+      },
+      editInteractiveMessage: async (chatId, messageId, text, mode, markup) => {
+        events.push(`${chatId}:${messageId}:${mode}:${text}`);
+        events.push(JSON.stringify(markup.inline_keyboard));
+      },
+      runCompact: async (ctx, chatId, messageId) => {
+        events.push(`run:${(ctx as { id: string }).id}:${chatId}:${messageId}`);
+      },
+    },
+  );
+  assert.equal(confirmed, true);
+  assert.deepEqual(events, [
+    "42:77:plain:Compaction started.",
+    "[]",
+    "answer:cb-confirm",
+    "run:ctx:42:77",
   ]);
 });
 

@@ -1,6 +1,6 @@
 /**
  * Regression tests for project architecture invariants
- * Guards import graph shape, shared-bucket bans, and external SDK boundary rules
+ * Guards import graph shape, shared-bucket bans, and polling SDK boundary rules
  */
 
 import assert from "node:assert/strict";
@@ -13,6 +13,9 @@ const PROJECT_ROOT = process.cwd();
 function getProjectTypeScriptFiles(): string[] {
   return [
     "index.ts",
+    ...readdirSync(join(PROJECT_ROOT, "api"))
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => join("api", name)),
     ...readdirSync(join(PROJECT_ROOT, "lib"))
       .filter((name) => name.endsWith(".ts"))
       .map((name) => join("lib", name)),
@@ -25,6 +28,9 @@ function getProjectTypeScriptFiles(): string[] {
 function getProjectSourceFiles(): string[] {
   return [
     "index.ts",
+    ...readdirSync(join(PROJECT_ROOT, "api"))
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => join("api", name)),
     ...readdirSync(join(PROJECT_ROOT, "lib"))
       .filter((name) => name.endsWith(".ts"))
       .map((name) => join("lib", name)),
@@ -141,14 +147,15 @@ test("Project source imports stay acyclic", () => {
   // visible while still failing unrelated new cycles.
   const voiceRelatedCycles = cycles.filter((c) => {
     const hasVoice = c.some((m) => m.includes("voice.ts"));
-    const hasOutbound = c.some((m) => m.includes("outbound-handlers.ts"));
+    const hasOutbound = c.some((m) => m.includes("outbound.ts"));
     const hasTurns = c.some((m) => m.includes("turns.ts"));
     const hasQueue = c.some((m) => m.includes("queue.ts"));
 
     // Deliberate voice split
     if (hasVoice && hasOutbound) return true;
     // Type cycles involving voice modules (acceptable for now)
-    if ((hasVoice || hasOutbound) && (hasTurns || hasQueue) && c.length <= 3) return true;
+    if ((hasVoice || hasOutbound) && (hasTurns || hasQueue) && c.length <= 3)
+      return true;
 
     return false;
   });
@@ -158,13 +165,30 @@ test("Project source imports stay acyclic", () => {
   assert.deepEqual(
     otherCycles,
     [],
-    "Non-Voice cycles found:\n" + otherCycles.map((c) => c.join(" -> ")).join("\n"),
+    "Non-Voice cycles found:\n" +
+      otherCycles.map((c) => c.join(" -> ")).join("\n"),
   );
 });
 
 test("Project no longer has shared constants or transport-type domains", () => {
   assert.equal(existsSync(join(PROJECT_ROOT, "lib", "constants.ts")), false);
   assert.equal(existsSync(join(PROJECT_ROOT, "lib", "types.ts")), false);
+});
+
+test("Package exports expose only stable public domains", () => {
+  const packageJson = JSON.parse(
+    readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"),
+  ) as { exports?: Record<string, string> };
+
+  assert.deepEqual(packageJson.exports, {
+    ".": "./index.ts",
+    "./inbound": "./api/inbound.ts",
+    "./outbound": "./api/outbound.ts",
+    "./updates": "./api/updates.ts",
+    "./sections": "./api/sections.ts",
+    "./voice": "./api/voice.ts",
+    "./keyboard": "./api/keyboard.ts",
+  });
 });
 
 test("Project TypeScript files start with responsibility headers", () => {
@@ -283,7 +307,9 @@ test("Structural update and media domains stay decoupled from concrete API trans
 });
 
 test("Outbound attachment delivery stays decoupled from queue, inbound media, and API helpers", () => {
-  const attachmentImports = getImportSpecifiers(join("lib", "outbound-attachments.ts"));
+  const attachmentImports = getImportSpecifiers(
+    join("lib", "outbound-attachments.ts"),
+  );
   assert.equal(attachmentImports.includes("./queue.ts"), false);
   assert.equal(attachmentImports.includes("./media.ts"), false);
   assert.equal(attachmentImports.includes("./api.ts"), false);

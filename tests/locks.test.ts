@@ -56,7 +56,7 @@ test("Lock runtime acquires, refreshes, and releases its own key", () => {
   }
 });
 
-test("Lock runtime preserves other extension keys and refuses live external owners", () => {
+test("Lock runtime preserves other extension keys and refuses live polling owners", () => {
   const temp = createTempLockPath();
   try {
     writeFileSync(
@@ -108,7 +108,7 @@ test("Lock runtime replaces stale owners", () => {
   }
 });
 
-test("Locked polling runtime can force takeover of live external owners", async () => {
+test("Locked polling runtime can force takeover of live polling owners", async () => {
   const temp = createTempLockPath();
   try {
     const events: string[] = [];
