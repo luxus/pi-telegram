@@ -351,8 +351,8 @@ export function createTelegramInboundRouteRuntime<
     const turn = await promptTurnBuilder([continueMessage], [], ctx);
     const continueTurn = {
       ...turn,
-      queueLane: "priority" as const,
-      laneOrder: Number.MIN_SAFE_INTEGER + turn.queueOrder,
+      queueLane: "control" as const,
+      laneOrder: deps.bridgeRuntime.queue.allocateControlOrder(),
       statusSummary: "continue",
     };
     deps.queueMutationRuntime.append(continueTurn, ctx);

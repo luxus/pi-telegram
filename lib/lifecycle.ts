@@ -182,6 +182,11 @@ export interface TelegramMessageActivityTypingDeps<TContext> {
   startTypingLoop: (ctx: TContext) => void;
   onMessageStart: TelegramLifecycleRegistrationDeps["onMessageStart"];
   onMessageUpdate: TelegramLifecycleRegistrationDeps["onMessageUpdate"];
+  recordRuntimeEvent?: (
+    category: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
 }
 
 export function createTelegramMessageActivityTypingHooks<
@@ -195,15 +200,27 @@ export function createTelegramMessageActivityTypingHooks<
   const ensureTyping = (ctx: TContext): void => {
     if (deps.hasActiveTurn()) deps.startTypingLoop(ctx);
   };
+  const handleMessageActivity = async (
+    phase: "start" | "update",
+    event: Parameters<TelegramLifecycleRegistrationDeps["onMessageStart"]>[0],
+    ctx: ExtensionContext,
+    inner: TelegramLifecycleRegistrationDeps["onMessageStart"],
+  ): Promise<void> => {
+    const typedCtx = ctx as TContext;
+    ensureTyping(typedCtx);
+    try {
+      await inner(event, ctx);
+    } catch (error) {
+      deps.recordRuntimeEvent?.("message-activity", error, { phase });
+    } finally {
+      ensureTyping(typedCtx);
+    }
+  };
   return {
-    onMessageStart: async (event, ctx) => {
-      ensureTyping(ctx as TContext);
-      await deps.onMessageStart(event, ctx);
-    },
-    onMessageUpdate: async (event, ctx) => {
-      ensureTyping(ctx as TContext);
-      await deps.onMessageUpdate(event, ctx);
-    },
+    onMessageStart: (event, ctx) =>
+      handleMessageActivity("start", event, ctx, deps.onMessageStart),
+    onMessageUpdate: (event, ctx) =>
+      handleMessageActivity("update", event, ctx, deps.onMessageUpdate),
   };
 }
 

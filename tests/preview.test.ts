@@ -837,6 +837,31 @@ test("Preview runtime records transport failures without throwing", async () => 
   assert.deepEqual(harness.events, ["preview:flush"]);
 });
 
+test("Preview controller runtime forwards runtime-event recorder", async () => {
+  const events: string[] = [];
+  const runtime = createTelegramPreviewControllerRuntime({
+    sendDraft: async () => {
+      throw new Error("draft unsupported");
+    },
+    sendMessage: async () => {
+      throw new Error("websocket disconnected");
+    },
+    editMessageText: async () => undefined,
+    sendRenderedChunks: async () => undefined,
+    editRenderedMessage: async () => undefined,
+    recordRuntimeEvent: (category, error, details) => {
+      const message = error instanceof Error ? error.message : String(error);
+      events.push(`${category}:${message}:${details?.phase}`);
+    },
+  });
+  runtime.resetState();
+  runtime.setPendingText("hello");
+
+  await runtime.flush(7);
+
+  assert.deepEqual(events, ["preview:websocket disconnected:flush"]);
+});
+
 test("Preview runtime records final markdown failures and returns false", async () => {
   const harness = createPreviewRuntimeHarness({
     mode: "draft",

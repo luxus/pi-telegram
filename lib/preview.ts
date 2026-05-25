@@ -345,6 +345,7 @@ export function createTelegramPreviewControllerRuntime<
     maxDraftId: deps.maxDraftId,
     setTimer: deps.setTimer,
     clearTimer: deps.clearTimer,
+    recordRuntimeEvent: deps.recordRuntimeEvent,
   });
 }
 

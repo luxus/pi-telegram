@@ -1,6 +1,14 @@
 # Changelog
 
-## 0.13.0: Command Template Standard, Voice Hardening, And Domain Cleanup (2026-05-22)
+## Unreleased
+
+## 0.13.1: Rendering, Typing, And Continue Queue Hotfix
+
+- `[Rendering]` Fixed Telegram HTML rendering for Markdown bold/italic spans that cross soft line breaks, so assistant replies like `**first line\nsecond line**` render as bold text instead of showing raw asterisks. Added a regression for the guest-mode-style multiline bold reply shape.
+- `[Typing Status]` Hardened assistant message activity hooks so transient preview/provider transport failures are recorded but do not break the native Telegram `typing` keepalive while an active turn continues.
+- `[Continue Queue]` `/continue` now enqueues as a control-lane resume prompt and explicitly clears preserved-abort history mode, so queued Telegram prompts stay separate and the continuation runs ahead of queued prompt work after abort or compaction recovery.
+
+## 0.13.0: Command Template Standard, Voice Hardening, And Domain Cleanup
 
 - `[Architecture]` Extracted outbound assistant-action markup parsing into `lib/outbound-markup.ts` and removed the temporary Voice/Outbound/Queue import-cycle allowance. Impact: project source imports are fully acyclic again while preserving existing voice and outbound helper exports.
 - `[Tests]` Updated the Pi SDK centralization invariant to guard the current `@earendil-works/*` package scope as well as the legacy scope. Impact: new direct SDK imports outside `lib/pi.ts` are caught again.

@@ -279,6 +279,7 @@ export function registerTelegramLifecycleRuntimeHooks({
       startTypingLoop: promptDispatchRuntime.startTypingLoop,
       onMessageStart: previewRuntime.onMessageStart,
       onMessageUpdate: previewRuntime.onMessageUpdate,
+      recordRuntimeEvent,
     });
   Lifecycle.registerTelegramLifecycleHooks(pi, {
     ...sessionLifecycleRuntime,

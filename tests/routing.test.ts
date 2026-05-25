@@ -174,6 +174,7 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     "[telegram] hello from telegram",
   );
   assert.deepEqual(events, ["status", "dispatch"]);
+  bridgeRuntime.lifecycle.setPreserveQueuedTurnsAsHistory(true);
   await routeRuntime.handleUpdate(
     {
       message: {
@@ -185,9 +186,11 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     },
     { cwd: "/repo" },
   );
-  const [continueTurn, originalTurn] = telegramQueueStore.getQueuedItems();
+  const queuedAfterContinue = telegramQueueStore.getQueuedItems();
+  const [continueTurn, originalTurn] = queuedAfterContinue;
+  assert.equal(queuedAfterContinue.length, 2);
   assert.equal(continueTurn?.kind, "prompt");
-  assert.equal(continueTurn?.queueLane, "priority");
+  assert.equal(continueTurn?.queueLane, "control");
   assert.equal(continueTurn?.statusSummary, "continue");
   assert.equal(
     continueTurn?.content[0]?.type === "text"
@@ -195,7 +198,19 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
       : "",
     "[telegram] continue",
   );
+  assert.equal(continueTurn?.historyText, "continue");
+  assert.equal(originalTurn?.kind, "prompt");
   assert.equal(originalTurn?.statusSummary, "hello from telegram");
+  assert.equal(
+    originalTurn?.kind === "prompt" && originalTurn.content[0]?.type === "text"
+      ? originalTurn.content[0].text
+      : "",
+    "[telegram] hello from telegram",
+  );
+  assert.equal(
+    bridgeRuntime.lifecycle.shouldPreserveQueuedTurnsAsHistory(),
+    false,
+  );
   await routeRuntime.handleUpdate(
     {
       callback_query: {

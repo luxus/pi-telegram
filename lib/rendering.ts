@@ -843,7 +843,7 @@ function renderDelimitedInlineStyle(
 ): string {
   const escapedDelimiter = delimiter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = new RegExp(
-    `(^|[^\\p{L}\\p{N}\\\\])(${escapedDelimiter})(?=\\S)(.+?)(?<=\\S)\\2(?=[^\\p{L}\\p{N}]|$)`,
+    `(^|[^\\p{L}\\p{N}\\\\])(${escapedDelimiter})(?=\\S)([\\s\\S]+?)(?<=\\S)\\2(?=[^\\p{L}\\p{N}]|$)`,
     "gu",
   );
   return text.replace(
@@ -1004,9 +1004,28 @@ function renderMarkdownTextPiece(piece: string): string {
   return renderInlineMarkdown(piece);
 }
 
+function isPlainInlineMarkdownLine(line: string): boolean {
+  if (line.trim().length === 0) return false;
+  return (
+    matchMarkdownHeadingLine(line) === null &&
+    !/^(\s*)([-*+]|\d+\.)\s+\[([ xX])\]\s+(.+)$/.test(line) &&
+    !/^(\s*)[-*+]\s+(.+)$/.test(line) &&
+    !/^(\s*)(\d+)\.\s+(.+)$/.test(line) &&
+    !/^>\s?(.+)$/.test(line) &&
+    !/^([-*_]\s*){3,}$/.test(line.trim())
+  );
+}
+
 function renderMarkdownTextLines(block: string): string[] {
   const rendered: string[] = [];
   const lines = block.split("\n");
+  const nonBlankLines = lines.filter((line) => line.trim().length > 0);
+  if (
+    nonBlankLines.length > 1 &&
+    nonBlankLines.every(isPlainInlineMarkdownLine)
+  ) {
+    return renderInlineMarkdown(nonBlankLines.join("\n")).split("\n");
+  }
   for (const line of lines) {
     if (line.trim().length === 0) continue;
     for (const piece of splitPlainMarkdownLine(line)) {
