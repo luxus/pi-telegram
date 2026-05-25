@@ -227,6 +227,64 @@ test("Built-in text attachment handling injects text files into outputs", async 
   assert.deepEqual(result.handlerOutputs, ["[note.txt]\nhello from file"]);
 });
 
+test("Inbound handler output is bounded before entering prompts", async () => {
+  const file = {
+    path: "/tmp/huge.pdf",
+    fileName: "huge.pdf",
+    mimeType: "application/pdf",
+    kind: "document",
+  };
+  const result = await processTelegramInboundHandlers({
+    files: [file],
+    rawText: "summarize",
+    handlers: [{ mime: "application/pdf", template: "/tools/ocr {file}" }],
+    cwd: "/work",
+    execCommand: async () => ({
+      stdout: "x".repeat(13_000),
+      stderr: "",
+      code: 0,
+      killed: false,
+    }),
+  });
+
+  assert.equal(result.handlerOutputs.length, 1);
+  assert.equal(result.handlerOutputs[0]?.length, 12_024);
+  assert.match(result.handlerOutputs[0] ?? "", /truncated 1000 chars/);
+});
+
+test("Inbound handler failure output is bounded before runtime events", async () => {
+  const events: string[] = [];
+  const result = await processTelegramInboundHandlers({
+    files: [
+      {
+        path: "/tmp/huge.pdf",
+        fileName: "huge.pdf",
+        mimeType: "application/pdf",
+        kind: "document",
+      },
+    ],
+    rawText: "summarize",
+    handlers: [{ mime: "application/pdf", template: "/tools/ocr {file}" }],
+    cwd: "/work",
+    execCommand: async () => ({
+      stdout: "o".repeat(9_000),
+      stderr: "e".repeat(8_000),
+      code: 1,
+      killed: false,
+    }),
+    recordRuntimeEvent: (category, error) => {
+      events.push(`${category}:${error instanceof Error ? error.message : String(error)}`);
+    },
+  });
+
+  assert.deepEqual(result.handlerOutputs, []);
+  assert.equal(events.length, 1);
+  assert.match(events[0] ?? "", /stderr:\ne{4000}… \[truncated 4000 chars\]/);
+  assert.match(events[0] ?? "", /stdout:\no{4000}… \[truncated 5000 chars\]/);
+  assert.equal((events[0]?.match(/e/g) ?? []).length < 5000, true);
+  assert.equal((events[0]?.match(/o/g) ?? []).length < 5000, true);
+});
+
 test("Built-in text attachment handling accepts text wildcards", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-telegram-text-attachment-"));
   const filePath = join(dir, "note.md");

@@ -435,6 +435,24 @@ test("Structured runtime event recording redacts messages and details", () => {
   ]);
 });
 
+test("Runtime event recording bounds messages and string details", () => {
+  const events: TelegramRuntimeEvent[] = [];
+  recordStructuredTelegramRuntimeEvent(
+    events,
+    {
+      category: "handler",
+      error: new Error("x".repeat(1200)),
+      details: { output: "y".repeat(1200) },
+    },
+    { maxEvents: 3, now: 1000 },
+  );
+
+  assert.equal(events[0]?.message.length, 1023);
+  assert.match(events[0]?.message ?? "", /truncated 200 chars/);
+  assert.equal(String(events[0]?.details?.output).length, 1023);
+  assert.match(String(events[0]?.details?.output), /truncated 200 chars/);
+});
+
 test("Runtime event recorder owns redacted bounded event state", () => {
   const recorder = createTelegramRuntimeEventRecorder({
     getBotToken: () => "123:abc",

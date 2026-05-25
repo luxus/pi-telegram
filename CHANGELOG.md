@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.13.2: Config Recovery And Inbound Output Bounds Hotfix
+
+- `[Config]` Invalid `telegram.json` now recovers on session startup by renaming the broken file to an `.invalid-*` recovery path, loading safe empty defaults, and recording a runtime diagnostic. Impact: a hand-edited or partially written config no longer bricks `/telegram-setup` or session startup.
+- `[Inbound]` Inbound handler, programmatic handler, voice transcription, and built-in text attachment outputs are now bounded before entering Telegram prompt context. Impact: large OCR, PDF, STT, or text-file outputs cannot silently explode prompt size.
+- `[Diagnostics]` Runtime event messages/details and inbound handler failure stdout/stderr are truncated before storage/rendering. Impact: `/telegram-status` remains useful after noisy provider or handler failures without hiding that truncation happened.
+
 ## 0.13.1: Rendering, Typing, And Continue Queue Hotfix
 
 - `[Rendering]` Fixed Telegram HTML rendering for Markdown bold/italic spans that cross soft line breaks, so assistant replies like `**first line\nsecond line**` render as bold text instead of showing raw asterisks. Added a regression for the guest-mode-style multiline bold reply shape.

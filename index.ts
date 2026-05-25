@@ -48,7 +48,15 @@ export default function (pi: Pi.ExtensionAPI) {
   } = piRuntime;
   const bridgeRuntime = Runtime.createTelegramBridgeRuntime();
   const { abort, lifecycle, queue, setup, typing } = bridgeRuntime;
-  const configStore = Config.createTelegramConfigStore();
+  let configStoreForRedaction: Config.TelegramConfigStore | undefined;
+  const runtimeEvents = Status.createTelegramRuntimeEventRecorder({
+    getBotToken() {
+      return configStoreForRedaction?.getBotToken();
+    },
+  });
+  const recordRuntimeEvent = runtimeEvents.record;
+  const configStore = Config.createTelegramConfigStore({ recordRuntimeEvent });
+  configStoreForRedaction = configStore;
   Config.bindGlobalTelegramConfigRuntime(configStore);
   const configControls = Config.createTelegramConfigControls(configStore);
   const lockRuntime = Locks.createTelegramLockRuntime<Pi.ExtensionContext>();
@@ -68,10 +76,6 @@ export default function (pi: Pi.ExtensionAPI) {
   const modelMenuRuntime = Menu.createTelegramModelMenuRuntime<ActivePiModel>();
   const sectionRegistry = Sections.createAndBindTelegramSectionRegistry();
 
-  const runtimeEvents = Status.createTelegramRuntimeEventRecorder({
-    getBotToken: configStore.getBotToken,
-  });
-  const recordRuntimeEvent = runtimeEvents.record;
   const timeInjectionRuntime = TimeInjection.createTimeInjectionRuntime({
     getConfig: Config.createTelegramTimeConfigGetter(configStore),
     recordRuntimeEvent,

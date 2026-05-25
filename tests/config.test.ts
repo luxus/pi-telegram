@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -58,6 +58,34 @@ test("Telegram config helpers persist and reload config", async () => {
     (await readdir(agentDir)).filter((entry) => entry.includes(".tmp-")),
     [],
   );
+});
+
+test("Telegram config load recovers invalid JSON and records a diagnostic", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-telegram-invalid-config-"));
+  const configPath = join(agentDir, "telegram.json");
+  await writeFile(configPath, "{not valid json", "utf8");
+  const events: string[] = [];
+  const store = createTelegramConfigStore({
+    agentDir,
+    configPath,
+    initialConfig: { botToken: "previous" },
+    recordRuntimeEvent: (category, error, details) => {
+      events.push(
+        `${category}:${error instanceof Error ? error.name : String(error)}:${details?.phase}:${String(details?.recoveryPath ?? "")}`,
+      );
+    },
+  });
+
+  await store.load();
+
+  assert.deepEqual(store.get(), {});
+  const entries = await readdir(agentDir);
+  const recovery = entries.find((entry) => entry.startsWith("telegram.json.invalid-"));
+  assert.ok(recovery);
+  assert.equal(await readFile(join(agentDir, recovery), "utf8"), "{not valid json");
+  assert.equal(entries.includes("telegram.json"), false);
+  assert.equal(events.length, 1);
+  assert.match(events[0] ?? "", /^config:SyntaxError:load:/);
 });
 
 test("Telegram voice reply mode helpers distinguish implicit and explicit manual", () => {

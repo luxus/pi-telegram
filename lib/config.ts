@@ -84,6 +84,17 @@ export interface TelegramConfigStoreOptions {
   initialConfig?: TelegramConfig;
   agentDir?: string;
   configPath?: string;
+  recordRuntimeEvent?: (
+    category: string,
+    error: unknown,
+    details?: Record<string, unknown>,
+  ) => void;
+}
+
+export interface TelegramInvalidConfigRecovery {
+  configPath: string;
+  recoveryPath: string;
+  error: unknown;
 }
 
 export interface TelegramConfigRuntime {
@@ -125,12 +136,26 @@ export function bindGlobalTelegramConfigRuntime(
   });
 }
 
+function getInvalidTelegramConfigRecoveryPath(configPath: string): string {
+  return `${configPath}.invalid-${process.pid}-${Date.now()}`;
+}
+
 export async function readTelegramConfig(
   configPath: string,
+  options: {
+    onInvalidConfig?: (recovery: TelegramInvalidConfigRecovery) => void;
+  } = {},
 ): Promise<TelegramConfig> {
   if (!existsSync(configPath)) return {};
   const content = await readFile(configPath, "utf8");
-  return JSON.parse(content) as TelegramConfig;
+  try {
+    return JSON.parse(content) as TelegramConfig;
+  } catch (error) {
+    const recoveryPath = getInvalidTelegramConfigRecoveryPath(configPath);
+    await rename(configPath, recoveryPath);
+    options.onInvalidConfig?.({ configPath, recoveryPath, error });
+    return {};
+  }
 }
 
 export async function writeTelegramConfig(
@@ -176,7 +201,15 @@ export function createTelegramConfigStore(
       config.allowedUserId = userId;
     },
     load: async () => {
-      config = await readTelegramConfig(configPath);
+      config = await readTelegramConfig(configPath, {
+        onInvalidConfig: (recovery) => {
+          options.recordRuntimeEvent?.("config", recovery.error, {
+            phase: "load",
+            configPath: recovery.configPath,
+            recoveryPath: recovery.recoveryPath,
+          });
+        },
+      });
     },
     persist: async (nextConfig = config) => {
       await writeTelegramConfig(agentDir, configPath, nextConfig);

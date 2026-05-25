@@ -19,6 +19,8 @@ import { getTelegramVoiceTranscriptionProviders } from "./voice.ts";
 
 const DEFAULT_INBOUND_HANDLER_TIMEOUT_MS = 120_000;
 const INBOUND_HANDLER_REGISTRY_KEY = "__piTelegramInboundHandlers__";
+const MAX_INBOUND_HANDLER_OUTPUT_LENGTH = 12_000;
+const MAX_INBOUND_HANDLER_FAILURE_STREAM_LENGTH = 4_000;
 
 type TelegramInboundCommandTemplateConfig =
   | string
@@ -187,12 +189,28 @@ export function clearTelegramInboundHandlers(): void {
   getOrCreateInboundHandlerRegistry().handlers.clear();
 }
 
+function truncateTelegramInboundText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trimEnd()}… [truncated ${text.length - maxLength} chars]`;
+}
+
+function truncateTelegramInboundOutput(text: string): string {
+  return truncateTelegramInboundText(text, MAX_INBOUND_HANDLER_OUTPUT_LENGTH);
+}
+
+function truncateTelegramInboundFailureStream(text: string): string {
+  return truncateTelegramInboundText(
+    text.trimEnd(),
+    MAX_INBOUND_HANDLER_FAILURE_STREAM_LENGTH,
+  );
+}
+
 function normalizeInboundProgrammaticHandlerText(
   result: TelegramInboundProgrammaticHandlerResult,
 ): string | undefined {
   const text = typeof result === "string" ? result : result?.text;
   const normalized = text?.trim();
-  return normalized || undefined;
+  return normalized ? truncateTelegramInboundOutput(normalized) : undefined;
 }
 
 function normalizeStringList(value: string | string[] | undefined): string[] {
@@ -401,8 +419,10 @@ function formatTelegramInboundHandlerFailure(
   const parts = [
     `Inbound handler exited with code ${result.code}${result.killed ? " (killed)" : ""}`,
   ];
-  if (result.stderr.trim()) parts.push(`stderr:\n${result.stderr.trimEnd()}`);
-  if (result.stdout.trim()) parts.push(`stdout:\n${result.stdout.trimEnd()}`);
+  if (result.stderr.trim())
+    parts.push(`stderr:\n${truncateTelegramInboundFailureStream(result.stderr)}`);
+  if (result.stdout.trim())
+    parts.push(`stdout:\n${truncateTelegramInboundFailureStream(result.stdout)}`);
   return parts.join("\n\n");
 }
 
@@ -431,7 +451,7 @@ async function executeTelegramInboundHandlerInvocation(
   });
   if (result.code !== 0)
     throw new Error(formatTelegramInboundHandlerFailure(result));
-  return result.stdout;
+  return truncateTelegramInboundOutput(result.stdout);
 }
 
 function getTelegramInboundHandlerCompositionSteps(
@@ -504,7 +524,7 @@ async function executeTelegramTextHandlerInvocation(
   });
   if (result.code !== 0)
     throw new Error(formatTelegramInboundHandlerFailure(result));
-  return result.stdout;
+  return truncateTelegramInboundOutput(result.stdout);
 }
 
 async function executeTelegramTextHandler(
@@ -633,7 +653,7 @@ async function transcribeTelegramVoiceFileWithProviders(
     try {
       const result = await provider(file, {});
       const text = typeof result === "string" ? result : result?.text;
-      if (text?.trim()) return text.trim();
+      if (text?.trim()) return truncateTelegramInboundOutput(text.trim());
     } catch (error) {
       options.recordRuntimeEvent?.("voice-transcription-provider", error, {
         fileName: file.fileName || basename(file.path),
@@ -656,7 +676,7 @@ async function readBuiltInTelegramTextAttachment(
     return undefined;
   }
   const name = file.fileName || basename(file.path);
-  return `[${name}]\n${normalized}`;
+  return truncateTelegramInboundOutput(`[${name}]\n${normalized}`);
 }
 
 async function executeTelegramInboundHandler(

@@ -53,6 +53,8 @@ export interface TelegramStatusContext {
 export type TelegramRuntimeEventDetailValue = string | number | boolean | null;
 
 const MAX_RECENT_TELEGRAM_RUNTIME_EVENTS = 10;
+const MAX_TELEGRAM_RUNTIME_EVENT_MESSAGE_LENGTH = 1000;
+const MAX_TELEGRAM_RUNTIME_EVENT_DETAIL_LENGTH = 1000;
 
 export interface TelegramRuntimeEvent {
   at: number;
@@ -164,12 +166,35 @@ export interface TelegramStatusRuntime<
   getStatusLines: () => string[];
 }
 
+function truncateTelegramRuntimeEventText(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength).trimEnd()}… [truncated ${text.length - maxLength} chars]`;
+}
+
 export function redactTelegramRuntimeMessage(
   message: string,
   botToken: string | undefined,
 ): string {
-  if (!botToken) return message;
-  return message.split(botToken).join("<redacted-token>");
+  const redacted = botToken
+    ? message.split(botToken).join("<redacted-token>")
+    : message;
+  return truncateTelegramRuntimeEventText(
+    redacted,
+    MAX_TELEGRAM_RUNTIME_EVENT_MESSAGE_LENGTH,
+  );
+}
+
+function redactTelegramRuntimeDetail(
+  message: string,
+  botToken: string | undefined,
+): string {
+  const redacted = botToken
+    ? message.split(botToken).join("<redacted-token>")
+    : message;
+  return truncateTelegramRuntimeEventText(
+    redacted,
+    MAX_TELEGRAM_RUNTIME_EVENT_DETAIL_LENGTH,
+  );
 }
 
 function normalizeTelegramRuntimeEventDetails(
@@ -181,7 +206,7 @@ function normalizeTelegramRuntimeEventDetails(
   for (const [key, value] of Object.entries(details)) {
     if (value === undefined) continue;
     if (typeof value === "string") {
-      normalized[key] = redactTelegramRuntimeMessage(value, botToken);
+      normalized[key] = redactTelegramRuntimeDetail(value, botToken);
       continue;
     }
     if (typeof value === "number" || typeof value === "boolean") {
@@ -192,7 +217,7 @@ function normalizeTelegramRuntimeEventDetails(
       normalized[key] = null;
       continue;
     }
-    normalized[key] = redactTelegramRuntimeMessage(String(value), botToken);
+    normalized[key] = redactTelegramRuntimeDetail(String(value), botToken);
   }
   return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
