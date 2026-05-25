@@ -74,6 +74,18 @@ test("Underscores inside words do not become italic", () => {
   assert.match(chunks[0]?.text ?? "", /<b>bold<\/b>/);
 });
 
+test("Bold markdown can span soft line breaks", () => {
+  const chunks = renderTelegramMessage(
+    "Скорее: **архитектурно — да,\nпрактически — почти**.",
+    { mode: "markdown" },
+  );
+  assert.equal(chunks.length, 1);
+  assert.match(
+    chunks[0]?.text ?? "",
+    /Скорее: <b>архитектурно — да,\nпрактически — почти<\/b>\./,
+  );
+});
+
 test("Quoted nested lists stay in blockquote rendering", () => {
   const chunks = renderTelegramMessage(
     "> Quoted intro\n> - nested item\n>   - deeper item",

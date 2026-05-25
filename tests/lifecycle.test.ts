@@ -202,7 +202,45 @@ test("Message activity hooks re-arm typing for active Telegram turns", async () 
     { message: {} as never },
     createLifecycleContext(),
   );
-  assert.deepEqual(events, ["typing:start", "message:start", "message:update"]);
+  assert.deepEqual(events, [
+    "typing:start",
+    "message:start",
+    "typing:start",
+    "message:update",
+  ]);
+});
+
+test("Message activity hooks preserve typing after transient preview errors", async () => {
+  const events: string[] = [];
+  const hooks = createTelegramMessageActivityTypingHooks({
+    hasActiveTurn: () => true,
+    startTypingLoop: () => {
+      events.push("typing:start");
+    },
+    onMessageStart: async () => {
+      events.push("message:start");
+    },
+    onMessageUpdate: async () => {
+      events.push("message:update");
+      throw new Error("websocket disconnected");
+    },
+    recordRuntimeEvent: (category, error, details) => {
+      const message = error instanceof Error ? error.message : String(error);
+      events.push(`${category}:${message}:${details?.phase}`);
+    },
+  });
+
+  await hooks.onMessageUpdate(
+    { message: {} as never },
+    createLifecycleContext(),
+  );
+
+  assert.deepEqual(events, [
+    "typing:start",
+    "message:update",
+    "message-activity:websocket disconnected:update",
+    "typing:start",
+  ]);
 });
 
 test("Lifecycle helpers register pi hooks and delegate to handlers", async () => {
