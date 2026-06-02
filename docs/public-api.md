@@ -18,6 +18,7 @@ import telegram from "@llblab/pi-telegram";
 import { registerTelegramSection } from "@llblab/pi-telegram/sections";
 import { registerTelegramStatusLineProvider } from "@llblab/pi-telegram/status";
 import { registerTelegramUpdateHandler } from "@llblab/pi-telegram/updates";
+import { registerTelegramCommand } from "@llblab/pi-telegram/commands";
 import { registerTelegramInboundHandler } from "@llblab/pi-telegram/inbound";
 import { registerTelegramOutboundHandler } from "@llblab/pi-telegram/outbound";
 import {
@@ -26,7 +27,7 @@ import {
 } from "@llblab/pi-telegram/voice";
 ```
 
-`0.12.0` intentionally removes the published `@llblab/pi-telegram/lib/*.ts` compatibility wildcard. Integrations should use the public API domain subpaths above. Package exports point at `/api/*.ts` membranes that re-export only stable companion-extension symbols; implementation modules under `lib/` remain package-private. See [Public API Smoke Examples](#public-api-smoke-examples) below for minimal companion-extension patterns that avoid implementation imports.
+`0.12.0` intentionally removes the published `@llblab/pi-telegram/lib/*.ts` compatibility wildcard. Integrations should use the public API domain subpaths above. Package exports point at `/api/*.ts` membranes that re-export only stable companion-extension symbols; implementation modules under `lib/` remain package-private. Telegram command extensions use `/commands` as an explicit opt-in surface instead of automatically exposing arbitrary π slash commands to Telegram. See [Public API Smoke Examples](#public-api-smoke-examples) below for minimal companion-extension patterns that avoid implementation imports.
 
 ## User-Facing API
 
@@ -103,6 +104,9 @@ High-level stable APIs:
 - `registerTelegramSection()`
   - Identity: required `id`.
   - Purpose: managed menu/settings UI surfaces.
+- `registerTelegramCommand()`
+  - Identity: command name.
+  - Purpose: explicit opt-in Telegram-native slash commands for companion workflows.
 - `registerTelegramStatusLineProvider()`
   - Identity: required `id`.
   - Purpose: compact companion status rows in the `/start` menu status text.
@@ -132,6 +136,34 @@ Advanced stable diagnostics:
   - Purpose: surface companion diagnostics in `/telegram-status`.
 
 All registration APIs return a disposer. Companion extensions should call disposers on shutdown and re-register on session start when they recreate runtime state. Low-level bus APIs intentionally avoid ids and run in registration order. High-level provider/UI APIs require stable identity in their public contract so diagnostics, replacement, and cleanup are understandable. Generated voice-provider ids remain a temporary compatibility path where documented.
+
+## Commands
+
+Import from `@llblab/pi-telegram/commands`. This registers Telegram slash commands only; it does not expose π slash commands and is unrelated to command-template handlers.
+
+```ts
+const off = registerTelegramCommand({
+  name: "new",
+  description: "Start fresh",
+  showInMenu: true,
+  emoji: "🆕",
+  handler: async (ctx) => {
+    await ctx.reply("Starting a fresh session is handled by my extension.");
+  },
+});
+```
+
+Contract:
+
+- Command names are Telegram Bot API names: lowercase `a-z`, digits, and `_`, up to 32 characters. Hyphenated names are rejected.
+- Built-in bridge commands such as `/start`, `/compact`, `/next`, `/abort`, and `/stop` are reserved and cannot be claimed by extensions.
+- Duplicate extension command names are rejected. The disposer removes only its own command registration.
+- Routing precedence is built-in bridge commands first, registered extension commands second, and prompt-template aliases after that. This lets an extension intentionally claim a command name; prompt-template owners can resolve collisions by renaming the template alias.
+- `showInMenu` defaults to `false`. When `true`, `emoji` is required and the command appears in `/start` help with that marker; it also joins Bot API command sync only when `description` is provided, because Telegram command-list entries require descriptions. The emoji is prefixed to the Bot API description as well. Workflow/product commands should opt in deliberately instead of expanding the core command row by default.
+- The command context currently provides `name`, `args`, `reply(text)`, and `enqueuePrompt(prompt)`. Use `enqueuePrompt()` when a command should create normal queued π work rather than perform immediate Telegram-side handling.
+- Handler failures are isolated: the bridge records a `telegram-command` runtime diagnostic, sends a compact failure reply, and keeps Telegram polling/routing alive.
+
+Core commands stay reserved for bridge lifecycle, transport ownership, queue safety, and essential operator controls. Opinionated workflow commands should live in companion extensions through this registry.
 
 ## Sections
 

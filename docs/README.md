@@ -2,6 +2,8 @@
 
 Living index of project documentation in `/docs`.
 
+`public-api.md` is the canonical entrypoint for stable extension surfaces. Focused documents exist only when a surface has enough runtime rules to need a dedicated standard.
+
 ## Documents
 
 - [architecture.md](./architecture.md) — Overview of the Telegram bridge runtime, queueing model, rendering pipeline, and interactive controls

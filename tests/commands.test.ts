@@ -23,6 +23,8 @@ import {
   executeTelegramCommandAction,
   getTelegramCommandExecutionMode,
   getTelegramCommandMessageTarget,
+  clearTelegramExtensionCommands,
+  findTelegramExtensionCommand,
   handleTelegramAbortCommand,
   handleTelegramCompactCommand,
   handleTelegramCompactConfirmationCallback,
@@ -31,6 +33,7 @@ import {
   handleTelegramStopCommand,
   parseTelegramCommand,
   registerTelegramBotCommands,
+  registerTelegramCommand,
   registerTelegramBridgeCommands,
   TELEGRAM_APP_MENU_INTRO_HTML,
   TELEGRAM_BOT_COMMANDS,
@@ -124,6 +127,94 @@ test("Command helpers register Telegram bot commands through deps", async () => 
     },
   })();
   assert.deepEqual(calls, [TELEGRAM_BOT_COMMANDS, TELEGRAM_BOT_COMMANDS]);
+});
+
+test("Command helpers keep extension Telegram bot commands hidden by default", async () => {
+  clearTelegramExtensionCommands();
+  const dispose = registerTelegramCommand({
+    name: "new",
+    description: "Start fresh",
+    handler: async () => {},
+  });
+  const calls: unknown[] = [];
+  await registerTelegramBotCommands({
+    setMyCommands: async (commands) => {
+      calls.push(commands);
+    },
+  });
+  assert.deepEqual(calls, [TELEGRAM_BOT_COMMANDS]);
+  dispose();
+  clearTelegramExtensionCommands();
+});
+
+test("Command helpers register extension Telegram bot commands when visible", async () => {
+  clearTelegramExtensionCommands();
+  const dispose = registerTelegramCommand({
+    name: "new",
+    description: "Start fresh",
+    showInMenu: true,
+    emoji: "🆕",
+    handler: async () => {},
+  });
+  const calls: unknown[] = [];
+  await registerTelegramBotCommands({
+    setMyCommands: async (commands) => {
+      calls.push(commands);
+    },
+  });
+  assert.deepEqual(calls, [
+    [
+      TELEGRAM_BOT_COMMANDS[0],
+      TELEGRAM_BOT_COMMANDS[1],
+      { command: "new", description: "🆕 Start fresh" },
+      ...TELEGRAM_BOT_COMMANDS.slice(2),
+    ],
+  ]);
+  dispose();
+  clearTelegramExtensionCommands();
+});
+
+test("Command helpers reject visible extension commands without emoji", () => {
+  clearTelegramExtensionCommands();
+  assert.throws(
+    () =>
+      registerTelegramCommand({
+        name: "new",
+        showInMenu: true,
+        handler: () => {},
+      }),
+    /requires emoji/,
+  );
+  clearTelegramExtensionCommands();
+});
+
+test("Command helpers reject invalid and built-in extension command names", () => {
+  clearTelegramExtensionCommands();
+  assert.throws(
+    () => registerTelegramCommand({ name: "compact-all", handler: () => {} }),
+    /Invalid Telegram command name/,
+  );
+  assert.throws(
+    () => registerTelegramCommand({ name: "start", handler: () => {} }),
+    /conflicts with built-in command/,
+  );
+  clearTelegramExtensionCommands();
+});
+
+test("Command helpers register disposable extension commands", () => {
+  clearTelegramExtensionCommands();
+  const dispose = registerTelegramCommand({
+    name: "/new",
+    handler: () => {},
+  });
+  assert.equal(findTelegramExtensionCommand("new")?.name, "new");
+  assert.throws(
+    () => registerTelegramCommand({ name: "new", handler: () => {} }),
+    /already registered/,
+  );
+  dispose();
+  assert.equal(findTelegramExtensionCommand("new"), undefined);
+  clearTelegramExtensionCommands();
 });
 
 test("Command helpers register pi setup and status commands", async () => {
@@ -951,6 +1042,7 @@ test("Command menu controls swallow only stale context errors", async () => {
 });
 
 test("Command helpers build the unified app menu from commands and status", () => {
+  clearTelegramExtensionCommands();
   assert.equal(
     buildTelegramAppMenuHtml(
       "<b>Status:</b> <code>idle</code>\n<b>Context:</b> <code>1%</code>",
@@ -963,6 +1055,29 @@ test("Command helpers build the unified app menu from commands and status", () =
     ]),
     `${TELEGRAM_APP_MENU_INTRO_HTML}\n\n🧩 /review\n\n<b>Status:</b> <code>idle</code>`,
   );
+  const dispose = registerTelegramCommand({
+    name: "new",
+    description: "Start fresh",
+    showInMenu: true,
+    emoji: "🆕",
+    handler: () => {},
+  });
+  const menuWithExtensionCommand = TELEGRAM_APP_MENU_INTRO_HTML.replace(
+    "⏩ /next — Force next turn",
+    "🆕 /new — Start fresh\n⏩ /next — Force next turn",
+  );
+  assert.equal(
+    buildTelegramAppMenuHtml("<b>Status:</b> <code>idle</code>"),
+    `${menuWithExtensionCommand}\n\n<b>Status:</b> <code>idle</code>`,
+  );
+  assert.equal(
+    buildTelegramAppMenuHtml("<b>Status:</b> <code>idle</code>", [
+      { command: "review", description: "Review changes" },
+    ]),
+    `${menuWithExtensionCommand}\n\n🧩 /review\n\n<b>Status:</b> <code>idle</code>`,
+  );
+  dispose();
+  clearTelegramExtensionCommands();
   const buildAppMenuHtml = createTelegramAppMenuHtmlBuilder({
     buildStatusHtml: (ctx: string) => `<b>Status ${ctx}</b>`,
   });
@@ -1172,6 +1287,10 @@ test("Command or prompt runtime routes commands before enqueue fallback", async 
       events.push(`command:${commandName ?? "none"}:${message.text}:${ctx.id}`);
       return commandName === "status";
     },
+    executeExtensionCommand: async (command, message, ctx) => {
+      events.push(`extension:${command.name}:${command.args}:${message.text}:${ctx.id}`);
+      return command.name === "review";
+    },
     expandPromptTemplateCommand: (commandName, args) =>
       commandName === "review" ? `expanded:${args}` : undefined,
     replaceMessageText: (message, text) => ({ ...message, text }),
@@ -1181,12 +1300,16 @@ test("Command or prompt runtime routes commands before enqueue fallback", async 
   });
   await runtime.dispatchMessages([{ text: "/status" }], { id: "ctx" });
   await runtime.dispatchMessages([{ text: "/review staged" }], { id: "ctx" });
+  await runtime.dispatchMessages([{ text: "/fix_tests now" }], { id: "ctx" });
   await runtime.dispatchMessages([{ text: "hello" }], { id: "ctx" });
   await runtime.dispatchMessages([], { id: "ctx" });
   assert.deepEqual(events, [
     "command:status:/status:ctx",
     "command:review:/review staged:ctx",
-    "enqueue:1:expanded:staged:ctx",
+    "extension:review:staged:/review staged:ctx",
+    "command:fix_tests:/fix_tests now:ctx",
+    "extension:fix_tests:now:/fix_tests now:ctx",
+    "enqueue:1:/fix_tests now:ctx",
     "command:none:hello:ctx",
     "enqueue:1:hello:ctx",
   ]);

@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-No open changes.
+## 0.16.0: Telegram Extension Commands
+
+- `[API]` Added `registerTelegramCommand()` on the public `/commands` subpath so companion extensions can explicitly provide Telegram-native slash commands without adding workflow-specific commands to core. Built-in bridge commands stay reserved, extension command names must be Bot API safe, duplicate extension names are rejected, commands stay hidden unless `showInMenu` is enabled, visible commands must provide an emoji used in `/start` help and Bot API descriptions, extension-command descriptions are shown in `/start`, visible extension commands are inserted after `/compact` before queue-control commands, prompt-template commands remain separated in `/start`, handler failures are isolated with runtime diagnostics, and routing precedence is built-ins → extension commands → prompt-template aliases. Impact: commands such as fresh-session controls can live in companion extensions while `pi-telegram` remains a lightweight Telegram shell.
 
 ## 0.15.1: Typing Keepalive Cadence
 

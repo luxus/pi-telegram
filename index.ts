@@ -256,7 +256,7 @@ export default function (pi: Pi.ExtensionAPI) {
   const getPromptTemplateCommands =
     PromptTemplates.createTelegramPromptTemplateCommandGetter({
       getCommands,
-      reservedCommandNames: Commands.TELEGRAM_RESERVED_COMMAND_NAMES,
+      getReservedCommandNames: Commands.getTelegramReservedCommandNames,
     });
   const menuActions = Menu.createTelegramMenuActionRuntimeWithStateBuilder({
     runtime: modelMenuRuntime,

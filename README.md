@@ -114,7 +114,7 @@ If you ask π for a generated file, π can call `telegram_attach`: during a Tele
 
 ### Operator menu and controls
 
-The inline application menu is the primary operator surface. It exposes status, prompt-template commands, model selection, thinking level selection, settings, and queue inspection/mutation: a Telegram-shaped subset of the important handles normally available from the CLI. A typical control loop stays inside Telegram: open `/start`, inspect status, jump into Queue, delete stale work, switch model, return to the main menu, and keep the π session running without touching the terminal.
+The inline application menu is the primary operator surface. It exposes status, prompt-template commands, companion-extension Telegram commands, model selection, thinking level selection, settings, and queue inspection/mutation: a Telegram-shaped subset of the important handles normally available from the CLI. A typical control loop stays inside Telegram: open `/start`, inspect status, jump into Queue, delete stale work, switch model, return to the main menu, and keep the π session running without touching the terminal.
 
 ### Queue runtime
 
@@ -209,7 +209,7 @@ Unknown inline-button callbacks are forwarded to π as `[callback] <data>` when 
 
 ### Extension Sections
 
-Ordinary pi extensions can register structured UI sections that appear in the main Telegram menu and Settings submenu without owning a second polling loop. Companion extensions can also register compact status lines for the `/start` menu status text, allowing widgets such as quota indicators to appear beside Status, Usage, Cost, and Context only when relevant to the active model. Each section gets a narrow typed context with `edit`, `open`, `enqueuePrompt`, `answerCallback`, and `callbackData()` — enough to build interactive Telegram-native surfaces while `pi-telegram` owns transport, callback routing, navigation hierarchy, and diagnostics.
+Ordinary pi extensions can register Telegram-native slash commands, structured UI sections, and compact status lines without owning a second polling loop. Slash commands use explicit opt-in registration from `@llblab/pi-telegram/commands`, so workflow-specific commands such as a fresh-session control can live in companion extensions instead of expanding the core bridge command set. UI sections appear in the main Telegram menu and Settings submenu, while status lines allow widgets such as quota indicators to appear beside Status, Usage, Cost, and Context only when relevant to the active model. Each section gets a narrow typed context with `edit`, `open`, `enqueuePrompt`, `answerCallback`, and `callbackData()` — enough to build interactive Telegram-native surfaces while `pi-telegram` owns transport, callback routing, navigation hierarchy, and diagnostics.
 
 Import `registerTelegramSection()` from `@llblab/pi-telegram/sections` and return a disposer on shutdown. Sections can send interactive messages directly into the chat via `ctx.open()` — confirmation dialogs, approve/deny gates, and multi-step forms live outside the menu hierarchy while callbacks route through the same typed handler. See [`@llblab/pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) for a working reference and the [Extension Sections Standard](./docs/sections.md) for the full contract.
 

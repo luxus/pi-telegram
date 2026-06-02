@@ -18,17 +18,27 @@ async function assertPackagePathNotExported(specifier: string): Promise<void> {
 }
 
 test("Public package subpaths expose the stable companion-extension API", async () => {
-  const [root, inbound, outbound, updates, sections, status, voice, keyboard] =
-    await Promise.all([
-      import("@llblab/pi-telegram"),
-      import("@llblab/pi-telegram/inbound"),
-      import("@llblab/pi-telegram/outbound"),
-      import("@llblab/pi-telegram/updates"),
-      import("@llblab/pi-telegram/sections"),
-      import("@llblab/pi-telegram/status"),
-      import("@llblab/pi-telegram/voice"),
-      import("@llblab/pi-telegram/keyboard"),
-    ]);
+  const [
+    root,
+    inbound,
+    outbound,
+    updates,
+    commands,
+    sections,
+    status,
+    voice,
+    keyboard,
+  ] = await Promise.all([
+    import("@llblab/pi-telegram"),
+    import("@llblab/pi-telegram/inbound"),
+    import("@llblab/pi-telegram/outbound"),
+    import("@llblab/pi-telegram/updates"),
+    import("@llblab/pi-telegram/commands"),
+    import("@llblab/pi-telegram/sections"),
+    import("@llblab/pi-telegram/status"),
+    import("@llblab/pi-telegram/voice"),
+    import("@llblab/pi-telegram/keyboard"),
+  ]);
 
   assert.deepEqual(Object.keys(root), ["default"]);
   assert.deepEqual(Object.keys(inbound).sort(), [
@@ -41,6 +51,7 @@ test("Public package subpaths expose the stable companion-extension API", async 
   assert.deepEqual(Object.keys(updates).sort(), [
     "registerTelegramUpdateHandler",
   ]);
+  assert.deepEqual(Object.keys(commands).sort(), ["registerTelegramCommand"]);
   assert.deepEqual(Object.keys(sections).sort(), [
     "getTelegramSectionDiagnostics",
     "registerTelegramSection",

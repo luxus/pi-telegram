@@ -99,6 +99,7 @@ export function mapPiPromptTemplateNameToTelegramCommandName(
 export interface TelegramPromptTemplateCommandGetterDeps {
   getCommands: () => readonly PiSlashCommandInfo[];
   reservedCommandNames?: readonly string[];
+  getReservedCommandNames?: () => readonly string[];
 }
 
 export function getTelegramPromptTemplateCommands(
@@ -128,9 +129,14 @@ export function getTelegramPromptTemplateCommands(
 export function createTelegramPromptTemplateCommandGetter(
   deps: TelegramPromptTemplateCommandGetterDeps,
 ): () => TelegramPromptTemplateCommand[] {
-  const reservedNames = new Set(deps.reservedCommandNames);
   return function getPromptTemplateCommands() {
-    return getTelegramPromptTemplateCommands(deps.getCommands(), reservedNames);
+    return getTelegramPromptTemplateCommands(
+      deps.getCommands(),
+      new Set([
+        ...(deps.reservedCommandNames ?? []),
+        ...(deps.getReservedCommandNames?.() ?? []),
+      ]),
+    );
   };
 }
 

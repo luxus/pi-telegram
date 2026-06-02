@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import * as Commands from "../lib/commands.ts";
 import * as Media from "../lib/media.ts";
 import * as Menu from "../lib/menu.ts";
 import * as Model from "../lib/model.ts";
@@ -141,7 +142,10 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
       events.push(`answer:${callbackQueryId}`);
     },
     answerGuestQuery: async () => {},
-    sendTextReply: async () => undefined,
+    sendTextReply: async (_chatId, _replyToMessageId, text) => {
+      events.push(`reply:${text}`);
+      return undefined;
+    },
     setMyCommands: async () => undefined,
     getCommands: () => [],
     downloadFile: async (_fileId, fileName) => `/tmp/${fileName}`,
@@ -154,6 +158,11 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     isIdle: () => true,
     hasPendingMessages: () => false,
     compact: () => undefined,
+    recordRuntimeEvent: (category, error) => {
+      events.push(
+        `event:${category}:${error instanceof Error ? error.message : String(error)}`,
+      );
+    },
   });
   await routeRuntime.handleUpdate(
     {
@@ -211,6 +220,27 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     bridgeRuntime.lifecycle.shouldFoldQueuedPromptsIntoHistory(),
     false,
   );
+  const disposeFailingCommand = Commands.registerTelegramCommand({
+    name: "fail",
+    handler: () => {
+      throw new Error("boom");
+    },
+  });
+  await routeRuntime.handleUpdate(
+    {
+      message: {
+        message_id: 13,
+        chat: { id: 100, type: "private" },
+        from: { id: 7, is_bot: false },
+        text: "/fail now",
+      },
+    },
+    { cwd: "/repo" },
+  );
+  disposeFailingCommand();
+  assert.equal(events.includes("event:telegram-command:boom"), true);
+  assert.equal(events.includes("reply:Command failed."), true);
+  assert.equal(telegramQueueStore.getQueuedItems().length, 2);
   await routeRuntime.handleUpdate(
     {
       callback_query: {

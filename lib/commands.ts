@@ -27,6 +27,130 @@ export interface TelegramPromptTemplateMenuCommand {
   description?: string;
 }
 
+const TELEGRAM_EXTENSION_COMMAND_REGISTRY_KEY = "__piTelegramCommandRegistry__";
+const TELEGRAM_BOT_COMMAND_NAME_PATTERN = /^[a-z0-9_]{1,32}$/;
+
+export interface TelegramExtensionCommandContext {
+  name: string;
+  args: string;
+  reply: (text: string) => Promise<void>;
+  enqueuePrompt: (prompt: string) => Promise<void>;
+}
+
+export interface TelegramExtensionCommandRegistration {
+  name: string;
+  description?: string;
+  order?: number;
+  showInMenu?: boolean;
+  emoji?: string;
+  handler: (ctx: TelegramExtensionCommandContext) => Promise<void> | void;
+}
+
+interface RegisteredTelegramExtensionCommand {
+  name: string;
+  description?: string;
+  order: number;
+  showInMenu: boolean;
+  emoji?: string;
+  handler: TelegramExtensionCommandRegistration["handler"];
+}
+
+interface TelegramExtensionCommandRegistry {
+  commands: Map<string, RegisteredTelegramExtensionCommand>;
+}
+
+function getOrCreateTelegramCommandRegistry(): TelegramExtensionCommandRegistry {
+  const existing = (globalThis as Record<string, unknown>)[
+    TELEGRAM_EXTENSION_COMMAND_REGISTRY_KEY
+  ];
+  if (
+    existing &&
+    typeof existing === "object" &&
+    existing !== null &&
+    "commands" in existing &&
+    existing.commands instanceof Map
+  ) {
+    return existing as TelegramExtensionCommandRegistry;
+  }
+  const registry: TelegramExtensionCommandRegistry = { commands: new Map() };
+  (globalThis as Record<string, unknown>)[
+    TELEGRAM_EXTENSION_COMMAND_REGISTRY_KEY
+  ] = registry;
+  return registry;
+}
+
+export function normalizeTelegramExtensionCommandName(name: string): string {
+  return name.trim().replace(/^\/+/, "").toLowerCase();
+}
+
+export function isTelegramExtensionCommandName(name: string): boolean {
+  return TELEGRAM_BOT_COMMAND_NAME_PATTERN.test(name);
+}
+
+function normalizeTelegramExtensionCommandEmoji(
+  emoji: string | undefined,
+): string | undefined {
+  const normalized = emoji?.trim();
+  return normalized ? normalized : undefined;
+}
+
+export function registerTelegramCommand(
+  registration: TelegramExtensionCommandRegistration,
+): () => void {
+  const name = normalizeTelegramExtensionCommandName(registration.name);
+  const showInMenu = registration.showInMenu ?? false;
+  const emoji = normalizeTelegramExtensionCommandEmoji(registration.emoji);
+  if (!isTelegramExtensionCommandName(name)) {
+    throw new Error(`Invalid Telegram command name: ${registration.name}`);
+  }
+  if (showInMenu && !emoji) {
+    throw new Error(`Visible Telegram command requires emoji: ${name}`);
+  }
+  if (emoji && emoji.length > 8) {
+    throw new Error(`Telegram command emoji is too long: ${name}`);
+  }
+  if (isTelegramReservedCommandName(name)) {
+    throw new Error(
+      `Telegram command conflicts with built-in command: ${name}`,
+    );
+  }
+  const registry = getOrCreateTelegramCommandRegistry();
+  if (registry.commands.has(name)) {
+    throw new Error(`Telegram command is already registered: ${name}`);
+  }
+  const command: RegisteredTelegramExtensionCommand = {
+    name,
+    description: registration.description,
+    order: registration.order ?? 0,
+    showInMenu,
+    emoji,
+    handler: registration.handler,
+  };
+  registry.commands.set(name, command);
+  return () => {
+    if (registry.commands.get(name) === command) registry.commands.delete(name);
+  };
+}
+
+export function getTelegramExtensionCommands(): RegisteredTelegramExtensionCommand[] {
+  return Array.from(
+    getOrCreateTelegramCommandRegistry().commands.values(),
+  ).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+}
+
+export function findTelegramExtensionCommand(
+  name: string | undefined,
+): RegisteredTelegramExtensionCommand | undefined {
+  if (!name) return undefined;
+  return getOrCreateTelegramCommandRegistry().commands.get(
+    normalizeTelegramExtensionCommandName(name),
+  );
+}
+
+export function clearTelegramExtensionCommands(): void {
+  getOrCreateTelegramCommandRegistry().commands.clear();
+}
+
 export const TELEGRAM_COMMAND_EMOJI = {
   start: "🟢",
   status: "📊",
@@ -106,6 +230,22 @@ export const TELEGRAM_BUILTIN_BOT_COMMANDS: readonly TelegramBotCommandDefinitio
 
 export const TELEGRAM_BOT_COMMANDS = TELEGRAM_BUILTIN_BOT_COMMANDS;
 
+function getVisibleTelegramExtensionBotCommands(): TelegramBotCommandDefinition[] {
+  return getTelegramExtensionCommands()
+    .filter((command) => command.showInMenu && command.description)
+    .map((command) => ({
+      command: command.name,
+      description: `${command.emoji} ${command.description ?? command.name}`,
+    }));
+}
+
+export function getTelegramReservedCommandNames(): string[] {
+  return [
+    ...TELEGRAM_RESERVED_COMMAND_NAMES,
+    ...getTelegramExtensionCommands().map((command) => command.name),
+  ];
+}
+
 export interface TelegramBotCommandRegistrationDeps {
   setMyCommands: (
     commands: readonly TelegramBotCommandDefinition[],
@@ -115,7 +255,23 @@ export interface TelegramBotCommandRegistrationDeps {
 export async function registerTelegramBotCommands(
   deps: TelegramBotCommandRegistrationDeps,
 ): Promise<void> {
-  await deps.setMyCommands(TELEGRAM_BOT_COMMANDS);
+  const extensionCommands = getVisibleTelegramExtensionBotCommands();
+  if (extensionCommands.length === 0) {
+    await deps.setMyCommands(TELEGRAM_BOT_COMMANDS);
+    return;
+  }
+  const compactCommandIndex = TELEGRAM_BOT_COMMANDS.findIndex(
+    (command) => command.command === "compact",
+  );
+  if (compactCommandIndex === -1) {
+    await deps.setMyCommands([...TELEGRAM_BOT_COMMANDS, ...extensionCommands]);
+    return;
+  }
+  await deps.setMyCommands([
+    ...TELEGRAM_BOT_COMMANDS.slice(0, compactCommandIndex + 1),
+    ...extensionCommands,
+    ...TELEGRAM_BOT_COMMANDS.slice(compactCommandIndex + 1),
+  ]);
 }
 
 export function createTelegramBotCommandRegistrar(
@@ -566,6 +722,11 @@ export interface TelegramCommandOrPromptRuntimeDeps<TMessage, TContext> {
     message: TMessage,
     ctx: TContext,
   ) => Promise<boolean>;
+  executeExtensionCommand?: (
+    command: ParsedTelegramCommand,
+    message: TMessage,
+    ctx: TContext,
+  ) => Promise<boolean>;
   expandPromptTemplateCommand?: (
     commandName: string,
     args: string,
@@ -650,15 +811,41 @@ function buildTelegramPromptTemplateMenuHtml(
     .join("\n");
 }
 
+function buildTelegramExtensionCommandMenuLines(): string[] {
+  return getTelegramExtensionCommands()
+    .filter((command) => command.showInMenu)
+    .map((command) => {
+      const prefix = `${escapeTelegramCommandMenuHtml(command.emoji ?? "")} /${escapeTelegramCommandMenuHtml(command.name)}`;
+      if (!command.description) return prefix;
+      return `${prefix} — ${escapeTelegramCommandMenuHtml(command.description)}`;
+    });
+}
+
+function buildTelegramAppMenuIntroHtml(): string {
+  const extensionLines = buildTelegramExtensionCommandMenuLines();
+  if (extensionLines.length === 0) return TELEGRAM_APP_MENU_INTRO_HTML;
+  return [
+    "<b>π Telegram</b>",
+    "",
+    `${formatTelegramCommandEmojiPrefix("start")}/start — Open menu / Pair bridge`,
+    `${formatTelegramCommandEmojiPrefix("compact")}/compact — Compact current session`,
+    ...extensionLines,
+    `${formatTelegramCommandEmojiPrefix("next")}/next — Force next turn`,
+    `${formatTelegramCommandEmojiPrefix("continue")}/continue — Queue continue prompt`,
+    `${formatTelegramCommandEmojiPrefix("abort")}/abort — Abort π`,
+    `${formatTelegramCommandEmojiPrefix("stop")}/stop — Abort π & Clear queue`,
+  ].join("\n");
+}
+
 export function buildTelegramAppMenuHtml(
   statusHtml: string,
   promptTemplates: readonly TelegramPromptTemplateMenuCommand[] = [],
 ): string {
+  const introHtml = buildTelegramAppMenuIntroHtml();
   const promptTemplateHtml =
     buildTelegramPromptTemplateMenuHtml(promptTemplates);
-  if (!promptTemplateHtml)
-    return `${TELEGRAM_APP_MENU_INTRO_HTML}\n\n${statusHtml}`;
-  return `${TELEGRAM_APP_MENU_INTRO_HTML}\n\n${promptTemplateHtml}\n\n${statusHtml}`;
+  if (!promptTemplateHtml) return `${introHtml}\n\n${statusHtml}`;
+  return `${introHtml}\n\n${promptTemplateHtml}\n\n${statusHtml}`;
 }
 
 export function createTelegramAppMenuHtmlBuilder<TContext>(deps: {
@@ -1133,6 +1320,14 @@ export function createTelegramCommandOrPromptRuntime<TMessage, TContext>(
         ctx,
       );
       if (handled) return;
+      if (command && deps.executeExtensionCommand) {
+        const handledByExtension = await deps.executeExtensionCommand(
+          command,
+          messages[0]!,
+          ctx,
+        );
+        if (handledByExtension) return;
+      }
       if (command?.name && deps.expandPromptTemplateCommand) {
         const expanded = deps.expandPromptTemplateCommand(
           command.name,

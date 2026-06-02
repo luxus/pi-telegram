@@ -358,13 +358,12 @@ export function createTelegramInboundRouteRuntime<
     deps.queueMutationRuntime.append(continueTurn, ctx);
     deps.dispatchNextQueuedTelegramTurn(ctx);
   };
-  const reservedCommandNames = new Set(
-    Commands.TELEGRAM_RESERVED_COMMAND_NAMES,
-  );
+  const reservedCommandNames = () =>
+    new Set(Commands.getTelegramReservedCommandNames());
   const getPromptTemplateCommands = () =>
     PromptTemplates.getTelegramPromptTemplateCommands(
       deps.getCommands(),
-      reservedCommandNames,
+      reservedCommandNames(),
     );
   const commandHandler = Commands.createTelegramCommandHandlerTargetRuntime<
     TMessage,
@@ -434,6 +433,43 @@ export function createTelegramInboundRouteRuntime<
   >({
     extractRawText: Media.extractFirstTelegramMessageText,
     handleCommand: commandHandler,
+    executeExtensionCommand: async (command, message, ctx) => {
+      const extensionCommand = Commands.findTelegramExtensionCommand(
+        command.name,
+      );
+      if (!extensionCommand) return false;
+      try {
+        await extensionCommand.handler({
+          name: command.name,
+          args: command.args,
+          reply: (text) =>
+            deps
+              .sendTextReply(message.chat.id, message.message_id, text)
+              .then(() => {}),
+          enqueuePrompt: (prompt) =>
+            promptEnqueue(
+              [
+                {
+                  ...message,
+                  text: prompt,
+                  caption: undefined,
+                } as TMessage,
+              ],
+              ctx,
+            ),
+        });
+      } catch (error) {
+        deps.recordRuntimeEvent?.("telegram-command", error, {
+          command: command.name,
+        });
+        await deps.sendTextReply(
+          message.chat.id,
+          message.message_id,
+          "Command failed.",
+        );
+      }
+      return true;
+    },
     expandPromptTemplateCommand: (commandName, args) =>
       PromptTemplates.expandTelegramPromptTemplateCommand(
         commandName,

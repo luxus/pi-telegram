@@ -207,12 +207,13 @@ Unknown callback data outside owned prefixes is forwarded as `[callback] <data>`
 `pi-telegram` intentionally owns one `getUpdates` loop per bot. `polling` owns that internal loop; `updates` owns classification/default-routing plans plus the public handler registry layered extensions use to observe or consume updates without opening a competing polling connection. Layered extensions should integrate through extension surfaces instead of polling the same bot independently.
 
 - Raw update observation/consumption: [Updates](./updates.md).
+- Telegram-native slash commands: `registerTelegramCommand()` from [Public API](./public-api.md#commands).
 - Structured inline UI sections: [Sections](./sections.md).
 - Callback namespace discipline: [Callback Namespaces](./callback-namespaces.md).
 - Voice/STT/TTS providers: [Voice Integration](./voice.md).
 - Inbound/outbound command-template handlers: [Command Templates](./command-templates.md).
 
-Extension callbacks must avoid `pi-telegram` owned prefixes such as `compact:`, `tgbtn:`, `menu:`, `model:`, `thinking:`, `status:`, `queue:`, `settings:`, and `section:`.
+Extension callbacks must avoid `pi-telegram` owned prefixes such as `compact:`, `tgbtn:`, `menu:`, `model:`, `thinking:`, `status:`, `queue:`, `settings:`, and `section:`. Workflow-specific Telegram slash commands should use the public command registry instead of becoming new core built-ins unless they are bridge lifecycle, transport ownership, queue safety, or essential operator controls.
 
 ## Diagnostics And Operational Behavior
 
