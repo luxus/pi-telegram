@@ -101,6 +101,8 @@ export interface TelegramLockedPollingRuntimeDeps<
 > {
   lock: TelegramLockRuntime<TContext>;
   hasBotToken: () => boolean;
+  canStartPolling?: (ctx: TContext) => boolean;
+  formatStartBlockedMessage?: (ctx: TContext) => string;
   startPolling: (ctx: TContext) => void | Promise<void>;
   stopPolling: () => Promise<void>;
   updateStatus: (ctx: TContext) => void;
@@ -309,10 +311,18 @@ export function createTelegramLockedPollingRuntime<
     }, ownershipCheckMs);
     ownershipInterval.unref?.();
   };
+  const canStartPolling = (ctx: TContext): boolean =>
+    deps.canStartPolling?.(ctx) ?? true;
+  const formatStartBlockedMessage = (ctx: TContext): string =>
+    deps.formatStartBlockedMessage?.(ctx) ??
+    "Telegram polling is unavailable in this π run mode.";
   return {
     start: async (ctx, options = {}) => {
       if (!deps.hasBotToken())
         return { ok: false, message: "Telegram bot is not configured." };
+      if (!canStartPolling(ctx)) {
+        return { ok: false, message: formatStartBlockedMessage(ctx) };
+      }
       const acquired = deps.lock.acquire(ctx, options);
       if (!acquired.ok) {
         return {
@@ -341,6 +351,7 @@ export function createTelegramLockedPollingRuntime<
     suspend: suspendPolling,
     onSessionStart: async (_event, ctx) => {
       if (!deps.hasBotToken()) return;
+      if (!canStartPolling(ctx)) return;
       const ownsCurrentLock = deps.lock.owns(ctx);
       const state = ownsCurrentLock ? undefined : deps.lock.getState();
       const canResumeStaleSameCwd =

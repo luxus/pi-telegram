@@ -122,7 +122,10 @@ export interface TelegramInboundRouteRuntimeDeps<
     ctx: TContext,
   ) => Promise<void>;
   setModel: (model: TModel) => Promise<boolean>;
-  sendUserMessage?: (message: string) => void;
+  sendUserMessage?: (
+    message: string,
+    options?: Queue.TelegramPromptDeliveryOptions,
+  ) => void;
   isIdle: (ctx: TContext) => boolean;
   hasPendingMessages: (ctx: TContext) => boolean;
   compact: (
@@ -315,7 +318,10 @@ export function createTelegramInboundRouteRuntime<
       callbackData &&
       !isTelegramOwnedCallbackData(callbackData)
     ) {
-      deps.sendUserMessage(`[callback] ${callbackData}`);
+      deps.sendUserMessage(
+        `[callback] ${callbackData}`,
+        Queue.TELEGRAM_PROMPT_FOLLOW_UP_DELIVERY,
+      );
       await deps.answerCallbackQuery(query.id);
       return;
     }

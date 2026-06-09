@@ -41,6 +41,44 @@ export interface PiSettingsManager {
 }
 
 export type PiSlashCommandInfo = SlashCommandInfo;
+export type PiRunMode = "tui" | "rpc" | "json" | "print";
+
+function isPiRunMode(value: unknown): value is PiRunMode {
+  return (
+    value === "tui" ||
+    value === "rpc" ||
+    value === "json" ||
+    value === "print"
+  );
+}
+
+export function getExtensionContextMode(ctx: unknown): PiRunMode | undefined {
+  const mode =
+    typeof ctx === "object" && ctx !== null
+      ? (ctx as { mode?: unknown }).mode
+      : undefined;
+  return isPiRunMode(mode) ? mode : undefined;
+}
+
+export function isExtensionContextPassiveRunMode(ctx: unknown): boolean {
+  const mode = getExtensionContextMode(ctx);
+  return mode === "print" || mode === "json";
+}
+
+export function canStartPollingInExtensionContext(ctx: unknown): boolean {
+  return !isExtensionContextPassiveRunMode(ctx);
+}
+
+export function formatPollingStartBlockedByRunMode(ctx: unknown): string {
+  const mode = getExtensionContextMode(ctx);
+  return mode
+    ? `Telegram polling is unavailable in π ${mode} mode. Use /telegram-connect from a long-lived π session.`
+    : "Telegram polling is unavailable in this π run mode.";
+}
+
+export type PiSendUserMessageOptions = NonNullable<
+  Parameters<ExtensionAPI["sendUserMessage"]>[1]
+>;
 
 export interface PiExtensionApiRuntimePorts {
   sendUserMessage: ExtensionAPI["sendUserMessage"];
@@ -63,7 +101,7 @@ export function createExtensionApiRuntimePorts(
   >,
 ): PiExtensionApiRuntimePorts {
   return {
-    sendUserMessage: (content) => api.sendUserMessage(content),
+    sendUserMessage: (content, options) => api.sendUserMessage(content, options),
     exec: (command, args, options) => api.exec(command, args, options),
     getCommands: () => api.getCommands(),
     getThinkingLevel: () => api.getThinkingLevel(),

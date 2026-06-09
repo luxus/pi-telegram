@@ -88,6 +88,7 @@ Telegram configuration lives in `~/.pi/agent/telegram.json`. Polling ownership l
 - `/telegram-connect` acquires or moves singleton polling ownership before polling starts.
 - `/telegram-disconnect` stops polling and releases ownership.
 - Session start resumes polling only when the existing lock already points at the current `pid`/`cwd`, or when a stale same-`cwd` lock can be safely replaced after process restart.
+- Pi `print`/`json` run modes stay passive: they do not start or resume Telegram polling even if a lock is present. Older Pi runtimes without `ctx.mode` keep the previous compatibility behavior.
 - Inherited child sessions that see the same `telegram.json` but do not own the `pid`/`cwd` lock must not auto-start polling or call `getUpdates` unless the operator force-takes ownership.
 - Session replacement suspends polling/watchers without releasing ownership so the next session-start hook in the same process can resume.
 - Live polling owners require explicit takeover confirmation.
@@ -140,7 +141,7 @@ Dispatch requires:
 
 A dispatched prompt remains queued until `agent_start` consumes it. This keeps the active Telegram turn bound for previews, attachments, aborts, and final replies.
 
-Post-agent-end queue dispatch uses a session-bound deferred dispatcher. It is activated on session start, clears timers on shutdown, and skips callbacks from older generations before touching `ExtensionContext`. Dispatch stays session-bound after polling ownership moves elsewhere.
+Post-agent-end queue dispatch uses a session-bound deferred dispatcher. It is activated on session start, clears timers on shutdown, and skips callbacks from older generations before touching `ExtensionContext`. Dispatch stays session-bound after polling ownership moves elsewhere. When a queued Telegram prompt is forwarded into Pi, it uses Pi's explicit `followUp` delivery option so Telegram input preserves the existing non-steering queue contract even if Pi is still settling active work.
 
 ### Controls And Menus
 

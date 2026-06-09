@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.16.4: Follow-Up And Runtime Mode Hotfix
+
+- `[Runtime]` Feature-detect Pi `ctx.mode` and keep `print`/`json` runs passive by blocking polling start/resume in those modes. Impact: CLI/headless sessions can finish local work without inheriting Telegram polling, while `tui`/`rpc` and older Pi runtimes keep existing behavior.
+- `[Queue]` Forward queued Telegram prompts and unknown callback fallbacks to Pi with explicit `followUp` delivery semantics. Impact: Telegram input keeps the existing non-steering queue contract even when Pi's native streaming-message API requires an explicit busy-run policy.
+
 ## 0.16.3: Ownership And Shutdown Hotfix
 
 - `[Ownership]` Lock-gated proactive local/headless final-result push so only the current `/telegram-connect` owner can send non-Telegram agent-end replies to the paired chat, while accepted Telegram turns and queued work still finalize session-locally after polling ownership moves away. Impact: child/headless/non-owner instances no longer leak unrelated local results into Telegram.

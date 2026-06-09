@@ -386,6 +386,8 @@ export default function (pi: Pi.ExtensionAPI) {
   const lockedPollingRuntime = Locks.createTelegramLockedPollingRuntime({
     lock: lockRuntime,
     hasBotToken: configStore.hasBotToken,
+    canStartPolling: Pi.canStartPollingInExtensionContext,
+    formatStartBlockedMessage: Pi.formatPollingStartBlockedByRunMode,
     startPolling: pollingRuntime.start,
     stopPolling: pollingRuntime.stop,
     updateStatus,
