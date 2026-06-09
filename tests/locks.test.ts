@@ -251,6 +251,40 @@ test("Locked polling runtime releases ownership when setup is missing", async ()
   }
 });
 
+test("Locked polling runtime refuses start when run mode disallows polling", async () => {
+  const temp = createTempLockPath();
+  try {
+    const events: string[] = [];
+    const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+    const runtime = createTelegramLockedPollingRuntime({
+      lock,
+      hasBotToken: () => true,
+      canStartPolling: (ctx: { cwd: string; mode?: string }) =>
+        ctx.mode !== "print",
+      formatStartBlockedMessage: (ctx) =>
+        `Telegram polling is unavailable in π ${ctx.mode} mode.`,
+      startPolling: async () => {
+        events.push("start");
+      },
+      stopPolling: async () => {
+        events.push("stop");
+      },
+      updateStatus: () => {
+        events.push("status");
+      },
+    });
+    const started = await runtime.start({ cwd: "/repo", mode: "print" });
+    assert.deepEqual(started, {
+      ok: false,
+      message: "Telegram polling is unavailable in π print mode.",
+    });
+    assert.deepEqual(events, []);
+    assert.deepEqual(readLocks(temp.path), {});
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
 test("Locked polling runtime auto-starts only from an existing owned lock", async () => {
   const temp = createTempLockPath();
   try {
@@ -281,6 +315,41 @@ test("Locked polling runtime auto-starts only from an existing owned lock", asyn
     });
     assert.equal(await runtime.stop(), "Telegram bridge disconnected.");
     assert.deepEqual(events, ["start", "status", "stop"]);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Locked polling runtime does not auto-start when run mode disallows polling", async () => {
+  const temp = createTempLockPath();
+  try {
+    const events: string[] = [];
+    writeFileSync(
+      temp.path,
+      JSON.stringify({ [TELEGRAM_LOCK_KEY]: { pid: 10, cwd: "/repo" } }),
+    );
+    const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+    const runtime = createTelegramLockedPollingRuntime({
+      lock,
+      hasBotToken: () => true,
+      canStartPolling: (ctx: { cwd: string; mode?: string }) =>
+        ctx.mode !== "print",
+      startPolling: async () => {
+        events.push("start");
+      },
+      stopPolling: async () => {
+        events.push("stop");
+      },
+      updateStatus: () => {
+        events.push("status");
+      },
+    });
+    await runtime.onSessionStart({}, { cwd: "/repo", mode: "print" });
+    assert.deepEqual(events, []);
+    assert.deepEqual(readLocks(temp.path)[TELEGRAM_LOCK_KEY], {
+      pid: 10,
+      cwd: "/repo",
+    });
   } finally {
     rmSync(temp.dir, { recursive: true, force: true });
   }

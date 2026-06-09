@@ -1820,6 +1820,14 @@ export function createTelegramDeferredQueueDispatchRuntime<TContext = unknown>(
 
 // --- Dispatch Runtime ---
 
+export interface TelegramPromptDeliveryOptions {
+  deliverAs: "followUp";
+}
+
+export const TELEGRAM_PROMPT_FOLLOW_UP_DELIVERY = {
+  deliverAs: "followUp",
+} as const satisfies TelegramPromptDeliveryOptions;
+
 export interface TelegramDispatchRuntimeDeps<TContext = unknown> {
   executeControlItem: (
     item: Extract<
@@ -1833,6 +1841,7 @@ export interface TelegramDispatchRuntimeDeps<TContext = unknown> {
       TelegramQueueDispatchAction,
       { kind: "prompt" }
     >["item"]["content"],
+    options?: TelegramPromptDeliveryOptions,
   ) => void;
   onPromptDispatchFailure: (message: string) => void;
   onIdle: () => void;
@@ -1870,7 +1879,7 @@ export function executeTelegramQueueDispatchPlan<TContext = unknown>(
   }
   deps.onPromptDispatchStart(plan.item.chatId);
   try {
-    deps.sendUserMessage(plan.item.content);
+    deps.sendUserMessage(plan.item.content, TELEGRAM_PROMPT_FOLLOW_UP_DELIVERY);
   } catch (error) {
     const message = getTelegramQueueErrorMessage(error);
     deps.onPromptDispatchFailure(message);

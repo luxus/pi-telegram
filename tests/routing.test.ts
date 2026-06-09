@@ -152,8 +152,8 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     getThinkingLevel: () => "high",
     setThinkingLevel: () => undefined,
     setModel: async () => true,
-    sendUserMessage: (message) => {
-      events.push(`user:${message}`);
+    sendUserMessage: (message, options) => {
+      events.push(`user:${message}:${options?.deliverAs ?? "default"}`);
     },
     isIdle: () => true,
     hasPendingMessages: () => false,
@@ -281,11 +281,14 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
       { cwd: "/repo" },
     );
   }
-  assert.equal(events.includes("user:[callback] vividfish:approve:123"), true);
+  assert.equal(
+    events.includes("user:[callback] vividfish:approve:123:followUp"),
+    true,
+  );
   assert.equal(events.includes("answer:cb-custom"), true);
   for (const data of ownedCallbackData) {
     assert.equal(
-      events.some((event) => event === `user:[callback] ${data}`),
+      events.some((event) => event.startsWith(`user:[callback] ${data}:`)),
       false,
     );
   }

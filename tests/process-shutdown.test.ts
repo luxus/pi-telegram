@@ -125,7 +125,7 @@ async function createPiPrintFixtureExtension(tempDir: string): Promise<string> {
   const fixturePath = join(tempDir, "fixture-provider.ts");
   await writeFile(
     fixturePath,
-    `import { writeFileSync } from "node:fs";\n` +
+    `import { appendFileSync, writeFileSync } from "node:fs";\n` +
       `import { join } from "node:path";\n` +
       `import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";\n\n` +
       `export default function (pi) {\n` +
@@ -133,8 +133,16 @@ async function createPiPrintFixtureExtension(tempDir: string): Promise<string> {
       `  if (process.env.PI_TELEGRAM_TEST_LOCK_MODE === "owner" && agentDir) {\n` +
       `    writeFileSync(join(agentDir, "locks.json"), JSON.stringify({ "@llblab/pi-telegram": { pid: process.pid } }) + "\\n");\n` +
       `  }\n` +
+      `  pi.on("session_start", (_event, ctx) => {\n` +
+      `    const forcedMode = process.env.PI_TELEGRAM_TEST_CTX_MODE;\n` +
+      `    if (forcedMode && ctx.mode === undefined) ctx.mode = forcedMode;\n` +
+      `    const methodMarker = process.env.PI_TELEGRAM_TEST_METHOD_MARKER;\n` +
+      `    if (methodMarker) appendFileSync(methodMarker, "session-mode:" + String(ctx.mode) + "\\n");\n` +
+      `  });\n` +
       `  globalThis.fetch = async (input, init = {}) => {\n` +
       `    const method = String(input).split("/").at(-1);\n` +
+      `    const methodMarker = process.env.PI_TELEGRAM_TEST_METHOD_MARKER;\n` +
+      `    if (methodMarker) appendFileSync(methodMarker, method + "\\n");\n` +
       `    if (method === "deleteWebhook") return { json: async () => ({ ok: true, result: true }) };\n` +
       `    if (method === "sendChatAction") return { json: async () => ({ ok: true, result: true }) };\n` +
       `    if (method === "sendMessage") {\n` +
@@ -496,6 +504,37 @@ test(
       assert.equal(result.code, 0, result.stderr);
       assert.equal(result.signal, null, result.stderr);
       assert.match(result.stdout, /fixture ok/);
+    } finally {
+      await rm(agentDir, { recursive: true, force: true });
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "pi -p with Telegram-owned lock stays passive and does not poll",
+  { skip: !PI_CLI_AVAILABLE },
+  async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), "pi-telegram-pi-print-"));
+    const fixtureExtension = await createPiPrintFixtureExtension(tempDir);
+    const markerPath = join(tempDir, "telegram-methods.log");
+    const agentDir = await createPiPrintAgentDir({
+      botToken: "123:abc",
+      allowedUserId: 77,
+      lastUpdateId: 0,
+    });
+    try {
+      const result = await runPiPrintWithTelegram(agentDir, fixtureExtension, {
+        PI_TELEGRAM_TEST_CTX_MODE: "print",
+        PI_TELEGRAM_TEST_LOCK_MODE: "owner",
+        PI_TELEGRAM_TEST_METHOD_MARKER: markerPath,
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.signal, null, result.stderr);
+      assert.match(result.stdout, /fixture ok/);
+      const methods = await readFile(markerPath, "utf8").catch(() => "");
+      assert.doesNotMatch(methods, /deleteWebhook/);
+      assert.doesNotMatch(methods, /getUpdates/);
     } finally {
       await rm(agentDir, { recursive: true, force: true });
       await rm(tempDir, { recursive: true, force: true });

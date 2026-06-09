@@ -2722,6 +2722,47 @@ test("Dispatch runtime idles on none and executes control items directly", () =>
   assert.deepEqual(events, ["idle", "control"]);
 });
 
+test("Dispatch runtime sends prompt turns as Pi follow-up messages", () => {
+  const events: string[] = [];
+  executeTelegramQueueDispatchPlan(
+    {
+      kind: "prompt",
+      item: {
+        kind: "prompt",
+        chatId: 2,
+        replyToMessageId: 3,
+        sourceMessageIds: [3],
+        queueOrder: 2,
+        queueLane: "default",
+        laneOrder: 2,
+        queuedAttachments: [],
+        content: [{ type: "text", text: "prompt" }],
+        historyText: "prompt",
+        statusSummary: "prompt",
+      },
+      remainingItems: [],
+    },
+    {
+      executeControlItem: () => {
+        events.push("control");
+      },
+      onPromptDispatchStart: (chatId) => {
+        events.push(`start:${chatId}`);
+      },
+      sendUserMessage: (_content, options) => {
+        events.push(`send:${options?.deliverAs ?? "default"}`);
+      },
+      onPromptDispatchFailure: (message) => {
+        events.push(`error:${message}`);
+      },
+      onIdle: () => {
+        events.push("idle");
+      },
+    },
+  );
+  assert.deepEqual(events, ["start:2", "send:followUp"]);
+});
+
 test("Dispatch runtime reports prompt dispatch failures after starting", () => {
   const events: string[] = [];
   executeTelegramQueueDispatchPlan(
