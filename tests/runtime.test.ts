@@ -927,7 +927,9 @@ test("Extension runtime dispatches accepted queued work after polling ownership 
       },
       ctx,
     );
-    await waitForEventLoopCondition(() => sentMessages.length === 2);
+    // Follow-up dispatch is intentionally routed through the session-bound
+    // deferred queue timer; wait on real time instead of setImmediate turns.
+    await waitForCondition(() => sentMessages.length === 2);
     assert.match(String(sentBodies[0]?.text ?? ""), /First final/);
     assert.match(
       getRuntimeHarnessMessageText(sentMessages[1] as RuntimeHarnessMessage),
