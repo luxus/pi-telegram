@@ -7,24 +7,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  buildTelegramPreviewFlushText,
-  buildTelegramPreviewSnapshot,
-  renderTelegramMessage,
-  type TelegramRenderedChunk,
-  type TelegramRenderMode,
-} from "../lib/rendering.ts";
-import {
   allocateTelegramDraftId,
   buildTelegramPreviewFinalText,
   clearTelegramPreview,
   createTelegramAssistantMessagePreviewHooks,
   createTelegramAssistantPreviewRuntime,
+  createTelegramNativeMarkdownPreviewFinalizer,
   createTelegramPreviewController,
   createTelegramPreviewControllerRuntime,
   createTelegramPreviewMessageTransport,
-  createTelegramPreviewRenderedChunkTransport,
   createTelegramPreviewRuntimeState,
-  finalizeTelegramMarkdownPreview,
   finalizeTelegramPreview,
   flushTelegramPreview,
   handleTelegramAssistantMessagePreviewStart,
@@ -39,7 +31,6 @@ function createPreviewRuntimeHarness(state?: {
   pendingText: string;
   lastSentText: string;
   lastSentParseMode?: "HTML";
-  lastSentStrategy?: "plain" | "rich-stable-blocks";
   flushTimer?: ReturnType<typeof setTimeout>;
 }) {
   let previewState = state;
@@ -65,7 +56,6 @@ function createPreviewRuntimeHarness(state?: {
         events.push("clear-timer");
       },
       maxMessageLength: 50,
-      renderPreviewText: (markdown: string) => markdown.replaceAll("*", ""),
       getDraftSupport: () => draftSupport,
       setDraftSupport: (support: "unknown" | "supported" | "unsupported") => {
         draftSupport = support;
@@ -92,32 +82,6 @@ function createPreviewRuntimeHarness(state?: {
           `edit:${chatId}:${messageId}:${text}:${options?.parseMode ?? "plain"}`,
         );
       },
-      renderTelegramMessage: (
-        text: string,
-        options?: { mode?: TelegramRenderMode },
-      ): TelegramRenderedChunk[] =>
-        options?.mode === "markdown"
-          ? [{ text: `markdown:${text}`, parseMode: "HTML" as const }]
-          : [{ text: `${options?.mode ?? "plain"}:${text}` }],
-      sendRenderedChunks: async (
-        chatId: number,
-        chunks: Array<{ text: string }>,
-      ) => {
-        events.push(
-          `render-send:${chatId}:${chunks.map((chunk) => chunk.text).join("|")}`,
-        );
-        return 88;
-      },
-      editRenderedMessage: async (
-        chatId: number,
-        messageId: number,
-        chunks: Array<{ text: string }>,
-      ) => {
-        events.push(
-          `render-edit:${chatId}:${messageId}:${chunks.map((chunk) => chunk.text).join("|")}`,
-        );
-        return messageId;
-      },
       canSend: undefined as undefined | (() => boolean),
       recordRuntimeEvent: (
         category: string,
@@ -129,144 +93,6 @@ function createPreviewRuntimeHarness(state?: {
     },
   };
 }
-
-test("Preview helpers build flush text only when the preview changed", () => {
-  assert.equal(
-    buildTelegramPreviewFlushText({
-      state: {
-        pendingText: "**hello**",
-        lastSentText: "",
-      },
-      maxMessageLength: 4096,
-      renderPreviewText: (markdown) => markdown.replaceAll("*", ""),
-    }),
-    "hello",
-  );
-  assert.equal(
-    buildTelegramPreviewFlushText({
-      state: {
-        pendingText: "**hello**",
-        lastSentText: "hello",
-      },
-      maxMessageLength: 4096,
-      renderPreviewText: (markdown) => markdown.replaceAll("*", ""),
-    }),
-    undefined,
-  );
-});
-
-test("Preview snapshots prefer stable rich blocks and fall back to plain text", () => {
-  const richSnapshot = buildTelegramPreviewSnapshot({
-    state: {
-      pendingText: "```ts\nconst value = 1\n```",
-      lastSentText: "",
-    },
-    maxMessageLength: 100,
-    renderPreviewText: (markdown) => markdown.replaceAll("*", ""),
-    renderTelegramMessage: (text, options) =>
-      options?.mode === "markdown"
-        ? [{ text: `<b>${text}</b>`, parseMode: "HTML" as const }]
-        : [{ text }],
-  });
-  assert.deepEqual(richSnapshot, {
-    text: "<b>```ts\nconst value = 1\n```</b>",
-    parseMode: "HTML",
-    sourceText: "```ts\nconst value = 1\n```",
-    strategy: "rich-stable-blocks",
-  });
-  const plainSnapshot = buildTelegramPreviewSnapshot({
-    state: {
-      pendingText: "**hello**",
-      lastSentText: "",
-    },
-    maxMessageLength: 5,
-    renderPreviewText: (markdown) => markdown.replaceAll("*", ""),
-    renderTelegramMessage: () => [
-      { text: "markdown:too-long", parseMode: "HTML" as const },
-    ],
-  });
-  assert.deepEqual(plainSnapshot, {
-    text: "hello",
-    sourceText: "**hello**",
-    strategy: "plain",
-  });
-});
-
-test("Preview snapshots append conservative plain tails for incomplete fences, quotes, and lists", () => {
-  const renderTelegramMessage = (
-    text: string,
-    options?: { mode?: TelegramRenderMode },
-  ) =>
-    options?.mode === "markdown"
-      ? [{ text: `<b>${text}</b>`, parseMode: "HTML" as const }]
-      : [{ text }];
-  const fenceSnapshot = buildTelegramPreviewSnapshot({
-    state: {
-      pendingText: "## Intro\n\n```ts\nconst value = 1",
-      lastSentText: "",
-    },
-    maxMessageLength: 200,
-    renderPreviewText: (markdown) => markdown,
-    renderTelegramMessage,
-  });
-  assert.deepEqual(fenceSnapshot, {
-    text: "<b>## Intro</b>\n\n```ts\nconst value = 1",
-    parseMode: "HTML",
-    sourceText: "## Intro\n\n```ts\nconst value = 1",
-    strategy: "rich-stable-blocks",
-  });
-  const quoteSnapshot = buildTelegramPreviewSnapshot({
-    state: {
-      pendingText: "## Intro\n\n\n> quoted line",
-      lastSentText: "",
-    },
-    maxMessageLength: 200,
-    renderPreviewText: (markdown) => markdown,
-    renderTelegramMessage,
-  });
-  assert.deepEqual(quoteSnapshot, {
-    text: "<b>## Intro</b>\n\n\n&gt; quoted line",
-    parseMode: "HTML",
-    sourceText: "## Intro\n\n\n> quoted line",
-    strategy: "rich-stable-blocks",
-  });
-  const listSnapshot = buildTelegramPreviewSnapshot({
-    state: {
-      pendingText: "## Intro\n\n\n- first\n- second",
-      lastSentText: "",
-    },
-    maxMessageLength: 200,
-    renderPreviewText: (markdown) => markdown,
-    renderTelegramMessage,
-  });
-  assert.deepEqual(listSnapshot, {
-    text: "<b>## Intro</b>\n\n\n- first\n- second",
-    parseMode: "HTML",
-    sourceText: "## Intro\n\n\n- first\n- second",
-    strategy: "rich-stable-blocks",
-  });
-});
-
-test("Preview snapshots omit unstable tails when long-message limits leave no room", () => {
-  const snapshot = buildTelegramPreviewSnapshot({
-    state: {
-      pendingText: "## Intro\n\n- first\n- second\n- third",
-      lastSentText: "",
-    },
-    maxMessageLength: 18,
-    renderPreviewText: (markdown) => markdown,
-    renderTelegramMessage: (text, options) =>
-      options?.mode === "markdown"
-        ? [{ text: `<b>${text}</b>`, parseMode: "HTML" as const }]
-        : [{ text }],
-  });
-  assert.deepEqual(snapshot, {
-    text: "<b>## Intro</b>",
-    parseMode: "HTML",
-    sourceText: "## Intro\n\n- first\n- second\n- third",
-    strategy: "rich-stable-blocks",
-  });
-});
 
 test("Preview helpers create state and allocate draft ids", () => {
   assert.deepEqual(createTelegramPreviewRuntimeState("unknown"), {
@@ -283,13 +109,12 @@ test("Preview helpers create state and allocate draft ids", () => {
   assert.equal(allocateTelegramDraftId(2, 2), 1);
 });
 
-test("Preview helpers compute final text fallback without reusing rich HTML snapshots", () => {
+test("Preview helpers compute final text fallback without reusing HTML snapshots", () => {
   assert.equal(
     buildTelegramPreviewFinalText({
       mode: "message",
       pendingText: "   ",
       lastSentText: "saved",
-      lastSentStrategy: "plain",
     }),
     "saved",
   );
@@ -299,7 +124,6 @@ test("Preview helpers compute final text fallback without reusing rich HTML snap
       pendingText: "   ",
       lastSentText: "<b>saved</b>",
       lastSentParseMode: "HTML",
-      lastSentStrategy: "rich-stable-blocks",
     }),
     undefined,
   );
@@ -313,7 +137,7 @@ test("Preview helpers compute final text fallback without reusing rich HTML snap
   );
 });
 
-test("Preview helpers use drafts only for plain preview snapshots", () => {
+test("Preview helpers use drafts for native Markdown snapshots", () => {
   assert.equal(
     shouldUseTelegramDraftPreview({ draftSupport: "unknown" }),
     true,
@@ -321,21 +145,9 @@ test("Preview helpers use drafts only for plain preview snapshots", () => {
   assert.equal(
     shouldUseTelegramDraftPreview({
       draftSupport: "supported",
-      snapshot: { text: "preview", sourceText: "preview", strategy: "plain" },
+      snapshot: { text: "preview", sourceText: "preview" },
     }),
     true,
-  );
-  assert.equal(
-    shouldUseTelegramDraftPreview({
-      draftSupport: "supported",
-      snapshot: {
-        text: "<b>preview</b>",
-        parseMode: "HTML",
-        sourceText: "preview",
-        strategy: "rich-stable-blocks",
-      },
-    }),
-    false,
   );
   assert.equal(
     shouldUseTelegramDraftPreview({ draftSupport: "unsupported" }),
@@ -392,27 +204,6 @@ test("Preview message transport adapts Bot API bodies and reply metadata", async
   ]);
 });
 
-test("Preview rendered-chunk transport adapts reply context options", async () => {
-  const calls: unknown[] = [];
-  const transport = createTelegramPreviewRenderedChunkTransport({
-    sendRenderedChunks: async (chatId, chunks, options) => {
-      calls.push({ chatId, chunks, options });
-      return 77;
-    },
-    editRenderedMessage: async (chatId, messageId, chunks) => {
-      calls.push({ chatId, messageId, chunks });
-      return messageId;
-    },
-  });
-  const chunks = [{ text: "hello" }];
-  assert.equal(await transport.sendRenderedChunks(7, chunks, 9), 77);
-  assert.equal(await transport.editRenderedMessage(7, 77, chunks), 77);
-  assert.deepEqual(calls, [
-    { chatId: 7, chunks, options: { replyToMessageId: 9 } },
-    { chatId: 7, messageId: 77, chunks },
-  ]);
-});
-
 test("Assistant preview runtime binds controller and message hooks", async () => {
   const events: string[] = [];
   let activeTurn: { chatId: number } | undefined = { chatId: 7 };
@@ -424,16 +215,13 @@ test("Assistant preview runtime binds controller and message hooks", async () =>
     isAssistantMessage: (message) => message.role === "assistant",
     getMessageText: (message) => message.text ?? "",
     maxMessageLength: 100,
-    renderPreviewText: (markdown) => markdown,
     sendDraft: async () => {
       events.push("draft");
     },
     sendMessage: async () => ({ message_id: 22 }),
     editMessageText: async () => {},
     buildReplyParameters: () => undefined,
-    renderTelegramMessage: () => [{ text: "done" }],
-    sendRenderedChunks: async () => undefined,
-    editRenderedMessage: async () => undefined,
+    sendMarkdownReply: async () => undefined,
   });
   await runtime.onMessageStart({ message: { role: "assistant" } });
   await runtime.onMessageUpdate({
@@ -452,7 +240,71 @@ test("Assistant preview runtime binds controller and message hooks", async () =>
     message: { role: "assistant", text: "ignored" },
   });
   assert.equal(runtime.getState()?.pendingText, "hello");
-  assert.deepEqual(events, []);
+  assert.deepEqual(events, ["draft"]);
+});
+
+test("Assistant preview runtime finalizes previous markdown through native reply sender", async () => {
+  const events: string[] = [];
+  const runtime = createTelegramAssistantPreviewRuntime<{
+    role: string;
+    text?: string;
+  }>({
+    getActiveTurn: () => ({ chatId: 7 }),
+    isAssistantMessage: (message) => message.role === "assistant",
+    getMessageText: (message) => message.text ?? "",
+    maxMessageLength: 100,
+    sendDraft: async () => {},
+    sendMessage: async () => ({ message_id: 22 }),
+    editMessageText: async () => {},
+    buildReplyParameters: () => undefined,
+    sendMarkdownReply: async (chatId, replyToMessageId, markdown) => {
+      events.push(
+        `native-final:${chatId}:${replyToMessageId ?? "none"}:${markdown}`,
+      );
+      return 99;
+    },
+  });
+  runtime.setState({
+    mode: "draft",
+    pendingText: "**previous**",
+    lastSentText: "**previous**",
+  });
+  await runtime.onMessageStart({ message: { role: "assistant" } });
+  assert.deepEqual(events, ["native-final:7:none:**previous**"]);
+  assert.equal(runtime.getState()?.pendingText, "");
+});
+
+test("Assistant preview runtime edits fallback preview messages with native markdown", async () => {
+  const events: string[] = [];
+  const runtime = createTelegramAssistantPreviewRuntime<{
+    role: string;
+    text?: string;
+  }>({
+    getActiveTurn: () => ({ chatId: 7 }),
+    isAssistantMessage: (message) => message.role === "assistant",
+    getMessageText: (message) => message.text ?? "",
+    maxMessageLength: 100,
+    sendDraft: async () => {},
+    sendMessage: async () => ({ message_id: 22 }),
+    editMessageText: async () => {},
+    buildReplyParameters: () => undefined,
+    sendMarkdownReply: async () => {
+      events.push("unexpected-send");
+      return 99;
+    },
+    editMarkdownMessage: async (chatId, messageId, markdown) => {
+      events.push(`native-edit:${chatId}:${messageId}:${markdown}`);
+    },
+  });
+  runtime.setState({
+    mode: "message",
+    messageId: 55,
+    pendingText: "**previous**",
+    lastSentText: "**previous**",
+  });
+  await runtime.onMessageStart({ message: { role: "assistant" } });
+  assert.deepEqual(events, ["native-edit:7:55:**previous**"]);
+  assert.equal(runtime.getState()?.pendingText, "");
 });
 
 test("Assistant preview runtime suppresses text preview for voice-tagged turns", async () => {
@@ -466,16 +318,13 @@ test("Assistant preview runtime suppresses text preview for voice-tagged turns",
     isAssistantMessage: (message) => message.role === "assistant",
     getMessageText: (message) => message.text ?? "",
     maxMessageLength: 100,
-    renderPreviewText: (markdown) => markdown,
     sendDraft: async () => {
       events.push("draft");
     },
     sendMessage: async () => ({ message_id: 22 }),
     editMessageText: async () => {},
     buildReplyParameters: () => undefined,
-    renderTelegramMessage: () => [{ text: "done" }],
-    sendRenderedChunks: async () => undefined,
-    editRenderedMessage: async () => undefined,
+    sendMarkdownReply: async () => undefined,
   });
   await runtime.onMessageStart({ message: { role: "assistant" } });
   assert.equal(runtime.getState(), undefined);
@@ -497,16 +346,13 @@ test("Assistant preview runtime suppresses text preview for voice-required turns
     isAssistantMessage: (message) => message.role === "assistant",
     getMessageText: (message) => message.text ?? "",
     maxMessageLength: 100,
-    renderPreviewText: (markdown) => markdown,
     sendDraft: async () => {
       events.push("draft");
     },
     sendMessage: async () => ({ message_id: 22 }),
     editMessageText: async () => {},
     buildReplyParameters: () => undefined,
-    renderTelegramMessage: () => [{ text: "done" }],
-    sendRenderedChunks: async () => undefined,
-    editRenderedMessage: async () => undefined,
+    sendMarkdownReply: async () => undefined,
   });
   await runtime.onMessageStart({ message: { role: "assistant" } });
   assert.equal(runtime.getState(), undefined);
@@ -517,12 +363,11 @@ test("Assistant preview runtime suppresses text preview for voice-required turns
   assert.deepEqual(events, []);
 });
 
-test("Preview controller runtime binds Bot API and rendered-chunk transports", async () => {
+test("Preview controller runtime binds Bot API transports", async () => {
   const calls: unknown[] = [];
   const controller = createTelegramPreviewControllerRuntime({
     getDefaultReplyToMessageId: () => 11,
     maxMessageLength: 100,
-    renderPreviewText: (markdown) => markdown,
     sendDraft: async () => {},
     sendMessage: async (body) => {
       calls.push(body);
@@ -535,12 +380,6 @@ test("Preview controller runtime binds Bot API and rendered-chunk transports", a
       messageId === undefined
         ? undefined
         : { message_id: messageId, allow_sending_without_reply: true },
-    renderTelegramMessage: () => [{ text: "<b>done</b>", parseMode: "HTML" }],
-    sendRenderedChunks: async (chatId, chunks, options) => {
-      calls.push({ chatId, chunks, options });
-      return 33;
-    },
-    editRenderedMessage: async () => undefined,
   });
   controller.setState({
     mode: "draft",
@@ -548,12 +387,13 @@ test("Preview controller runtime binds Bot API and rendered-chunk transports", a
     pendingText: "done",
     lastSentText: "done",
   });
-  assert.equal(await controller.finalizeMarkdown(7, "done"), true);
+  assert.equal(await controller.finalize(7), true);
   assert.deepEqual(calls, [
     {
-      chatId: 7,
-      chunks: [{ text: "<b>done</b>", parseMode: "HTML" }],
-      options: { replyToMessageId: 11 },
+      chat_id: 7,
+      text: "done",
+      parse_mode: undefined,
+      reply_parameters: { message_id: 11, allow_sending_without_reply: true },
     },
   ]);
 });
@@ -561,13 +401,9 @@ test("Preview controller runtime binds Bot API and rendered-chunk transports", a
 test("Preview controller owns pending text mutation and state reset", () => {
   const controller = createTelegramPreviewController({
     maxMessageLength: 50,
-    renderPreviewText: (markdown) => markdown,
     sendDraft: async () => {},
     sendMessage: async () => ({ message_id: 1 }),
     editMessageText: async () => {},
-    renderTelegramMessage: () => [],
-    sendRenderedChunks: async () => undefined,
-    editRenderedMessage: async () => undefined,
   });
   controller.setPendingText("ignored");
   assert.equal(controller.getState(), undefined);
@@ -704,7 +540,7 @@ test("Preview hook runtime binds assistant message start and update deps", async
   assert.equal(previewState?.pendingText, "next markdown");
 });
 
-test("Preview runtime prefers editable rich previews when stable blocks are available", async () => {
+test("Preview runtime sends raw native Markdown drafts", async () => {
   const harness = createPreviewRuntimeHarness({
     mode: "draft",
     pendingText: "## Intro\n\nTail",
@@ -712,26 +548,25 @@ test("Preview runtime prefers editable rich previews when stable blocks are avai
     flushTimer: setTimeout(() => {}, 1000),
   });
   await flushTelegramPreview(7, harness.deps);
-  assert.deepEqual(harness.events, ["send:7:markdown:## Intro\n\nTail:HTML"]);
-  assert.equal(harness.getState()?.mode, "message");
-  assert.equal(harness.getState()?.messageId, 77);
-  assert.equal(harness.getState()?.lastSentText, "markdown:## Intro\n\nTail");
-  assert.equal(harness.getState()?.lastSentParseMode, "HTML");
-  assert.equal(harness.getState()?.lastSentStrategy, "rich-stable-blocks");
-  assert.equal(harness.getDraftSupport(), "unknown");
+  assert.deepEqual(harness.events, ["draft:7:10:## Intro\n\nTail"]);
+  assert.equal(harness.getState()?.mode, "draft");
+  assert.equal(harness.getState()?.draftId, 10);
+  assert.equal(harness.getState()?.lastSentText, "## Intro\n\nTail");
+  assert.equal(harness.getState()?.lastSentParseMode, undefined);
+  assert.equal(harness.getDraftSupport(), "supported");
 });
 
-test("Preview runtime preserves original blank-line spacing around conservative tails", async () => {
+test("Preview runtime preserves original blank-line spacing in draft Markdown", async () => {
   const cases = [
     {
       markdown: "Para\n\n\n> Quote",
-      expectedEvent: "send:7:markdown:Para\n\n\n&gt; Quote:HTML",
-      expectedText: "markdown:Para\n\n\n&gt; Quote",
+      expectedEvent: "draft:7:10:Para\n\n\n> Quote",
+      expectedText: "Para\n\n\n> Quote",
     },
     {
       markdown: "Para\n\n\n- item",
-      expectedEvent: "send:7:markdown:Para\n\n\n- item:HTML",
-      expectedText: "markdown:Para\n\n\n- item",
+      expectedEvent: "draft:7:10:Para\n\n\n- item",
+      expectedText: "Para\n\n\n- item",
     },
   ];
   for (const testCase of cases) {
@@ -754,15 +589,14 @@ test("Preview runtime keeps heading-to-code spacing readable without source blan
     lastSentText: "",
     flushTimer: setTimeout(() => {}, 1000),
   });
-  harness.deps.renderTelegramMessage = renderTelegramMessage;
   harness.deps.maxMessageLength = 4096;
   await flushTelegramPreview(7, harness.deps);
   assert.deepEqual(harness.events, [
-    'send:7:<b>Title</b>\n\n<pre><code class="language-ts">const x = 1</code></pre>:HTML',
+    "draft:7:10:### Title\n```ts\nconst x = 1\n```",
   ]);
   assert.equal(
     harness.getState()?.lastSentText,
-    '<b>Title</b>\n\n<pre><code class="language-ts">const x = 1</code></pre>',
+    "### Title\n```ts\nconst x = 1\n```",
   );
 });
 
@@ -773,16 +607,17 @@ test("Preview runtime can still use and clear plain draft previews", async () =>
     lastSentText: "",
     flushTimer: setTimeout(() => {}, 1000),
   });
-  harness.deps.renderTelegramMessage = () => [];
   await flushTelegramPreview(7, harness.deps);
-  assert.deepEqual(harness.events, ["draft:7:10:hello"]);
+  assert.deepEqual(harness.events, ["draft:7:10:**hello**"]);
   assert.equal(harness.getState()?.mode, "draft");
   assert.equal(harness.getState()?.draftId, 10);
-  assert.equal(harness.getState()?.lastSentText, "hello");
-  assert.equal(harness.getState()?.lastSentStrategy, "plain");
+  assert.equal(harness.getState()?.lastSentText, "**hello**");
   assert.equal(harness.getDraftSupport(), "supported");
   await clearTelegramPreview(7, harness.deps);
-  assert.deepEqual(harness.events, ["draft:7:10:hello"]);
+  assert.deepEqual(harness.events, [
+    "draft:7:10:**hello**",
+    "draft:7:10:undefined",
+  ]);
   assert.equal(harness.getState(), undefined);
 });
 
@@ -806,7 +641,6 @@ test("Preview runtime falls back to editable plain messages when draft delivery 
     pendingText: "abcdef",
     lastSentText: "",
   });
-  harness.deps.renderTelegramMessage = () => [];
   harness.deps.sendDraft = async () => {
     throw new Error("draft unsupported");
   };
@@ -814,7 +648,6 @@ test("Preview runtime falls back to editable plain messages when draft delivery 
   assert.deepEqual(harness.events, ["send:7:abcdef:plain"]);
   assert.equal(harness.getState()?.mode, "message");
   assert.equal(harness.getState()?.messageId, 77);
-  assert.equal(harness.getState()?.lastSentStrategy, "plain");
   assert.equal(harness.getDraftSupport(), "unsupported");
 });
 
@@ -828,7 +661,6 @@ test("Preview runtime records transport failures without throwing", async () => 
   harness.setDraftSupport("unsupported");
   const deps = {
     ...harness.deps,
-    renderTelegramMessage: () => [],
     editMessageText: async () => {
       throw new Error("fetch failed");
     },
@@ -847,8 +679,6 @@ test("Preview controller runtime forwards runtime-event recorder", async () => {
       throw new Error("websocket disconnected");
     },
     editMessageText: async () => undefined,
-    sendRenderedChunks: async () => undefined,
-    editRenderedMessage: async () => undefined,
     recordRuntimeEvent: (category, error, details) => {
       const message = error instanceof Error ? error.message : String(error);
       events.push(`${category}:${message}:${details?.phase}`);
@@ -860,22 +690,6 @@ test("Preview controller runtime forwards runtime-event recorder", async () => {
   await runtime.flush(7);
 
   assert.deepEqual(events, ["preview:websocket disconnected:flush"]);
-});
-
-test("Preview runtime records final markdown failures and returns false", async () => {
-  const harness = createPreviewRuntimeHarness({
-    mode: "draft",
-    pendingText: "",
-    lastSentText: "",
-  });
-  const deps = {
-    ...harness.deps,
-    sendRenderedChunks: async () => {
-      throw new Error("fetch failed");
-    },
-  };
-  assert.equal(await finalizeTelegramMarkdownPreview(7, "final", deps), false);
-  assert.deepEqual(harness.events, ["preview:finalize-markdown"]);
 });
 
 test("Preview runtime serializes overlapping flush requests", async () => {
@@ -917,7 +731,109 @@ test("Preview runtime serializes overlapping flush requests", async () => {
   assert.equal(harness.getState()?.lastSentText, "second");
 });
 
-test("Preview runtime finalizes plain and markdown previews", async () => {
+test("Preview runtime waits for an active draft flush before clearing", async () => {
+  const harness = createPreviewRuntimeHarness({
+    mode: "draft",
+    draftId: 10,
+    pendingText: "new draft",
+    lastSentText: "",
+  });
+  let releaseDraft: (() => void) | undefined;
+  harness.deps.sendDraft = async (chatId, draftId, text) => {
+    harness.events.push(`draft-start:${chatId}:${draftId}:${text}`);
+    await new Promise<void>((resolve) => {
+      releaseDraft = resolve;
+    });
+    harness.events.push(`draft-finish:${chatId}:${draftId}:${text}`);
+  };
+  const flush = flushTelegramPreview(7, harness.deps);
+  await Promise.resolve();
+  const clear = clearTelegramPreview(7, harness.deps);
+  await Promise.resolve();
+  assert.deepEqual(harness.events, ["draft-start:7:10:new draft"]);
+  releaseDraft?.();
+  for (let i = 0; i < 5 && harness.events.length < 3; i++) {
+    await Promise.resolve();
+  }
+  assert.deepEqual(harness.events, [
+    "draft-start:7:10:new draft",
+    "draft-finish:7:10:new draft",
+    "draft-start:7:10:undefined",
+  ]);
+  releaseDraft?.();
+  await Promise.all([flush, clear]);
+  assert.deepEqual(harness.events, [
+    "draft-start:7:10:new draft",
+    "draft-finish:7:10:new draft",
+    "draft-start:7:10:undefined",
+    "draft-finish:7:10:undefined",
+  ]);
+  assert.equal(harness.getState(), undefined);
+});
+
+test("Native Markdown finalization waits for active draft flush before final reply", async () => {
+  const harness = createPreviewRuntimeHarness({
+    mode: "draft",
+    draftId: 10,
+    pendingText: "draft body",
+    lastSentText: "",
+  });
+  const releases: Array<() => void> = [];
+  harness.deps.sendDraft = async (chatId, draftId, text) => {
+    harness.events.push(`draft-start:${chatId}:${draftId}:${text}`);
+    await new Promise<void>((resolve) => {
+      releases.push(resolve);
+    });
+    harness.events.push(`draft-finish:${chatId}:${draftId}:${text}`);
+  };
+  const finalizeMarkdown = createTelegramNativeMarkdownPreviewFinalizer({
+    getState: harness.deps.getState,
+    clear: (chatId) => clearTelegramPreview(chatId, harness.deps),
+    discard: () => harness.deps.setState(undefined),
+    sendMarkdownReply: async (chatId, replyToMessageId, markdown) => {
+      harness.events.push(`final:${chatId}:${replyToMessageId ?? "none"}:${markdown}`);
+      return 88;
+    },
+  });
+  const flush = flushTelegramPreview(7, harness.deps);
+  await Promise.resolve();
+  const finalize = finalizeMarkdown(7, "final body", 42);
+  await Promise.resolve();
+  assert.deepEqual(harness.events, ["draft-start:7:10:draft body"]);
+  releases.shift()?.();
+  for (let i = 0; i < 10 && harness.events.length < 3; i++) {
+    await Promise.resolve();
+  }
+  assert.deepEqual(harness.events, [
+    "draft-start:7:10:draft body",
+    "draft-finish:7:10:draft body",
+    "final:7:42:final body",
+  ]);
+  await Promise.all([flush, finalize]);
+  assert.deepEqual(harness.events, [
+    "draft-start:7:10:draft body",
+    "draft-finish:7:10:draft body",
+    "final:7:42:final body",
+  ]);
+  assert.equal(harness.getState(), undefined);
+});
+
+test("Preview runtime sends final fallback without clearing draft preview", async () => {
+  const draftHarness = createPreviewRuntimeHarness({
+    mode: "draft",
+    draftId: 10,
+    pendingText: "done",
+    lastSentText: "",
+  });
+  assert.equal(await finalizeTelegramPreview(7, draftHarness.deps), true);
+  assert.deepEqual(draftHarness.events, [
+    "draft:7:10:done",
+    "send:7:done:plain",
+  ]);
+  assert.equal(draftHarness.getState(), undefined);
+});
+
+test("Preview runtime finalizes plain previews", async () => {
   const plainHarness = createPreviewRuntimeHarness({
     mode: "message",
     messageId: 44,
@@ -925,24 +841,7 @@ test("Preview runtime finalizes plain and markdown previews", async () => {
     lastSentText: "",
   });
   plainHarness.setDraftSupport("unsupported");
-  plainHarness.deps.renderTelegramMessage = () => [];
   assert.equal(await finalizeTelegramPreview(7, plainHarness.deps), true);
   assert.deepEqual(plainHarness.events, ["edit:7:44:done:plain"]);
   assert.equal(plainHarness.getState(), undefined);
-  const markdownHarness = createPreviewRuntimeHarness({
-    mode: "message",
-    messageId: 55,
-    pendingText: "done",
-    lastSentText: "",
-  });
-  markdownHarness.setDraftSupport("unsupported");
-  assert.equal(
-    await finalizeTelegramMarkdownPreview(7, "**done**", markdownHarness.deps),
-    true,
-  );
-  assert.deepEqual(markdownHarness.events, [
-    "edit:7:55:done:plain",
-    "render-edit:7:55:markdown:**done**",
-  ]);
-  assert.equal(markdownHarness.getState(), undefined);
 });

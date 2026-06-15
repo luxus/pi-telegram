@@ -68,6 +68,8 @@ Most day-to-day controls live in the Telegram menu or π commands. A few importa
 - **Inbound file limit**: `PI_TELEGRAM_INBOUND_FILE_MAX_BYTES` or `TELEGRAM_MAX_FILE_SIZE_BYTES` changes the default 50 MiB Telegram download limit.
 - **Outbound attachment limit**: `PI_TELEGRAM_OUTBOUND_ATTACHMENT_MAX_BYTES` or `TELEGRAM_MAX_ATTACHMENT_SIZE_BYTES` changes the default 50 MiB `telegram_attach` delivery limit.
 
+Assistant Markdown is delivered through Telegram's native Rich Message API. There is no `telegram.json` rendering toggle: final replies use `sendRichMessage`, and streaming previews use `sendRichMessageDraft` when Telegram drafts are available.
+
 Set these variables before launching π. Some transport defaults (notably Telegram temp directory and inbound/outbound byte-limit constants) are intentionally captured when the extension modules load, while setup-token defaults and agent-dir lookups used by config/locks are read through their runtime helpers.
 
 ## Use
@@ -130,11 +132,11 @@ The menu is the primary way to inspect and mutate the queue. Reactions are an ex
 - Priority shortcuts: `👍`, `⚡️`, `❤️`, `🕊`, and `🔥` promote waiting work.
 - Removal shortcuts: `👎`, `👻`, `💔`, `💩`, and `🗑` remove waiting work from the queue.
 
-### Streaming and Telegram HTML rendering
+### Streaming and native Rich Markdown
 
-Closed Markdown blocks stream back as rich Telegram HTML while π is generating. The growing tail stays conservative until the final rendered reply lands. Long replies are split below Telegram limits without intentionally breaking HTML structures, links, code blocks, blockquotes, lists, or code fences.
+Assistant Markdown is sent to Telegram as native Rich Markdown. Streaming previews use Telegram rich-message drafts when available, and final replies persist the same Markdown through `sendRichMessage`. The bridge still strips top-level hidden action comments before delivery and splits only when Telegram transport limits require it.
 
-Rendering is phone-aware: tables and lists stay narrow, table padding accounts for emoji graphemes and wide Unicode display width, unsupported link forms degrade safely, and block spacing stays faithful to the original Markdown.
+Telegram HTML rendering remains the default for bridge-owned UI surfaces such as commands, menus, status messages, queue controls, and extension sections, where explicit markup is clearer and easier to maintain. Native Rich Markdown is reserved for model-authored Markdown replies and guest replies that naturally arrive as Markdown.
 
 ### Media, replies, edits, and split text
 
@@ -189,7 +191,7 @@ List the main risks first.
 -->
 ```
 
-Outbound `type: "text"` handlers can transform final text/Markdown before Telegram rendering and delivery. Voice output can be handled either by configured `outboundHandlers` with `type: "voice"` or by registered voice synthesis provider extensions: the bridge extracts `telegram_voice` text or intercepts text by reply mode, asks the voice pipeline for a `.ogg`/`.opus` artifact, and uploads it through Telegram `sendVoice`. Explicit configured voice handlers run before zero-config providers, so operator-owned `telegram.json` pipelines stay authoritative.
+Outbound `type: "text"` handlers can transform final text/Markdown before native Rich Markdown delivery. Voice output can be handled either by configured `outboundHandlers` with `type: "voice"` or by registered voice synthesis provider extensions: the bridge extracts `telegram_voice` text or intercepts text by reply mode, asks the voice pipeline for a `.ogg`/`.opus` artifact, and uploads it through Telegram `sendVoice`. Explicit configured voice handlers run before zero-config providers, so operator-owned `telegram.json` pipelines stay authoritative.
 
 The agent writes intent; providers or voice handlers own TTS and format conversion, the adapter owns Telegram transport, and buttons route back as queued prompts.
 
@@ -216,7 +218,7 @@ Unknown inline-button callbacks are forwarded to π as `[callback] <data>` when 
 
 ### Extension Sections
 
-Ordinary pi extensions can register Telegram-native slash commands, structured UI sections, and compact status lines without owning a second polling loop. Slash commands use explicit opt-in registration from `@llblab/pi-telegram/commands`, so workflow-specific commands can live in companion extensions instead of expanding the core bridge command set. UI sections appear in the main Telegram menu and Settings submenu, while status lines allow widgets such as quota indicators to appear beside Status, Usage, Cost, and Context only when relevant to the active model. Each section gets a narrow typed context with `edit`, `open`, `enqueuePrompt`, `answerCallback`, and `callbackData()` — enough to build interactive Telegram-native surfaces while `pi-telegram` owns transport, callback routing, navigation hierarchy, and diagnostics.
+Ordinary pi extensions can register Telegram-native slash commands, structured UI sections, and compact status lines without owning a second polling loop. Slash commands use explicit opt-in registration from `@llblab/pi-telegram/commands`, so workflow-specific commands can live in companion extensions instead of expanding the core bridge command set. UI sections appear in the main Telegram menu and Settings submenu, default to explicit Telegram HTML UI markup, and may explicitly choose Markdown or plain text when that better matches their content; status lines allow widgets such as quota indicators to appear beside Status, Usage, Cost, and Context only when relevant to the active model. Each section gets a narrow typed context with `edit`, `open`, `enqueuePrompt`, `answerCallback`, and `callbackData()` — enough to build interactive Telegram-native surfaces while `pi-telegram` owns transport, callback routing, navigation hierarchy, and diagnostics.
 
 Import `registerTelegramSection()` from `@llblab/pi-telegram/sections` and return a disposer on shutdown. Sections can send interactive messages directly into the chat via `ctx.open()` — confirmation dialogs, approve/deny gates, and multi-step forms live outside the menu hierarchy while callbacks route through the same typed handler. See [`@llblab/pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) for a working reference and the [Extension Sections Standard](./docs/sections.md) for the full contract.
 

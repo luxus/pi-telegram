@@ -147,6 +147,8 @@ export default function (pi: Pi.ExtensionAPI) {
     sendRecordVoiceAction,
     sendMessageDraft,
     sendMessage,
+    sendRichMessage,
+    sendRichMessageDraft,
     downloadFile: downloadTelegramBridgeFile,
     editMessageText: editTelegramMessageText,
     answerCallbackQuery,
@@ -161,7 +163,6 @@ export default function (pi: Pi.ExtensionAPI) {
   // --- Message Delivery ---
 
   const sendGuestReply = Replies.createGuestMarkdownReplySender({
-    renderTelegramMessage: Replies.renderTelegramMessage,
     answerGuestQuery,
   });
 
@@ -189,6 +190,7 @@ export default function (pi: Pi.ExtensionAPI) {
 
   const replyRuntime = Replies.createTelegramRenderedMessageDeliveryRuntime({
     sendMessage,
+    sendRichMessage,
     editMessage: editTelegramMessageText,
   });
   const { replyTransport, editInteractiveMessage, sendInteractiveMessage } =
@@ -221,9 +223,16 @@ export default function (pi: Pi.ExtensionAPI) {
     isAssistantMessage: Replies.isAssistantAgentMessage,
     getMessageText: Replies.getAgentMessageText,
     getDefaultReplyToMessageId: activeTurnRuntime.getReplyToMessageId,
-    sendDraft: sendMessageDraft,
+    sendDraft: TelegramApi.createTelegramNativeMarkdownDraftSender({
+      sendMessageDraft,
+      sendRichMessageDraft,
+    }),
     sendMessage,
     editMessageText: editTelegramMessageText,
+    sendMarkdownReply,
+    editMarkdownMessage: Preview.createTelegramNativeMarkdownMessageEditor({
+      editMessageText: editTelegramMessageText,
+    }),
     recordRuntimeEvent,
     ...replyTransport,
   });

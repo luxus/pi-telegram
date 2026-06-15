@@ -26,6 +26,7 @@ import {
   createTelegramApiClient,
   createTelegramBridgeApiRuntime,
   createTelegramChatActionSender,
+  createTelegramNativeMarkdownDraftSender,
   downloadTelegramFile,
   fetchTelegramBotIdentity,
   getTelegramInboundFileByteLimitFromEnv,
@@ -141,6 +142,34 @@ test("Telegram API chat-action sender binds a fixed action", async () => {
   }, "typing");
   await sendTyping(7);
   assert.deepEqual(calls, [[7, "typing"]]);
+});
+
+test("Telegram native Markdown draft sender disables automatic entity detection", async () => {
+  const richBodies: Record<string, unknown>[] = [];
+  const legacyCalls: unknown[] = [];
+  const sendDraft = createTelegramNativeMarkdownDraftSender({
+    sendMessageDraft: async (...args) => {
+      legacyCalls.push(args);
+      return true;
+    },
+    sendRichMessageDraft: async (body) => {
+      richBodies.push(body);
+      return true;
+    },
+  });
+  await sendDraft(7, 9, "#tag /cmd https://example.com");
+  await sendDraft(7, 10, undefined);
+  assert.deepEqual(richBodies, [
+    {
+      chat_id: 7,
+      draft_id: 9,
+      rich_message: {
+        markdown: "#tag /cmd https://example.com",
+        skip_entity_detection: true,
+      },
+    },
+  ]);
+  assert.equal(legacyCalls.length, 1);
 });
 
 test("Telegram API helper fetches bot identity through getMe", async () => {
@@ -547,7 +576,9 @@ test("Telegram bridge API runtime exposes typed Bot API helpers", async () => {
         body: Record<string, unknown>,
       ) => {
         calls.push({ method, body });
-        if (method === "sendMessage") return { message_id: 9 } as TResponse;
+        if (method === "sendMessage" || method === "sendRichMessage") {
+          return { message_id: 9 } as TResponse;
+        }
         if (method === "getUpdates") return [{ update_id: 10 }] as TResponse;
         return true as TResponse;
       },
@@ -564,6 +595,9 @@ test("Telegram bridge API runtime exposes typed Bot API helpers", async () => {
   assert.equal(await runtime.sendChatAction(1, "typing"), true);
   assert.equal(await runtime.sendTypingAction(2), true);
   await runtime.answerGuestQuery("guest-1", "hello");
+  await runtime.answerGuestQuery("guest-rich", undefined, {
+    richMessage: { markdown: "**hello**", skip_entity_detection: true },
+  });
   await runtime.answerGuestQuery("guest-2");
   assert.equal(await runtime.sendMessageDraft(1, 2, "draft"), true);
   assert.equal(await runtime.sendMessageDraft(1, 2, ""), true);
@@ -578,6 +612,21 @@ test("Telegram bridge API runtime exposes typed Bot API helpers", async () => {
   assert.deepEqual(await runtime.sendMessage({ chat_id: 1, text: "hello" }), {
     message_id: 9,
   });
+  assert.deepEqual(
+    await runtime.sendRichMessage({
+      chat_id: 1,
+      rich_message: { markdown: "# hello" },
+    }),
+    { message_id: 9 },
+  );
+  assert.equal(
+    await runtime.sendRichMessageDraft({
+      chat_id: 1,
+      draft_id: 3,
+      rich_message: { markdown: "**draft**" },
+    }),
+    true,
+  );
   assert.deepEqual(calls, [
     { method: "deleteWebhook", body: { drop_pending_updates: false } },
     { method: "getUpdates", body: { offset: 1 } },
@@ -596,6 +645,20 @@ test("Telegram bridge API runtime exposes typed Bot API helpers", async () => {
           id: "1",
           title: "Response",
           input_message_content: { message_text: "hello" },
+        },
+      },
+    },
+    {
+      method: "answerGuestQuery",
+      body: {
+        guest_query_id: "guest-rich",
+        result: {
+          type: "article",
+          id: "1",
+          title: "Response",
+          input_message_content: {
+            rich_message: { markdown: "**hello**", skip_entity_detection: true },
+          },
         },
       },
     },
@@ -623,6 +686,14 @@ test("Telegram bridge API runtime exposes typed Bot API helpers", async () => {
       },
     },
     { method: "sendMessage", body: { chat_id: 1, text: "hello" } },
+    {
+      method: "sendRichMessage",
+      body: { chat_id: 1, rich_message: { markdown: "# hello" } },
+    },
+    {
+      method: "sendRichMessageDraft",
+      body: { chat_id: 1, draft_id: 3, rich_message: { markdown: "**draft**" } },
+    },
   ]);
 });
 

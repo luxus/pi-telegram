@@ -35,8 +35,8 @@ The core product loop is mobile continuation: start or supervise work in the ter
 - `/docs/public-api.md`: Stable public API map for commands, config, assistant markup, extension APIs, package entrypoints, and compatibility boundaries
 - `/README.md`: User-facing project entry point. Keep its rhythm as install → connect → use → core features → docs, with vivid examples that explain the runtime adapter/operator-console model without duplicating full docs.
 - `/AGENTS.md`: Durable engineering and runtime conventions
-- `/BACKLOG.md`: Canonical open work
-- `/CHANGELOG.md`: Completed delivery history
+- `/BACKLOG.md`: Canonical open work. Keep only open top-level tasks; when all subtasks under a top-level task are complete, remove that task from the backlog and record completed delivery in `CHANGELOG.md` if user-visible. Put detailed decomposition under the single owning top-level task with nested checkboxes and explicit done criteria instead of promoting completed slices into separate top-level backlog items.
+- `/CHANGELOG.md`: Completed delivery history. Prefer multiple domain-scoped bullets in the form `[Domain]`: change + impact instead of accumulating unrelated changes into one long entry.
 
 ## 4. Core Entities
 
@@ -75,7 +75,9 @@ The core product loop is mobile continuation: start or supervise work in the ter
 
 ## 5.3 Telegram Delivery Semantics
 
-- Telegram replies render through Telegram HTML, not raw Markdown
+- Assistant and guest replies use Telegram-native Rich Markdown via Rich Message APIs, not Markdown→HTML conversion. Bridge-owned UI surfaces such as commands, menus, status, queue controls, and sections should keep explicit Telegram HTML/plain rendering by default because readability and maintainability are higher there. Companion sections may explicitly choose Markdown, HTML, or plain text per view
+- Use `docs/telegram-bot-api-rich-messages.md` as the local Bot API/Rich Messages reference for native Rich Markdown work
+- Formula guidance belongs in the Telegram-turn prompt contract: use `$...$` for inline math and `$$...$$` for block math; backticks intentionally render formulas as literal code
 - Real code blocks must stay literal and escaped
 - `telegram_attach` is the canonical outbound file-delivery path for Telegram-originated requests; outside active Telegram turns it may send immediately to the paired/default chat for explicit local/TUI delivery requests only when this π instance owns `/telegram-connect`. `telegram_message` is the first-class direct Telegram Markdown text tool for local/TUI prompts and is also gated by `/telegram-connect`; neither direct tool replaces normal active-turn replies. It reuses top-level `telegram_button` comments for inline buttons; buttons must be attached to a text message, never sent as standalone actions
 - Telegram delivery strips top-level HTML comments from preview/final text; column-zero top-level `<!-- telegram_voice ... -->` and `<!-- telegram_button ... -->` blocks are special outbound comments handled after `agent_end` without requiring agent-side transport tool calls, while comments inside code, quotes, lists, or indented examples stay literal
@@ -94,7 +96,7 @@ The core product loop is mobile continuation: start or supervise work in the ter
 
 - Treat queue handling, compaction interaction, and lifecycle-hook state transitions as regression-prone areas; validate them after changing dispatch logic
 - Route important runtime failures through the recent runtime event recorder so `/telegram-status` remains useful for post-mortem debugging, not just transient status-bar errors
-- Treat Markdown rendering as Telegram-specific output work, not generic Markdown rendering
+- Treat remaining Markdown-to-HTML rendering as Telegram UI/compat output work, not generic Markdown rendering or assistant reply delivery
 - Preserve literal code content in Telegram rendering
 - Avoid HTML chunk splits that break tags
 - Prefer width-efficient monospace table and list formatting for narrow clients, with table padding based on grapheme/display width rather than raw UTF-16 length where possible
@@ -123,13 +125,17 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 
 ## 6.4 Entrypoint And Import Boundaries
 
-- Keep preview appearance logic in the rendering domain and preview transport/lifecycle logic in the preview domain so richer streaming strategies can evolve without entangling Telegram delivery state with Markdown formatting rules
+- Keep the preview domain as a thin streaming lifecycle controller only: draft ids, `sendRichMessageDraft`, voice suppression, serialized flushes, diagnostics, and editable fallback-message state. Do not reintroduce assistant preview rendering there; keep `rendering.ts` scoped to bridge-owned UI/compat regular-message rendering rather than assistant or guest Markdown delivery
+- Preview/final delivery ordering is release-critical: finalization must wait for active preview flushes, persisted final delivery should not be followed by a post-final draft-clear call that creates transient draft UI, and regressions should cover in-flight draft flush serialization plus final reply ordering
+- Live Rich Draft observation: `sendMessageDraft(..., undefined)` after a persisted final Rich Message can appear in Telegram clients as a separate animated three-dot draft block before dissolving. Do not use post-final draft-clear for assistant finalization; let the persisted final `sendRichMessage` replace/complete the user-visible lifecycle and reset local preview state only.
+- `RichBlockThinking` / `<tg-thinking>` is draft-only (`sendRichMessageDraft`) and may be useful for a future explicit pre-token preloader, but it is not a persisted final-message primitive and should not be mixed into release-critical finalization behavior without separate UX tests.
+- Keep Telegram prompt guidance compact and operational. Do not add format-specific steering for native Rich Markdown features unless the model needs a real bridge-specific rule such as formula delimiters or hidden outbound action syntax.
 - Keep direct `node:*` file-operation dependencies out of `index.ts` when an owning domain exists; the entrypoint should compose ports while domains own local filesystem details such as temp-dir preparation, attachment stats, and turn image reads
 - In `index.ts`, prefer namespace imports for local bridge domains so orchestration reads as domain-scoped calls such as `Queue.*`, `Turns.*`, and `Rendering.*` instead of long flat import lists
 - Keep the local `index.ts` plus `/lib/*.ts` import graph acyclic; `tests/invariants.test.ts` guards this boundary plus shared-bucket bans, empty interface-extension shell regressions, pi SDK centralization, source-only entrypoint Node-runtime/local-adapter/process/direct-pi access avoidance, runtime-domain isolation, structural leaf-domain import isolation, menu/model boundary drift, Telegram API/config default coupling, structural update/media coupling to Telegram API transport shapes, and attachment coupling to queue/inbound media/Telegram API helpers as domains keep evolving
 - Do not reintroduce shared bucket domains such as `lib/constants.ts`, `lib/types.ts`, `lib/globals.ts`, or broad global-augmentation files; constants, registry keys, state interfaces, and concrete transport shapes should stay in their owning domains, and `index.ts` should not grow new shared magic constants
 - Keep remaining `index.ts` code focused on cross-domain adapter wiring that needs live extension state, pi callbacks, Telegram API ports, or status updates; do not extract one-off closures solely to reduce line count
-- Domain-specific queue planning, preview transport/controller behavior, rendering, Telegram API transport, menu state, and command behavior should stay in their owning domains instead of moving to `/lib/runtime.ts` solely to shrink `index.ts`
+- Domain-specific queue planning, preview transport/controller behavior, UI/compat rendering, Telegram API transport, menu state, and command behavior should stay in their owning domains instead of moving to `/lib/runtime.ts` solely to shrink `index.ts`
 - Prefer narrow structural runtime ports in domains that only store or route pi-compatible values; direct pi SDK/model imports should stay centralized in `/lib/pi.ts`, while domains that actively register pi hooks/tools/commands should consume those concrete contracts through the adapter
 
 ## 7. Operational Conventions
@@ -150,7 +156,7 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 - For `/telegram-setup`, prefer the locally saved bot token over environment variables on repeat setup runs; env vars are the bootstrap path when no local token exists, and persisted `telegram.json` writes must remain atomic plus private because status/setup/polling paths may read it concurrently
 - Command help plus prompt-template commands and status/model/thinking/queue controls are driven through `/start`'s Telegram inline application menu and callback queries; the Queue button shows the queued-item count, model-menu scope/pagination controls stay at the top under Main menu, the model pagination indicator opens a compact page picker, and thinking-menu text stays a compact heading because the current level is marked by button state; `/status`, `/model`, `/thinking`, and `/queue` are hidden compatibility shortcuts
 - Shared inline-keyboard structure belongs to `keyboard`; application-control button labels, callback data, and callback behavior stay in `menu`/`menu-model`/`menu-thinking`/`menu-status`/`menu-queue` while core queue mechanics stay in `queue`
-- Telegram `/settings` options should open nested detail submenus by default: checkbox options show a description plus Back, `on`, and `off`; list options show Back plus selectable values. One-shot actions such as syncing may run directly without a submenu when there is no meaningful choice or description step.
+- Telegram `/settings` options should open nested detail submenus by default: boolean options show a description plus Back, `on`, and `off`; list options show Back plus selectable values. One-shot actions such as syncing may run directly without a submenu when there is no meaningful choice or description step.
 - Inline UI labels and dialogs follow [`docs/ui-style.md`](./docs/ui-style.md): action buttons use emoji plus capitalized action text, state & navigation buttons show state and lead to a submenu, first-level submenus start with `⬆️ Main menu` while deeper submenus start with `⬆️ Back`, boolean toggles use Capitalized horizontal `On`/`Off` with green active `On`, yellow active `Off`, and black inactive dots, tabs use capitalized labels with purple default-state and yellow elevated-state active dots and black inactive dots, vertical option lists mark only the current value green, and confirmation dialogs use a single bold text-only question with emoji on buttons only.
 - Inbound text/media may be transformed through configured `inboundHandlers` before queueing; legacy `attachmentHandlers` are deprecated compatibility aliases appended after `inboundHandlers`; active-turn outbound files must flow through `telegram_attach`, while explicit local/TUI Telegram sends use `telegram_attach` for files or `telegram_message` for text/buttons
 - Long Telegram text split recovery belongs to `text-groups`: keep it conservative, short-debounced, same chat/user/message-id contiguous, and gated by near-limit human text so normal rapid follow-ups and slash commands stay separate
@@ -167,7 +173,7 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 - `Section identity`: use the same identity-key rules as the Extension Locks Standard (`package.json/name` → canonical id); no separate `owner` field
 - `Token mapping`: Telegram's 64-byte `callback_data` limit forces compact numeric tokens (`section:0:action:payload`). Section authors never hand-roll `section:` strings — use `ctx.callbackData(action, payload?)`
 - `Navigation hierarchy`: Back buttons are auto-prepended by `ctx.edit()` only. Root views use `⬆️ Main menu` → `menu:back`. Nested views from `handleCallback` use `⬆️ Back` → `section:<token>:open`. Settings views use `⬆️ Back` → `settings:list`. `ctx.open()` sends standalone chat messages without auto-navigation
-- `Context ports`: sections receive `TelegramSectionContext` / `TelegramSectionCallbackContext` with `answerCallback`, `edit`, `open`, `enqueuePrompt`, and `callbackData`. No filesystem access, no raw bot clients, no second polling loop
+- `Context ports`: sections receive `TelegramSectionContext` / `TelegramSectionCallbackContext` with `answerCallback`, `edit`, `open`, `enqueuePrompt`, and `callbackData`. Section views default to `parseMode: "html"`; use explicit `"markdown"` when a section naturally owns Markdown content, or `"plain"` for text. No filesystem access, no raw bot clients, no second polling loop
 - `Settings indicators`: use `settings.getLabel()` for dynamic status rows in the Settings submenu (e.g., `🟢`/`⚫️` based on internal state). Called on every Settings list render
 - `Handler fallback`: `section.handleCallback` runs first; if it returns `"pass"` and `settings.handleCallback` exists, the settings handler runs with a fresh context carrying `backCallback="settings:list"`
 - `Stale tokens`: unknown or unregistered tokens answer the callback with a short popup. Section errors are caught and surfaced as popup text — no unhandled exceptions leak to polling

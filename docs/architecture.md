@@ -58,7 +58,7 @@ The repository uses a **Flat Domain DAG**:
 - `model` / `menu-model` / `menu-thinking` / `menu-status` / `menu-queue` / `menu-settings` / `menu` / `commands`: model identity, thinking levels, scoped model handling, menu render/callback behavior, slash commands, bot commands, and interactive controls.
 - `sections`: Telegram menu-section registry, opaque section callback tokens, render/callback dispatch, safe section ports, and diagnostics.
 - `keyboard`: shared inline-keyboard reply-markup shape only; feature domains own labels, callback data, and behavior.
-- `preview` / `replies` / `rendering`: streaming preview lifecycle, final reply delivery, reply parameters, Telegram HTML rendering, chunking, and stable preview snapshots.
+- `preview` / `replies` / `rendering`: throttled native Rich Markdown draft delivery and fallback preview transport, native final reply delivery, reply parameters, transport-limit chunking, and remaining Telegram HTML rendering for bridge-owned UI/compatibility surfaces.
 - `outbound-markup`: top-level assistant action comment parsing, attribute parsing, voice reply planning, and preview/delivery stripping.
 - `outbound`: outbound text transformations, voice/button artifact delivery, and generated callback actions.
 - `outbound-attachments`: `telegram_attach`, queued outbound files, stat/limit checks, and photo/document delivery classification.
@@ -191,17 +191,19 @@ During active Telegram-owned turns, assistant message start/update hooks re-arm 
 
 ### Rendering And Delivery
 
-Telegram replies are rendered as Telegram HTML, not raw Markdown. The renderer is Telegram-specific and regression-prone.
+Assistant replies use Telegram-native Rich Markdown. Final Markdown is sent directly as `InputRichMessage.markdown` through `sendRichMessage`, streaming previews use `sendRichMessageDraft` when draft delivery is available, and editable fallback previews are finalized through `editMessageText.rich_message`. Guest replies also use native Rich Markdown through `InputRichMessageContent` in `answerGuestQuery` results. The bridge still strips top-level assistant action comments before delivery and may split output only for Telegram transport limits.
 
-Key guarantees:
+Assistant delivery guarantees:
 
-- Real code blocks stay literal and escaped.
-- Supported absolute links stay clickable; unsupported links degrade safely.
-- Markdown tables render as compact monospace blocks and count grapheme/display width.
-- Lists, task lists, quotes, headings, and blank-line spacing have Telegram-specific preservation rules.
-- Long replies are chunked below Telegram limits with balanced HTML where possible.
-- Streaming previews prefer stable rich blocks and append the unstable tail conservatively as readable plain text.
-- Preview flushes are serialized so older edits cannot race newer snapshots.
+- Model-authored Markdown is the source of truth; the bridge does not pre-render assistant Markdown to HTML.
+- Long native Markdown replies are split only at Telegram Rich Message transport limits.
+- Streaming previews pass assistant Markdown through to `sendRichMessageDraft` with ownership checks, voice suppression, serialized flushes, and an editable plain-message fallback when draft delivery is unavailable.
+- Preview flushes are serialized so older edits cannot race newer drafts; final delivery waits for active draft flushes and does not perform a post-final draft-clear call.
+
+UI/compat rendering guarantees:
+
+- Bridge-owned UI surfaces such as commands, menus, status messages, queue controls, and interactive sections use Telegram HTML/plain rendering helpers by default. These texts are authored for Telegram UI rather than model output, so explicit HTML markup remains clearer and easier to maintain.
+- In those UI/compat surfaces, real code blocks stay literal and escaped, supported absolute links stay clickable, unsupported links degrade safely, tables use compact monospace rendering with grapheme/display-width accounting, and list/quote/heading spacing stays Telegram-safe.
 
 Final delivery attaches reply metadata only where requested. Reply parameters apply only to the first chunk of split messages; continuation chunks are adjacent normal messages. Media-group turns reply to the representative message id.
 
@@ -214,7 +216,7 @@ Assistant-authored final-message actions use hidden top-level comments:
 - `telegram_voice` creates voice reply artifacts through configured outbound handlers, programmatic voice handlers, or registered synthesis providers.
 - `telegram_button` creates inline buttons whose callbacks enqueue the configured prompt text as a normal Telegram prompt turn.
 
-Preview rendering strips top-level action comments while streaming. Comments inside code fences, quotes, lists, or indented examples stay literal.
+Preview delivery strips top-level action comments before streaming draft Markdown. Comments inside code fences, quotes, lists, or indented examples stay literal.
 
 Unknown callback data outside owned prefixes is forwarded as `[callback] <data>` only after built-in and extension handlers decline it.
 

@@ -46,7 +46,7 @@ Examples:
 
 ## Boolean Toggles
 
-Boolean settings use a horizontal `On` / `Off` pair, like a checkbox stretched across two buttons.
+Boolean settings use a horizontal `On` / `Off` pair.
 
 Rules:
 

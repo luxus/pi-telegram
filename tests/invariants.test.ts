@@ -155,6 +155,13 @@ test("Project no longer has shared constants or transport-type domains", () => {
   assert.equal(existsSync(join(PROJECT_ROOT, "lib", "types.ts")), false);
 });
 
+test("Preview domain stays independent from UI/compat rendering", () => {
+  assert.equal(
+    getImportSpecifiers(join("lib", "preview.ts")).includes("./rendering.ts"),
+    false,
+  );
+});
+
 test("Package exports expose only stable public domains", () => {
   const packageJson = JSON.parse(
     readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"),

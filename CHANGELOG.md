@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.17.0: Native Rich Markdown Delivery
+
+- `[Rich Markdown]` Assistant and guest replies now use Telegram-native Rich Message APIs directly: final assistant Markdown goes through `sendRichMessage`, streaming drafts go through `sendRichMessageDraft`, editable fallback previews finalize through `editMessageText.rich_message`, and guest replies use `InputRichMessageContent`. Impact: model-authored Markdown reaches Telegram as native Rich Markdown instead of passing through the legacy Markdown-to-HTML assistant path.
+- `[Preview UX]` Streaming preview is now a thin Rich Draft lifecycle controller with serialized flushes, no default debounce, no assistant rendering dependency, and no post-final draft-clear call. Impact: live Telegram clients get smoother draft updates and avoid duplicate final messages, blank finalization gaps, or the transient animated three-dot block observed during draft clearing.
+- `[UI Boundary]` Bridge-owned commands, menus, status messages, queue controls, buttons, and sections remain explicit Telegram HTML/plain UI by default, while companion sections can opt into Markdown/HTML/plain per view. Impact: native Rich Markdown improves model-authored replies without making hand-authored bot UI harder to maintain.
+- `[API And Limits]` Added typed Rich Message send/draft helpers, disabled automatic entity detection for assistant/guest Rich Markdown, and split native Markdown at Telegram Rich Message character/block limits while keeping reply metadata on the first chunk and reply markup on the final chunk. Impact: technical output avoids accidental entities and long replies stay within Bot API limits.
+- `[Docs And Tests]` Added `docs/telegram-bot-api-rich-messages.md` as the durable local Bot API reference, updated README/outbound/public API/sections/architecture/prompt/AGENTS guidance, kept formula prompting compact around `$...$` / `$$...$$`, and added regressions for native delivery, guest replies, preview lifecycle, split replies, and the UI/compat rendering boundary. Impact: the release behavior is documented, covered, and easier to preserve.
+
 ## 0.16.6: Telegram Review Hardening Hotfix
 
 - `[Guest Mode]` Deny `guest_message` updates until the bridge already has a paired Telegram user. Impact: guest mode can no longer become the first pairing surface or trigger guest file/handler processing before explicit DM pairing.

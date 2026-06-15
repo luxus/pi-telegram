@@ -193,11 +193,38 @@ export type TelegramSendMessageBody = Record<string, unknown> & {
   reply_parameters?: TelegramReplyParameters;
 };
 
+export type TelegramInputRichMessage =
+  | {
+      markdown: string;
+      html?: never;
+      is_rtl?: boolean;
+      skip_entity_detection?: boolean;
+    }
+  | {
+      html: string;
+      markdown?: never;
+      is_rtl?: boolean;
+      skip_entity_detection?: boolean;
+    };
+
+export type TelegramSendRichMessageBody = Record<string, unknown> & {
+  chat_id: number;
+  rich_message: TelegramInputRichMessage;
+  reply_markup?: unknown;
+  reply_parameters?: TelegramReplyParameters;
+};
+
+export type TelegramInputRichMessageContent = {
+  rich_message: TelegramInputRichMessage;
+};
+
 export type TelegramEditMessageTextBody = Record<string, unknown> & {
   chat_id: number;
   message_id: number;
-  text: string;
+  text?: string;
+  rich_message?: TelegramInputRichMessage;
   parse_mode?: "HTML";
+  reply_markup?: unknown;
 };
 
 export type TelegramSendMessageDraftBody = Record<string, unknown> & {
@@ -206,6 +233,13 @@ export type TelegramSendMessageDraftBody = Record<string, unknown> & {
   text?: string;
   parse_mode?: string;
   entities?: unknown[];
+  message_thread_id?: number;
+};
+
+export type TelegramSendRichMessageDraftBody = Record<string, unknown> & {
+  chat_id: number;
+  draft_id: number;
+  rich_message: TelegramInputRichMessage;
   message_thread_id?: number;
 };
 
@@ -269,7 +303,7 @@ export interface TelegramApiClient {
   answerGuestQuery?: (
     guestQueryId: string,
     text?: string,
-    options?: { parseMode?: string },
+    options?: { parseMode?: string; richMessage?: TelegramInputRichMessage },
   ) => Promise<void>;
 }
 
@@ -322,6 +356,12 @@ export interface TelegramBridgeApiRuntime {
     },
   ) => Promise<boolean>;
   sendMessage: (body: TelegramSendMessageBody) => Promise<TelegramSentMessage>;
+  sendRichMessage: (
+    body: TelegramSendRichMessageBody,
+  ) => Promise<TelegramSentMessage>;
+  sendRichMessageDraft: (
+    body: TelegramSendRichMessageDraftBody,
+  ) => Promise<boolean>;
   editMessageText: (
     body: TelegramEditMessageTextBody,
   ) => Promise<"edited" | "unchanged">;
@@ -332,7 +372,7 @@ export interface TelegramBridgeApiRuntime {
   answerGuestQuery: (
     guestQueryId: string,
     text?: string,
-    options?: { parseMode?: string },
+    options?: { parseMode?: string; richMessage?: TelegramInputRichMessage },
   ) => Promise<void>;
   deleteMessage: (chatId: number, messageId: number) => Promise<void>;
   prepareTempDir: () => Promise<number>;
@@ -711,6 +751,25 @@ export function createTelegramChatActionSender<TAction extends string>(
   return (chatId) => sendChatAction(chatId, action);
 }
 
+export function createTelegramNativeMarkdownDraftSender(deps: {
+  sendMessageDraft: TelegramBridgeApiRuntime["sendMessageDraft"];
+  sendRichMessageDraft: TelegramBridgeApiRuntime["sendRichMessageDraft"];
+}): TelegramBridgeApiRuntime["sendMessageDraft"] {
+  return (chatId, draftId, text, options) => {
+    if (text === undefined) {
+      return deps.sendMessageDraft(chatId, draftId, text, options);
+    }
+    return deps.sendRichMessageDraft({
+      chat_id: chatId,
+      draft_id: draftId,
+      rich_message: { markdown: text, skip_entity_detection: true },
+      ...(options?.message_thread_id !== undefined
+        ? { message_thread_id: options.message_thread_id }
+        : {}),
+    });
+  };
+}
+
 export function createDefaultTelegramBridgeApiRuntime(deps: {
   getBotToken: () => string | undefined;
   recordRuntimeEvent: TelegramBridgeApiRuntimeDeps["recordRuntimeEvent"];
@@ -837,6 +896,10 @@ export function createTelegramBridgeApiRuntime(
     },
     sendMessage: (body) =>
       callRecorded<TelegramSentMessage>("sendMessage", body),
+    sendRichMessage: (body) =>
+      callRecorded<TelegramSentMessage>("sendRichMessage", body),
+    sendRichMessageDraft: (body) =>
+      callRecorded<boolean>("sendRichMessageDraft", body),
     editMessageText: async (body) => {
       try {
         await deps.client.call("editMessageText", body);
@@ -859,14 +922,14 @@ export function createTelegramBridgeApiRuntime(
     answerGuestQuery: (
       guestQueryId: string,
       text: string | undefined,
-      options: { parseMode?: string } | undefined,
+      options: { parseMode?: string; richMessage?: TelegramInputRichMessage } | undefined,
     ) => {
       const body: Record<string, unknown> = { guest_query_id: guestQueryId };
-      if (text !== undefined) {
-        const inputContent: Record<string, unknown> = {
-          message_text: text,
-        };
-        if (options?.parseMode) {
+      if (text !== undefined || options?.richMessage) {
+        const inputContent: Record<string, unknown> = options?.richMessage
+          ? { rich_message: options.richMessage }
+          : { message_text: text };
+        if (!options?.richMessage && options?.parseMode) {
           inputContent.parse_mode = options.parseMode;
         }
         body.result = {

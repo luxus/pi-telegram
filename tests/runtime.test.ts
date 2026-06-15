@@ -67,6 +67,11 @@ function getRuntimeTelegramApiMethod(input: string | URL | Request): string {
   return url.split("/").at(-1) ?? "";
 }
 
+function getRuntimeTelegramApiText(body: Record<string, unknown> | undefined): string {
+  const richMessage = body?.rich_message as { html?: string; markdown?: string } | undefined;
+  return String(body?.text ?? richMessage?.html ?? richMessage?.markdown ?? "");
+}
+
 function setRuntimeTestFetch(fetchImpl: typeof fetch): () => void {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
@@ -695,7 +700,7 @@ test("Extension runtime polls, pairs, and dispatches an inbound Telegram turn in
       }
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
+    if (method === "sendMessage" || method === "sendRichMessage") {
       sendMessageCalls += 1;
       if (sendMessageCalls === 1) {
         return createRuntimeTelegramApiErrorResponse(500, "temporary send failure");
@@ -773,7 +778,20 @@ test("Extension runtime finalizes queued turn after polling ownership moves away
       draftTexts.push(String(body?.text ?? ""));
       return createRuntimeTelegramApiResponse(true);
     }
-    if (method === "sendMessage") {
+    if (method === "sendRichMessageDraft") {
+      const richMessage = body?.rich_message as { markdown?: string } | undefined;
+      draftTexts.push(String(richMessage?.markdown ?? ""));
+      return createRuntimeTelegramApiResponse(true);
+    }
+    if (method === "sendRichMessage") {
+      const richMessage = body?.rich_message as { markdown?: string } | undefined;
+      sentTexts.push(String(richMessage?.markdown ?? ""));
+      sentBodies.push(body ?? {});
+      return createRuntimeTelegramApiResponse({
+        message_id: 100 + sentTexts.length,
+      });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
       sentTexts.push(String(body?.text ?? ""));
       sentBodies.push(body ?? {});
       return createRuntimeTelegramApiResponse({
@@ -840,9 +858,9 @@ test("Extension runtime finalizes queued turn after polling ownership moves away
       },
       ctx,
     );
-    assert.deepEqual(draftTexts, ["Draft preview", "Final answer"]);
+    assert.deepEqual(draftTexts, ["Draft **preview**"]);
     assert.equal(sentTexts.length, 1);
-    assert.match(sentTexts[0] ?? "", /Final <b>answer<\/b>/);
+    assert.match(sentTexts[0] ?? "", /Final \*\*answer\*\*/);
     assert.deepEqual(sentBodies[0]?.reply_parameters, {
       message_id: 7,
       allow_sending_without_reply: true,
@@ -900,7 +918,11 @@ test("Extension runtime dispatches accepted queued work after polling ownership 
       }
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
+    if (method === "sendRichMessage") {
+      sentBodies.push(body ?? {});
+      return createRuntimeTelegramApiResponse({ message_id: 100 });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
       sentBodies.push(body ?? {});
       return createRuntimeTelegramApiResponse({ message_id: 100 });
     }
@@ -948,7 +970,10 @@ test("Extension runtime dispatches accepted queued work after polling ownership 
     // Follow-up dispatch is intentionally routed through the session-bound
     // deferred queue timer; wait on real time instead of setImmediate turns.
     await waitForCondition(() => sentMessages.length === 2);
-    assert.match(String(sentBodies[0]?.text ?? ""), /First final/);
+    assert.match(
+      String((sentBodies[0]?.rich_message as { markdown?: string } | undefined)?.markdown ?? ""),
+      /First \*\*final\*\*/,
+    );
     assert.match(
       getRuntimeHarnessMessageText(sentMessages[1] as RuntimeHarnessMessage),
       /^\[telegram\] second queued$/,
@@ -972,7 +997,7 @@ test("Extension runtime keeps proactive local result disabled even with Telegram
     if (method === "getUpdates") {
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
+    if (method === "sendMessage" || method === "sendRichMessage") {
       sentBodies.push(parseJsonRequestBody(init) ?? {});
       return createRuntimeTelegramApiResponse({ message_id: 100 });
     }
@@ -1025,7 +1050,11 @@ test("Extension runtime resolves stale same-cwd lock before proactive local resu
     if (method === "getUpdates") {
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
+    if (method === "sendRichMessage") {
+      sentBodies.push(parseJsonRequestBody(init) ?? {});
+      return createRuntimeTelegramApiResponse({ message_id: 100 });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
       sentBodies.push(parseJsonRequestBody(init) ?? {});
       return createRuntimeTelegramApiResponse({ message_id: 100 });
     }
@@ -1062,7 +1091,10 @@ test("Extension runtime resolves stale same-cwd lock before proactive local resu
     );
     assert.equal(sentBodies.length, 1);
     assert.equal(sentBodies[0]?.chat_id, 77);
-    assert.match(String(sentBodies[0]?.text ?? ""), /Local <b>done<\/b>/);
+    assert.match(
+      String((sentBodies[0]?.rich_message as { markdown?: string } | undefined)?.markdown ?? ""),
+      /Local \*\*done\*\*/,
+    );
     await handlers.get("session_shutdown")?.({}, ctx);
   } finally {
     restoreFetch();
@@ -1082,7 +1114,11 @@ test("Extension runtime sends proactive local result only while owning Telegram 
     if (method === "getUpdates") {
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
+    if (method === "sendRichMessage") {
+      sentBodies.push(parseJsonRequestBody(init) ?? {});
+      return createRuntimeTelegramApiResponse({ message_id: 100 });
+    }
+    if (method === "sendMessage" || method === "sendRichMessage") {
       sentBodies.push(parseJsonRequestBody(init) ?? {});
       return createRuntimeTelegramApiResponse({ message_id: 100 });
     }
@@ -1116,7 +1152,10 @@ test("Extension runtime sends proactive local result only while owning Telegram 
     );
     assert.equal(sentBodies.length, 1);
     assert.equal(sentBodies[0]?.chat_id, 77);
-    assert.match(String(sentBodies[0]?.text ?? ""), /Local <b>done<\/b>/);
+    assert.match(
+      String((sentBodies[0]?.rich_message as { markdown?: string } | undefined)?.markdown ?? ""),
+      /Local \*\*done\*\*/,
+    );
     await commands.get("telegram-disconnect")?.handler("", ctx);
     await handlers.get("session_shutdown")?.({}, ctx);
   } finally {
@@ -1131,7 +1170,7 @@ test("Extension runtime skips proactive local result without Telegram lock owner
   const { handlers, pi } = createRuntimePiHarness();
   const restoreFetch = setRuntimeTestFetch(async (input, init) => {
     const method = getRuntimeTelegramApiMethod(input);
-    if (method === "sendMessage") {
+    if (method === "sendMessage" || method === "sendRichMessage") {
       sentBodies.push(parseJsonRequestBody(init) ?? {});
       return createRuntimeTelegramApiResponse({ message_id: 100 });
     }
@@ -1216,8 +1255,8 @@ test("Extension runtime clears queued follow-ups after a Telegram stop", async (
       if (getUpdatesCalls === 4) return fourthUpdates.promise;
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
-      sendTexts.push(String(body?.text ?? ""));
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      sendTexts.push(getRuntimeTelegramApiText(body));
       return createRuntimeTelegramApiResponse({
         message_id: 100 + sendTexts.length,
       });
@@ -1360,8 +1399,8 @@ test("Extension runtime handles immediate status before queued prompt after agen
       if (getUpdatesCalls === 3) return thirdUpdates.promise;
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      runtimeEvents.push(`send:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse({
         message_id: 100 + runtimeEvents.length,
       });
@@ -1498,8 +1537,8 @@ test("Extension runtime opens immediate model menu before queued prompt after ag
       if (getUpdatesCalls === 3) return thirdUpdates.promise;
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      runtimeEvents.push(`send:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse({
         message_id: 100 + runtimeEvents.length,
       });
@@ -1640,8 +1679,8 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
       }
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      runtimeEvents.push(`send:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse({
         message_id: 100 + runtimeEvents.length,
       });
@@ -1653,7 +1692,7 @@ test("Extension runtime keeps queued turns blocked until compaction completes", 
       return createRuntimeTelegramApiResponse(true);
     }
     if (method === "editMessageText") {
-      runtimeEvents.push(`edit:${String(body?.text ?? "")}`);
+      runtimeEvents.push(`edit:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse(true);
     }
     if (method === "answerCallbackQuery") {
@@ -1785,8 +1824,8 @@ test("Extension runtime blocks queued dispatch during observed auto-compaction",
       if (getUpdatesCalls === 2) return secondUpdates.promise;
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      runtimeEvents.push(`send:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse({
         message_id: 100 + runtimeEvents.length,
       });
@@ -2319,12 +2358,12 @@ test("Extension runtime applies idle model picks immediately and refreshes statu
       if (getUpdatesCalls === 2) return secondUpdates.promise;
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      runtimeEvents.push(`send:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse({ message_id: nextMessageId++ });
     }
     if (method === "editMessageText") {
-      runtimeEvents.push(`edit:${String(body?.text ?? "")}`);
+      runtimeEvents.push(`edit:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse(true);
     }
     if (method === "answerCallbackQuery") {
@@ -2448,12 +2487,12 @@ test("Extension runtime switches model in flight and dispatches a continuation t
       if (getUpdatesCalls === 3) return thirdUpdates.promise;
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      runtimeEvents.push(`send:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse({ message_id: nextMessageId++ });
     }
     if (method === "editMessageText") {
-      runtimeEvents.push(`edit:${String(body?.text ?? "")}`);
+      runtimeEvents.push(`edit:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse(true);
     }
     if (method === "answerCallbackQuery") {
@@ -2617,12 +2656,12 @@ test("Extension runtime preserves long-session queue through abort, next, and mo
       if (update) return update.promise;
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      runtimeEvents.push(`send:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse({ message_id: nextMessageId++ });
     }
     if (method === "editMessageText") {
-      runtimeEvents.push(`edit:${String(body?.text ?? "")}`);
+      runtimeEvents.push(`edit:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse(true);
     }
     if (method === "answerCallbackQuery") {
@@ -2838,12 +2877,12 @@ test("Extension runtime delays model-switch abort until the active tool finishes
       if (getUpdatesCalls === 3) return thirdUpdates.promise;
       throw new DOMException("stop", "AbortError");
     }
-    if (method === "sendMessage") {
-      runtimeEvents.push(`send:${String(body?.text ?? "")}`);
+    if (method === "sendMessage" || method === "sendRichMessage") {
+      runtimeEvents.push(`send:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse({ message_id: nextMessageId++ });
     }
     if (method === "editMessageText") {
-      runtimeEvents.push(`edit:${String(body?.text ?? "")}`);
+      runtimeEvents.push(`edit:${getRuntimeTelegramApiText(body)}`);
       return createRuntimeTelegramApiResponse(true);
     }
     if (method === "answerCallbackQuery") {

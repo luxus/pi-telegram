@@ -1567,14 +1567,14 @@ test("Menu helpers update and send interactive menu messages", async () => {
       chatId: number,
       messageId: number,
       text: string,
-      mode: "html" | "plain",
+      mode: "markdown" | "html" | "plain",
     ) => {
       events.push(`edit:${chatId}:${messageId}:${mode}:${text}`);
     },
     sendInteractiveMessage: async (
       chatId: number,
       text: string,
-      mode: "html" | "plain",
+      mode: "markdown" | "html" | "plain",
     ) => {
       events.push(`send:${chatId}:${mode}:${text}`);
       return 99;

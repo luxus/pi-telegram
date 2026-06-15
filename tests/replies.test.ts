@@ -1,6 +1,6 @@
 /**
  * Regression tests for Telegram reply delivery helpers
- * Covers rendered-message transport, chunk delivery, and plain or markdown final reply sending
+ * Covers UI/compat rendered-message transport, chunk delivery, and native/plain final reply sending
  */
 
 import assert from "node:assert/strict";
@@ -14,6 +14,7 @@ test.beforeEach(() => {
 import {
   buildTelegramReplyParameters,
   buildTelegramReplyTransport,
+  createGuestMarkdownReplySender,
   createReplyDedupRuntime,
   createTelegramRenderedMessageDeliveryRuntime,
   createTelegramRenderedMessageRuntime,
@@ -23,9 +24,12 @@ import {
   getAgentMessageText,
   isAssistantAgentMessage,
   resetTransportReplyDedup,
-  sendTelegramMarkdownReply,
+  sendTelegramNativeMarkdownReply,
   sendTelegramPlainReply,
   sendTelegramRenderedChunks,
+  splitTelegramNativeMarkdown,
+  TELEGRAM_RICH_MESSAGE_MAX_BLOCKS,
+  TELEGRAM_RICH_MESSAGE_MAX_CHARS,
 } from "../lib/replies.ts";
 import { createDedupAgentStartHook } from "../lib/lifecycle.ts";
 
@@ -191,8 +195,9 @@ test("Reply delivery edits the first chunk and sends remaining chunks separately
   assert.equal("reply_parameters" in (sentBodies[0] ?? {}), false);
 });
 
-test("Reply runtime bundles text, markdown, and interactive rendered-message delivery", async () => {
+test("Reply runtime bundles text, native markdown, and UI/compat interactive delivery", async () => {
   const sent: Array<Record<string, unknown>> = [];
+  const richSent: Array<Record<string, unknown>> = [];
   const edited: Array<Record<string, unknown>> = [];
   const runtime = createTelegramRenderedMessageRuntime({
     renderTelegramMessage: (text, options) => [
@@ -207,38 +212,110 @@ test("Reply runtime bundles text, markdown, and interactive rendered-message del
         edited.push(body);
       },
     }),
+    sendRichMessage: async (body) => {
+      richSent.push(body);
+      return { message_id: 77 };
+    },
   });
   assert.equal(await runtime.sendTextReply(7, 42, "hello"), 1);
-  assert.equal(await runtime.sendMarkdownReply(7, 43, "**hello**"), 2);
+  assert.equal(await runtime.sendMarkdownReply(7, 43, "**hello**"), 77);
   assert.equal(
     await runtime.sendInteractiveMessage(7, "menu", "html", {
       inline_keyboard: [],
     }),
-    3,
+    2,
   );
   await runtime.editInteractiveMessage(7, 9, "menu", "html", {
     inline_keyboard: [],
   });
   assert.deepEqual(
     sent.map((body) => body.text),
-    ["plain:hello", "markdown:**hello**", "html:menu"],
+    ["plain:hello", "html:menu"],
   );
+  assert.deepEqual(richSent, [
+    {
+      chat_id: 7,
+      rich_message: { markdown: "**hello**", skip_entity_detection: true },
+      reply_markup: undefined,
+      reply_parameters: {
+        message_id: 43,
+        allow_sending_without_reply: true,
+      },
+    },
+  ]);
   assert.deepEqual(sent[0]?.reply_parameters, {
     message_id: 42,
     allow_sending_without_reply: true,
   });
-  assert.deepEqual(sent[1]?.reply_parameters, {
-    message_id: 43,
-    allow_sending_without_reply: true,
-  });
-  assert.deepEqual(sent[2]?.reply_markup, { inline_keyboard: [] });
+  assert.deepEqual(sent[1]?.reply_markup, { inline_keyboard: [] });
   assert.deepEqual(
     edited.map((body) => body.text),
     ["html:menu"],
   );
 });
 
-test("Reply delivery runtime exposes transport and rendered-message helpers", async () => {
+test("Reply runtime can send markdown through native rich messages", async () => {
+  const richBodies: Array<Record<string, unknown>> = [];
+  const sentBodies: Array<Record<string, unknown>> = [];
+  const runtime = createTelegramRenderedMessageRuntime({
+    renderTelegramMessage: (text, options) => [
+      { text: `${options?.mode ?? "plain"}:${text}` },
+    ],
+    replyTransport: buildTelegramReplyTransport({
+      sendMessage: async (body) => {
+        sentBodies.push(body);
+        return { message_id: sentBodies.length };
+      },
+      editMessage: async () => {},
+    }),
+    sendRichMessage: async (body) => {
+      richBodies.push(body);
+      return { message_id: 77 };
+    },
+  });
+  assert.equal(await runtime.sendMarkdownReply(7, 43, "# hello", {
+    replyMarkup: { inline_keyboard: [[{ text: "ok", callback_data: "noop" }]] },
+  }), 77);
+  assert.deepEqual(richBodies, [
+    {
+      chat_id: 7,
+      rich_message: { markdown: "# hello", skip_entity_detection: true },
+      reply_markup: {
+        inline_keyboard: [[{ text: "ok", callback_data: "noop" }]],
+      },
+      reply_parameters: {
+        message_id: 43,
+        allow_sending_without_reply: true,
+      },
+    },
+  ]);
+  assert.deepEqual(sentBodies, []);
+});
+
+test("Reply runtime does not fall back to HTML when native rich message delivery fails", async () => {
+  const sentBodies: Array<Record<string, unknown>> = [];
+  const runtime = createTelegramRenderedMessageRuntime({
+    renderTelegramMessage: (text, options) => [
+      { text: `${options?.mode ?? "plain"}:${text}`, parseMode: "HTML" },
+    ],
+    replyTransport: buildTelegramReplyTransport({
+      sendMessage: async (body) => {
+        sentBodies.push(body);
+        return { message_id: sentBodies.length };
+      },
+      editMessage: async () => {},
+    }),
+    sendRichMessage: async () => {
+      throw new Error("rich unsupported");
+    },
+  });
+  await assert.rejects(() => runtime.sendMarkdownReply(7, 43, "# hello"), {
+    message: "rich unsupported",
+  });
+  assert.deepEqual(sentBodies, []);
+});
+
+test("Reply delivery runtime exposes transport and UI/compat rendered-message helpers", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const runtime = createTelegramRenderedMessageDeliveryRuntime({
     renderTelegramMessage: (text, options) => [
@@ -249,6 +326,7 @@ test("Reply delivery runtime exposes transport and rendered-message helpers", as
       return { message_id: sent.length };
     },
     editMessage: async () => {},
+    sendRichMessage: async () => ({ message_id: 99 }),
   });
   assert.equal(await runtime.sendTextReply(7, 42, "hello"), 1);
   assert.equal(
@@ -259,6 +337,94 @@ test("Reply delivery runtime exposes transport and rendered-message helpers", as
     sent.map((body) => body.text),
     ["plain:hello", "raw"],
   );
+});
+
+test("Guest replies answer with native Rich Markdown content", async () => {
+  const calls: Array<{
+    guestQueryId: string;
+    text?: string;
+    options?: { richMessage?: { markdown?: string; skip_entity_detection?: boolean } };
+  }> = [];
+  const sendGuestReply = createGuestMarkdownReplySender({
+    answerGuestQuery: async (guestQueryId, text, options) => {
+      calls.push({ guestQueryId, text, options });
+    },
+  });
+  await sendGuestReply("guest-1", "**hello** /start");
+  assert.deepEqual(calls, [
+    {
+      guestQueryId: "guest-1",
+      text: undefined,
+      options: {
+        richMessage: { markdown: "**hello** /start", skip_entity_detection: true },
+      },
+    },
+  ]);
+});
+
+test("Native Markdown splitter prefers paragraph boundaries", () => {
+  const first = "a".repeat(TELEGRAM_RICH_MESSAGE_MAX_CHARS - 10);
+  const second = "b".repeat(30);
+  const chunks = splitTelegramNativeMarkdown(`${first}\n\n${second}`);
+  assert.deepEqual(chunks, [first, second]);
+  assert.ok(chunks.every((chunk) => chunk.length <= TELEGRAM_RICH_MESSAGE_MAX_CHARS));
+});
+
+test("Native Markdown splitter falls back to hard limits for long atoms", () => {
+  const chunks = splitTelegramNativeMarkdown("x".repeat(TELEGRAM_RICH_MESSAGE_MAX_CHARS + 5));
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0]?.length, TELEGRAM_RICH_MESSAGE_MAX_CHARS);
+  assert.equal(chunks[1], "xxxxx");
+});
+
+test("Native Markdown splitter keeps fenced code blocks together when possible", () => {
+  const codeBlock = `\`\`\`ts\n${"x\n\n".repeat(100)}\`\`\``;
+  const prefix = "a".repeat(TELEGRAM_RICH_MESSAGE_MAX_CHARS - codeBlock.length);
+  const chunks = splitTelegramNativeMarkdown(`${prefix}\n\n${codeBlock}\n\ntail`);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[1], `${codeBlock}\n\ntail`);
+});
+
+test("Native Markdown splitter respects the rich-message block limit for lists", () => {
+  const markdown = Array.from(
+    { length: TELEGRAM_RICH_MESSAGE_MAX_BLOCKS + 5 },
+    (_, index) => `- item ${index + 1}`,
+  ).join("\n");
+  const chunks = splitTelegramNativeMarkdown(markdown);
+  assert.equal(chunks.length, 2);
+  assert.equal(chunks[0]?.split("\n").length, TELEGRAM_RICH_MESSAGE_MAX_BLOCKS);
+  assert.equal(chunks[1]?.split("\n").length, 5);
+});
+
+ test("Native Markdown delivery attaches reply metadata first and markup last", async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  const markdown = `${"a".repeat(TELEGRAM_RICH_MESSAGE_MAX_CHARS - 10)}\n\n${"b".repeat(30)}`;
+  const lastId = await sendTelegramNativeMarkdownReply(
+    7,
+    42,
+    markdown,
+    {
+      sendRichMessage: async (body) => {
+        bodies.push(body);
+        return { message_id: bodies.length };
+      },
+    },
+    { replyMarkup: { inline_keyboard: [[{ text: "ok", callback_data: "noop" }]] } },
+  );
+  assert.equal(lastId, 2);
+  assert.equal(bodies.length, 2);
+  assert.deepEqual(bodies[0]?.reply_parameters, {
+    message_id: 42,
+    allow_sending_without_reply: true,
+  });
+  assert.equal("reply_markup" in (bodies[0] ?? {}), true);
+  assert.equal(bodies[0]?.reply_markup, undefined);
+  assert.equal("reply_parameters" in (bodies[1] ?? {}), false);
+  assert.deepEqual(bodies[1]?.reply_markup, {
+    inline_keyboard: [[{ text: "ok", callback_data: "noop" }]],
+  });
+  assert.deepEqual((bodies[0]?.rich_message as { markdown?: string })?.markdown, "a".repeat(TELEGRAM_RICH_MESSAGE_MAX_CHARS - 10));
+  assert.deepEqual((bodies[1]?.rich_message as { markdown?: string })?.markdown, "b".repeat(30));
 });
 
 test("Reply runtime sends plain replies using the requested parse mode", async () => {
@@ -278,22 +444,6 @@ test("Reply runtime sends plain replies using the requested parse mode", async (
   );
   assert.equal(messageId, 7);
   assert.deepEqual(sent, ["html"]);
-});
-
-test("Reply runtime falls back to plain delivery when markdown rendering yields no chunks", async () => {
-  const calls: Array<string> = [];
-  const messageId = await sendTelegramMarkdownReply("hello", {
-    renderTelegramMessage: (_text, options) => {
-      if (options?.mode === "markdown") return [];
-      return [{ text: options?.mode ?? "plain" }];
-    },
-    sendRenderedChunks: async (chunks) => {
-      calls.push(chunks[0]?.text ?? "");
-      return 9;
-    },
-  });
-  assert.equal(messageId, 9);
-  assert.deepEqual(calls, ["plain"]);
 });
 
 test("Transport reply dedup scopes repeated prompt message ids by chat", () => {

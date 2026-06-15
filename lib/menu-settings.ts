@@ -98,13 +98,13 @@ export interface TelegramSettingsMenuRuntimeDeps<
     chatId: number,
     messageId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramSettingsMenuReplyMarkup,
   ) => Promise<void>;
   sendInteractiveMessage: (
     chatId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramSettingsMenuReplyMarkup,
   ) => Promise<number | undefined>;
   answerCallbackQuery: (

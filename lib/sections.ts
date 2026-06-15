@@ -24,7 +24,12 @@ export type TelegramSectionCallbackResult = "handled" | "pass";
 
 export interface TelegramSectionView {
   text: string;
-  parseMode?: "html" | "plain";
+  /**
+   * Source format for companion section content.
+   * Defaults to "html" for explicit Telegram UI markup; use "markdown"
+   * when a section naturally owns Markdown content, or "plain" for text.
+   */
+  parseMode?: "markdown" | "html" | "plain";
   replyMarkup?: TelegramInlineKeyboardMarkup;
 }
 
@@ -138,13 +143,13 @@ export interface TelegramSectionRuntimeDeps {
     chatId: number,
     messageId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramInlineKeyboardMarkup,
   ) => Promise<void>;
   sendInteractiveMessage: (
     chatId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramInlineKeyboardMarkup,
   ) => Promise<number | undefined>;
   enqueuePrompt: (prompt: string) => Promise<void>;
@@ -505,13 +510,13 @@ export interface TelegramSectionCallbackHandlerDeps {
     chatId: number,
     messageId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramInlineKeyboardMarkup,
   ) => Promise<void>;
   sendInteractiveMessage: (
     chatId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramInlineKeyboardMarkup,
   ) => Promise<number | undefined>;
   enqueuePrompt: (prompt: string) => Promise<void>;

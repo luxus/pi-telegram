@@ -1,12 +1,14 @@
 /**
  * Telegram reply delivery helpers
- * Zones: telegram outbound, rendering transport
- * Owns rendered-message delivery, reply transport wiring, and plain or markdown final replies
+ * Zones: telegram outbound, native rich markdown, UI/compat rendering transport
+ * Owns native assistant replies, rendered UI delivery, reply transport wiring, and plain text replies
  */
 
 import { assertTelegramInlineKeyboardCallbackData } from "./keyboard.ts";
 import type {
+  TelegramInputRichMessage,
   TelegramReplyParameters,
+  TelegramSendRichMessageBody,
   TelegramSentMessage,
 } from "./telegram-api.ts";
 import {
@@ -20,6 +22,9 @@ export {
   type TelegramRenderedChunk,
   type TelegramRenderMode,
 };
+
+export const TELEGRAM_RICH_MESSAGE_MAX_CHARS = 32768;
+export const TELEGRAM_RICH_MESSAGE_MAX_BLOCKS = 500;
 
 // --- Reply Dedup ---
 
@@ -138,7 +143,8 @@ export interface TelegramReplyDeliveryDeps<TReplyMarkup> {
   editMessage: (body: {
     chat_id: number;
     message_id: number;
-    text: string;
+    text?: string;
+    rich_message?: TelegramInputRichMessage;
     parse_mode?: "HTML";
     reply_markup?: TReplyMarkup;
   }) => Promise<unknown>;
@@ -251,24 +257,180 @@ export async function sendTelegramPlainReply(
   return deps.sendRenderedChunks(chunks);
 }
 
-export async function sendTelegramMarkdownReply<TReplyMarkup = unknown>(
-  markdown: string,
-  deps: TelegramReplyRuntimeDeps,
-  options?: { replyMarkup?: TReplyMarkup },
-): Promise<number | undefined> {
-  const chunks = deps.renderTelegramMessage(markdown, { mode: "markdown" });
-  if (chunks.length === 0) {
-    return sendTelegramPlainReply(markdown, deps);
+export function splitTelegramNativeMarkdown(markdown: string): string[] {
+  if (
+    markdown.length <= TELEGRAM_RICH_MESSAGE_MAX_CHARS &&
+    countTelegramNativeMarkdownBlocks(markdown) <= TELEGRAM_RICH_MESSAGE_MAX_BLOCKS
+  ) {
+    return [markdown];
   }
-  return deps.sendRenderedChunks(chunks, options);
+  const chunks: string[] = [];
+  let current = "";
+  let currentBlockCount = 0;
+  for (const rawBlock of splitTelegramNativeMarkdownBlocks(markdown)) {
+    for (const block of splitTelegramNativeMarkdownCountedBlocks(rawBlock)) {
+      const blockCount = countTelegramNativeMarkdownBlocks(block);
+      const candidate = current ? `${current}\n\n${block}` : block;
+      const exceedsChars = candidate.length > TELEGRAM_RICH_MESSAGE_MAX_CHARS;
+      const exceedsBlocks = currentBlockCount + blockCount > TELEGRAM_RICH_MESSAGE_MAX_BLOCKS;
+      if (!exceedsChars && !exceedsBlocks) {
+        current = candidate;
+        currentBlockCount += blockCount;
+        continue;
+      }
+      if (current) chunks.push(current.trimEnd());
+      if (
+        block.length <= TELEGRAM_RICH_MESSAGE_MAX_CHARS &&
+        blockCount <= TELEGRAM_RICH_MESSAGE_MAX_BLOCKS
+      ) {
+        current = block;
+        currentBlockCount = blockCount;
+        continue;
+      }
+      chunks.push(...splitTelegramNativeMarkdownLongBlock(block));
+      current = "";
+      currentBlockCount = 0;
+    }
+  }
+  if (current) chunks.push(current.trimEnd());
+  return chunks;
 }
 
+function splitTelegramNativeMarkdownBlocks(markdown: string): string[] {
+  const blocks: string[] = [];
+  const current: string[] = [];
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+  const flush = (): void => {
+    if (current.length === 0) return;
+    blocks.push(current.join("\n"));
+    current.length = 0;
+  };
+  for (const line of markdown.split("\n")) {
+    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (!fence && line.trim().length === 0) {
+      flush();
+      continue;
+    }
+    current.push(line);
+    if (!fence && fenceMatch) {
+      const markerText = fenceMatch[1] ?? "```";
+      fence = { marker: markerText[0] as "`" | "~", length: markerText.length };
+      continue;
+    }
+    if (
+      fence &&
+      new RegExp(`^ {0,3}${fence.marker}{${fence.length},}\\s*$`).test(line)
+    ) {
+      fence = undefined;
+    }
+  }
+  flush();
+  return blocks;
+}
+
+function splitTelegramNativeMarkdownCountedBlocks(block: string): string[] {
+  if (countTelegramNativeMarkdownBlocks(block) <= TELEGRAM_RICH_MESSAGE_MAX_BLOCKS) {
+    return [block];
+  }
+  const chunks: string[] = [];
+  let current: string[] = [];
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+  for (const line of block.split("\n")) {
+    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (!fence && current.length >= TELEGRAM_RICH_MESSAGE_MAX_BLOCKS) {
+      chunks.push(current.join("\n"));
+      current = [];
+    }
+    current.push(line);
+    if (!fence && fenceMatch) {
+      const markerText = fenceMatch[1] ?? "```";
+      fence = { marker: markerText[0] as "`" | "~", length: markerText.length };
+      continue;
+    }
+    if (
+      fence &&
+      new RegExp(`^ {0,3}${fence.marker}{${fence.length},}\\s*$`).test(line)
+    ) {
+      fence = undefined;
+    }
+  }
+  if (current.length > 0) chunks.push(current.join("\n"));
+  return chunks;
+}
+
+function countTelegramNativeMarkdownBlocks(block: string): number {
+  if (/^ {0,3}(`{3,}|~{3,})/.test(block)) return 1;
+  const lines = block.split("\n").filter((line) => line.trim().length > 0);
+  if (lines.some((line) => /^\s*([-*+] |\d+\. |>|\|)/.test(line))) {
+    return Math.max(1, lines.length);
+  }
+  return 1;
+}
+
+function splitTelegramNativeMarkdownLongBlock(block: string): string[] {
+  const chunks: string[] = [];
+  let remaining = block;
+  while (remaining.length > TELEGRAM_RICH_MESSAGE_MAX_CHARS) {
+    const window = remaining.slice(0, TELEGRAM_RICH_MESSAGE_MAX_CHARS + 1);
+    const splitIndex = findTelegramNativeMarkdownSplitIndex(window);
+    chunks.push(remaining.slice(0, splitIndex).trimEnd());
+    remaining = remaining.slice(splitIndex).trimStart();
+  }
+  if (remaining.length > 0) chunks.push(remaining);
+  return chunks;
+}
+
+function findTelegramNativeMarkdownSplitIndex(text: string): number {
+  const hardLimit = TELEGRAM_RICH_MESSAGE_MAX_CHARS;
+  const paragraphIndex = text.lastIndexOf("\n\n", hardLimit);
+  if (paragraphIndex > 0) return paragraphIndex + 2;
+  const lineIndex = text.lastIndexOf("\n", hardLimit);
+  if (lineIndex > 0) return lineIndex + 1;
+  const spaceIndex = text.lastIndexOf(" ", hardLimit);
+  if (spaceIndex > 0) return spaceIndex + 1;
+  return hardLimit;
+}
+
+export async function sendTelegramNativeMarkdownReply<TReplyMarkup = unknown>(
+  chatId: number,
+  replyToMessageId: number | undefined,
+  markdown: string,
+  deps: {
+    sendRichMessage: (
+      body: TelegramSendRichMessageBody,
+    ) => Promise<TelegramSentMessage>;
+  },
+  options?: { replyMarkup?: TReplyMarkup },
+): Promise<number | undefined> {
+  assertTelegramInlineKeyboardCallbackData(options?.replyMarkup);
+  let lastMessageId: number | undefined;
+  const chunks = splitTelegramNativeMarkdown(markdown);
+  for (const [index, chunk] of chunks.entries()) {
+    const replyParameters =
+      index === 0
+        ? buildTelegramReplyParameters(chatId, replyToMessageId)
+        : undefined;
+    const sent = await deps.sendRichMessage({
+      chat_id: chatId,
+      rich_message: { markdown: chunk, skip_entity_detection: true },
+      reply_markup: index === chunks.length - 1 ? options?.replyMarkup : undefined,
+      ...(replyParameters ? { reply_parameters: replyParameters } : {}),
+    });
+    lastMessageId = sent.message_id;
+  }
+  return lastMessageId;
+}
+
+// UI/compat regular-message runtime for bridge-owned text and interactive
+// surfaces. Assistant and guest Markdown delivery bypass this path and use
+// native Rich Message helpers above.
 export interface TelegramRenderedMessageRuntimeDeps<TReplyMarkup> {
   renderTelegramMessage: (
     text: string,
     options?: { mode?: TelegramRenderMode },
   ) => TelegramRenderedChunk[];
   replyTransport: TelegramReplyTransport<TReplyMarkup>;
+  sendRichMessage: (body: TelegramSendRichMessageBody) => Promise<TelegramSentMessage>;
 }
 
 export interface TelegramRenderedMessageRuntime<TReplyMarkup> {
@@ -312,6 +474,7 @@ export interface TelegramRenderedMessageDeliveryRuntimeDeps<
     text: string,
     options?: { mode?: TelegramRenderMode },
   ) => TelegramRenderedChunk[];
+  sendRichMessage: (body: TelegramSendRichMessageBody) => Promise<TelegramSentMessage>;
 }
 
 export function createTelegramRenderedMessageDeliveryRuntime<TReplyMarkup>(
@@ -327,6 +490,7 @@ export function createTelegramRenderedMessageDeliveryRuntime<TReplyMarkup>(
       renderTelegramMessage:
         deps.renderTelegramMessage ?? renderTelegramMessage,
       replyTransport,
+      sendRichMessage: deps.sendRichMessage,
     }),
   };
 }
@@ -349,18 +513,11 @@ export function createTelegramRenderedMessageRuntime<TReplyMarkup>(
       );
     },
     sendMarkdownReply: async (chatId, replyToMessageId, markdown, options) => {
-      return sendTelegramMarkdownReply(
+      return sendTelegramNativeMarkdownReply(
+        chatId,
+        replyToMessageId,
         markdown,
-        {
-          renderTelegramMessage: deps.renderTelegramMessage,
-          sendRenderedChunks: (chunks, chunkOptions) =>
-            deps.replyTransport.sendRenderedChunks(chatId, chunks, {
-              replyToMessageId,
-              replyMarkup: chunkOptions?.replyMarkup as
-                | TReplyMarkup
-                | undefined,
-            }),
-        },
+        { sendRichMessage: deps.sendRichMessage },
         options,
       );
     },
@@ -438,23 +595,21 @@ export function dedupSendMarkdownReply<TReplyMarkup = unknown>(
 }
 
 /**
- * Guest reply sender: renders Markdown → HTML, sends via answerGuestQuery.
- * Keeps guest rendering inside the replies domain so the orchestration layer
- * (index.ts) does not import from rendering.ts directly. */
+ * Guest reply sender: answers guest queries with native Rich Markdown content.
+ * Guest queries use InlineQueryResult input_message_content rather than chat
+ * sendRichMessage, so this stays as a dedicated guest transport adapter.
+ */
 export function createGuestMarkdownReplySender(deps: {
-  renderTelegramMessage: (
-    text: string,
-    options?: { mode?: TelegramRenderMode },
-  ) => TelegramRenderedChunk[];
   answerGuestQuery: (
     guestQueryId: string,
     text?: string,
-    options?: { parseMode?: string },
+    options?: { parseMode?: string; richMessage?: TelegramInputRichMessage },
   ) => Promise<void>;
 }) {
   return async (guestQueryId: string, markdown: string) => {
-    const chunks = deps.renderTelegramMessage(markdown, { mode: "markdown" });
-    const html = chunks.length > 0 ? chunks[0].text : markdown;
-    await deps.answerGuestQuery(guestQueryId, html, { parseMode: "HTML" });
+    const [richMarkdown = markdown] = splitTelegramNativeMarkdown(markdown);
+    await deps.answerGuestQuery(guestQueryId, undefined, {
+      richMessage: { markdown: richMarkdown, skip_entity_detection: true },
+    });
   };
 }
