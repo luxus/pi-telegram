@@ -22,9 +22,9 @@ Configured text handlers provide `template`. A string is one command; an array i
 
 ## Text Handler Config
 
-`type: "text"` handlers transform final text replies before rendering and delivery. The source text is provided on stdin and as `{text}`. Successful non-empty stdout replaces the current text. Empty stdout or handler failure keeps the previous text and records diagnostics.
+`type: "text"` handlers transform final text replies before native Rich Markdown delivery. The source text is provided on stdin and as `{text}`. Successful non-empty stdout replaces the current text. Empty stdout or handler failure keeps the previous text and records diagnostics.
 
-This is ideal for machine translation, tone normalization, redaction, glossary expansion, compliance footers, or any other final text rewrite that should be configured outside the agent prompt. Text handlers run before Markdown/HTML rendering, so a Markdown reply remains Markdown input to the handler. They also run when the bridge finalizes an already streamed rich preview; in that path Telegram can briefly show a pre-transform preview before the final edited message is replaced with the handler output. Inline buttons are built as reply markup: visible button labels pass through the same text handler, while callback data and callback prompts remain unchanged.
+This is ideal for machine translation, tone normalization, redaction, glossary expansion, compliance footers, or any other final text rewrite that should be configured outside the agent prompt. Text handlers run before native Rich Markdown delivery, so a Markdown reply remains Markdown input to the handler. They also run when the bridge finalizes an already streamed rich preview; in that path Telegram can briefly show a pre-transform preview before the final Rich Message reply replaces it. Inline buttons are built as reply markup: visible button labels pass through the same text handler, while callback data and callback prompts remain unchanged.
 
 Simple machine-translation handler with explicit text placeholder:
 

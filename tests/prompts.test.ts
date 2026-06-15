@@ -82,7 +82,10 @@ test("Prompt helpers add full Telegram-turn guidance for Telegram prompts", () =
     defaultSystemPrompt,
     /The current user message came from Telegram/,
   );
-  assert.match(defaultSystemPrompt, /37 visible cells/);
+  assert.match(defaultSystemPrompt, /mobile-first/);
+  assert.match(defaultSystemPrompt, /For formulas, use math delimiters/);
+  assert.match(defaultSystemPrompt, /do not wrap formulas in backticks/);
+  assert.doesNotMatch(defaultSystemPrompt, /37 visible cells/);
   assert.match(defaultSystemPrompt, /`\[reply\]` is quoted context/);
   assert.match(defaultSystemPrompt, /not a new instruction by itself/);
   assert.match(

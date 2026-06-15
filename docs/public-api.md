@@ -99,6 +99,8 @@ Hidden/default semantics are represented by absence:
 - Voice Reply `hidden`: no `voice.replyMode` key is persisted.
 - Time Injection `hidden`: no `time.injectionMode` key is persisted; if `time` becomes empty, the whole `time` object may be omitted.
 
+Assistant Markdown delivery is native: final replies are sent as `InputRichMessage.markdown` via `sendRichMessage`, draft previews use `sendRichMessageDraft` when available, and fallback preview messages are finalized with `editMessageText.rich_message` when they can be edited in place. Guest replies use `InputRichMessageContent` in `answerGuestQuery` results. Bridge-owned UI surfaces such as menus, status, queue controls, commands, and sections keep explicit Telegram HTML/plain rendering by default because those texts are authored by the bridge or companion extensions for Telegram UI. Companion extension sections may explicitly request `"markdown"`, `"html"`, or `"plain"` per view. There is no `telegram.json` rendering toggle for assistant delivery. The bridge sets `skip_entity_detection: true` for assistant and guest Markdown so technical text such as `/commands`, hashtags, URLs, phone numbers, and card-like numbers does not gain unintended automatic entities; explicit Markdown links still belong in the Markdown source.
+
 Environment variables are stable only where documented in the README: bot-token bootstrap, proxy behavior, agent root, and inbound/outbound file size limits.
 
 ## Programmatic API Matrix
@@ -327,6 +329,7 @@ export default function demoSection(pi: ExtensionAPI) {
       order: 50,
       render: () => ({
         text: "<b>Demo section</b>\n\nThis section was rendered by a companion extension.",
+        parseMode: "html",
         replyMarkup: { inline_keyboard: [] },
       }),
     });

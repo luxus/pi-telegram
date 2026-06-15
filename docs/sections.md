@@ -10,7 +10,7 @@
 
 Telegram Extension Sections let ordinary pi extensions add structured UI surfaces to the `pi-telegram` inline application menu. The platform mirrors π's own extensibility model: small, composable extensions that plug into a shared shell without owning transport, polling, authorization, or menu lifecycle.
 
-`pi-telegram` stays the single bot operator. Extensions register typed sections; the bridge handles rendering, callback routing, token mapping, navigation hierarchy, and diagnostics. No second polling loop, no new loader — just one `registerTelegramSection()` call.
+`pi-telegram` stays the single bot operator. Extensions register typed sections; the bridge handles Telegram UI rendering, callback routing, token mapping, navigation hierarchy, and diagnostics. Section views default to explicit Telegram HTML UI markup, while extensions can request Markdown or plain text when that better matches their content. No second polling loop, no new loader — just one `registerTelegramSection()` call.
 
 ## 2. Contract Layers
 
@@ -111,7 +111,9 @@ interface TelegramSectionRegistration {
 
 interface TelegramSectionView {
   text: string;
-  parseMode?: "html" | "plain";
+  // Defaults to "html" for explicit Telegram UI markup.
+  // Use "markdown" when the section naturally owns Markdown content.
+  parseMode?: "markdown" | "html" | "plain";
   replyMarkup?: TelegramInlineKeyboardMarkup;
 }
 ```

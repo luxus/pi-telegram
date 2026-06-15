@@ -128,13 +128,13 @@ export interface TelegramMenuMessageRuntimeDeps {
     chatId: number,
     messageId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramReplyMarkup,
   ) => Promise<void>;
   sendInteractiveMessage: (
     chatId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramReplyMarkup,
   ) => Promise<number | undefined>;
 }
@@ -200,7 +200,7 @@ export interface TelegramModelMenuPage<TModel extends MenuModel = MenuModel> {
 export interface TelegramMenuRenderPayload {
   nextMode: TelegramModelMenuState["mode"];
   text: string;
-  mode: "html" | "plain";
+  mode: "markdown" | "html" | "plain";
   replyMarkup: TelegramReplyMarkup;
 }
 

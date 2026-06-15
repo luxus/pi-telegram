@@ -228,13 +228,13 @@ export interface TelegramMenuCallbackRuntimeDeps<
     chatId: number,
     messageId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramReplyMarkup,
   ) => Promise<void>;
   sendInteractiveMessage?: (
     chatId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramReplyMarkup,
   ) => Promise<number | undefined>;
   enqueueSectionPrompt?: (prompt: string, ctx: TContext) => Promise<void>;
@@ -464,13 +464,13 @@ export interface TelegramMenuCallbackRuntimeAdapterDeps<
     chatId: number,
     messageId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramReplyMarkup,
   ) => Promise<void>;
   sendInteractiveMessage?: (
     chatId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramReplyMarkup,
   ) => Promise<number | undefined>;
   enqueueSectionPrompt?: (prompt: string, ctx: TContext) => Promise<void>;

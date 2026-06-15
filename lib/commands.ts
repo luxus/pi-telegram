@@ -494,7 +494,7 @@ export interface TelegramCompactConfirmationDeps {
   sendInteractiveMessage: (
     chatId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramCompactConfirmationReplyMarkup,
   ) => Promise<number | undefined>;
 }
@@ -515,7 +515,7 @@ export interface TelegramCompactConfirmationCallbackDeps<TContext> {
     chatId: number,
     messageId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: TelegramCompactConfirmationReplyMarkup,
   ) => Promise<void>;
   runCompact: (

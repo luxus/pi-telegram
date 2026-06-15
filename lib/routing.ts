@@ -93,13 +93,13 @@ export interface TelegramInboundRouteRuntimeDeps<
     chatId: number,
     messageId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: Menu.TelegramReplyMarkup,
   ) => Promise<void>;
   sendInteractiveMessage?: (
     chatId: number,
     text: string,
-    mode: "html" | "plain",
+    mode: "markdown" | "html" | "plain",
     replyMarkup: Menu.TelegramReplyMarkup,
   ) => Promise<number | undefined>;
   deleteMessage?: (chatId: number, messageId: number) => Promise<void>;
