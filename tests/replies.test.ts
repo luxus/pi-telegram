@@ -371,6 +371,72 @@ test("Native Markdown delivery normalizes space-after-marker blockquotes outside
   );
 });
 
+test("Native Markdown delivery neutralizes indented list markers that break Rich Markdown", () => {
+  const markdown = [
+    "**HEAD**",
+    "",
+    "  - alpha/beta gamma-delta with `inline.code`",
+    "",
+    "END",
+  ].join("\n");
+  assert.equal(
+    normalizeTelegramNativeMarkdown(markdown),
+    [
+      "**HEAD**",
+      "",
+      "\u00A0\u00A0- alpha/beta gamma-delta with `inline.code`",
+      "",
+      "END",
+    ].join("\n"),
+  );
+});
+
+test("Native Markdown delivery preserves top-level list markers", () => {
+  assert.equal(
+    normalizeTelegramNativeMarkdown("- plain\n  - nested\n\t- tabbed"),
+    "- plain\n\u00A0\u00A0- nested\n\u00A0\u00A0- tabbed",
+  );
+});
+
+test("Native Markdown splitter keeps truncation-risk fixture intact", () => {
+  const markdown = [
+    "**HEAD**",
+    "",
+    "  - alpha/beta gamma-delta with `inline.code`",
+    "",
+    "END",
+  ].join("\n");
+  const chunks = splitTelegramNativeMarkdown(markdown);
+  assert.equal(chunks.length, 1);
+  assert.match(chunks[0] ?? "", /inline\.code/);
+  assert.match(chunks[0] ?? "", /END$/);
+});
+
+test("Native Markdown delivery sends normalized risky fixture without losing tail text", async () => {
+  const bodies: Array<Record<string, unknown>> = [];
+  await sendTelegramNativeMarkdownReply(
+    7,
+    undefined,
+    [
+      "**HEAD**",
+      "",
+      "  - alpha/beta gamma-delta with `inline.code`",
+      "",
+      "END",
+    ].join("\n"),
+    {
+      sendRichMessage: async (body) => {
+        bodies.push(body);
+        return { message_id: bodies.length };
+      },
+    },
+  );
+  const markdown = (bodies[0]?.rich_message as { markdown?: string })?.markdown ?? "";
+  assert.match(markdown, /^\*\*HEAD\*\*/);
+  assert.match(markdown, /\u00A0\u00A0- alpha\/beta gamma-delta with `inline\.code`/);
+  assert.match(markdown, /END$/);
+});
+
 test("Native Markdown delivery escapes dollar ticker atoms outside code", () => {
   const markdown = [
     "Токен $BLDR может ломать math parsing.",

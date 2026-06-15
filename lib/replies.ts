@@ -257,8 +257,22 @@ export async function sendTelegramPlainReply(
   return deps.sendRenderedChunks(chunks);
 }
 
+function normalizeIndentedTelegramNativeMarkdownList(line: string): string {
+  return line.replace(
+    /^( +|\t+)([-*+] |\d+\. )/,
+    (_match, indent: string, marker: string) => {
+      const visibleIndent = indent
+        .replace(/ /g, "\u00A0")
+        .replace(/\t/g, "\u00A0\u00A0");
+      return `${visibleIndent}${marker}`;
+    },
+  );
+}
+
 function normalizeTelegramNativeMarkdownLine(line: string): string {
-  let result = line.replace(/^( {0,3}>)[ \t]/, "$1");
+  let result = normalizeIndentedTelegramNativeMarkdownList(
+    line.replace(/^( {0,3}>)[ \t]/, "$1"),
+  );
   const codeSpans: string[] = [];
   result = result.replace(/`+[^`]*`+/g, (code) => {
     const token = `\u0000${codeSpans.length}\u0000`;

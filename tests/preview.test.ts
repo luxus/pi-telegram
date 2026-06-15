@@ -226,6 +226,26 @@ test("Native Markdown message editor normalizes rich markdown", async () => {
   ]);
 });
 
+test("Native Markdown message editor normalizes risky indented lists", async () => {
+  const calls: unknown[] = [];
+  const editMarkdown = createTelegramNativeMarkdownMessageEditor({
+    editMessageText: async (body) => {
+      calls.push(body);
+      return "edited";
+    },
+  });
+  await editMarkdown(
+    7,
+    55,
+    "**HEAD**\n\n  - alpha/beta gamma-delta with `inline.code`\n\nEND",
+  );
+  const markdown =
+    ((calls[0] as { rich_message?: { markdown?: string } })?.rich_message
+      ?.markdown) ?? "";
+  assert.match(markdown, /\u00A0\u00A0- alpha\/beta gamma-delta with `inline\.code`/);
+  assert.match(markdown, /END$/);
+});
+
 test("Assistant preview runtime binds controller and message hooks", async () => {
   const events: string[] = [];
   let activeTurn: { chatId: number } | undefined = { chatId: 7 };
@@ -576,6 +596,25 @@ test("Preview runtime sends normalized native Markdown drafts", async () => {
   assert.equal(harness.getState()?.lastSentText, "## Intro\n\n**$BTC**");
   assert.equal(harness.getState()?.lastSentParseMode, undefined);
   assert.equal(harness.getDraftSupport(), "supported");
+});
+
+test("Preview runtime normalizes risky indented lists in native Markdown drafts", async () => {
+  const harness = createPreviewRuntimeHarness({
+    mode: "draft",
+    pendingText:
+      "**HEAD**\n\n  - alpha/beta gamma-delta with `inline.code`\n\nEND",
+    lastSentText: "",
+    flushTimer: setTimeout(() => {}, 1000),
+  });
+  harness.deps.maxMessageLength = 4096;
+  await flushTelegramPreview(7, harness.deps);
+  assert.deepEqual(harness.events, [
+    "draft:7:10:**HEAD**\n\n\u00A0\u00A0- alpha/beta gamma-delta with `inline.code`\n\nEND",
+  ]);
+  assert.equal(
+    harness.getState()?.lastSentText,
+    "**HEAD**\n\n  - alpha/beta gamma-delta with `inline.code`\n\nEND",
+  );
 });
 
 test("Preview runtime preserves original blank-line spacing in draft Markdown", async () => {

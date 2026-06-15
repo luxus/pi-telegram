@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.17.2: Indented List Rich Markdown Hotfix
+
+- `[Rich Markdown]` Neutralized indented list markers before native Rich Markdown delivery by replacing leading list indentation with non-breaking spaces while preserving top-level list markers. Impact: assistant replies with bold section headers followed by two-space-indented bullets containing slash/hyphen text, `with`, and inline code no longer render raw Markdown or truncate around the inline-code span.
+- `[Preview]` Pinned the same normalization path for native draft previews and editable/final Rich Markdown messages. Impact: risky replies use consistent Markdown safety behavior across draft, fallback edit, and final delivery paths.
+- `[Tests]` Added regression coverage for the discovered formatting-only and truncation-risk fixtures, including payload-tail preservation through native Markdown splitting and send delivery. Impact: future Rich Markdown parser changes are less likely to reintroduce partial Telegram messages.
+
 ## 0.17.1: Rich Markdown Parser Hotfix
 
 - `[Rich Markdown]` Normalize Bot-API-fragile source before native Rich Markdown delivery, including space-after-marker blockquotes and dollar-prefixed ticker atoms such as `$BLDR` / `$NTVE`, prefer Telegram `rich_message` blocks over raw `text`/`caption` when extracting quoted reply context for prompts, and keep Telegram copyability guidance generic by recommending inline code for short copyable literals. Impact: assistant replies are less likely to render as raw Markdown on Telegram Rich Message parser/client edges, replying to a native Rich Markdown bot message no longer injects raw Markdown source into `[reply]`, and prompts nudge copyable identifiers without ticker-specific bloat.
