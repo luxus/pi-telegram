@@ -10,7 +10,10 @@ import type {
   TelegramSendMessageBody,
   TelegramSentMessage,
 } from "./telegram-api.ts";
-import { buildTelegramReplyParameters } from "./replies.ts";
+import {
+  buildTelegramReplyParameters,
+  normalizeTelegramNativeMarkdown,
+} from "./replies.ts";
 import { stripTelegramCommentMarkupForPreview } from "./outbound.ts";
 import { shouldSuppressPreviewForVoice } from "./voice.ts";
 
@@ -298,7 +301,10 @@ export function createTelegramNativeMarkdownMessageEditor<TReplyMarkup>(deps: {
     deps.editMessageText({
       chat_id: chatId,
       message_id: messageId,
-      rich_message: { markdown, skip_entity_detection: true },
+      rich_message: {
+        markdown: normalizeTelegramNativeMarkdown(markdown),
+        skip_entity_detection: true,
+      },
       ...(options?.replyMarkup ? { reply_markup: options.replyMarkup } : {}),
     });
 }
@@ -632,7 +638,11 @@ async function performTelegramPreviewFlush<
     const draftId = state.draftId ?? deps.allocateDraftId();
     state.draftId = draftId;
     try {
-      await deps.sendDraft(chatId, draftId, snapshot.sourceText);
+      await deps.sendDraft(
+        chatId,
+        draftId,
+        normalizeTelegramNativeMarkdown(snapshot.sourceText),
+      );
       deps.setDraftSupport("supported");
       state.mode = "draft";
       state.lastSentText = snapshot.text;

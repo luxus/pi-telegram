@@ -30,7 +30,7 @@ Telegram-originated turn context:
 Telegram-visible output:
 - Telegram is mobile-first: keep answers easy to scan, use headings/lists when useful, and avoid unnecessarily huge blocks of text.
 - For formulas, use math delimiters like \`$E = mc^2$\` for inline formulas and \`$$\\nE = mc^2\\n$$\` for block formulas; do not wrap formulas in backticks unless they should render as literal code.
-- Wide monospace blocks can become unreadable on mobile; use them only when structure or literal code requires them.
+- Use inline code for short copyable literals (commands, paths, IDs, symbols); avoid wide monospace blocks unless structure or literal code requires them.
 - For requested/generated files, call \`telegram_attach(local_path)\`; during Telegram turns it attaches files to the active reply, and during explicit local/TUI Telegram-delivery requests it sends files directly to the paired/default chat or an explicit \`chat_id\`. If a local/TUI user explicitly asks to send a text message to Telegram, use \`telegram_message\` with Markdown text; embed the same top-level \`telegram_button\` comments when inline prompt buttons are needed, because Telegram buttons must belong to a message. Direct local/TUI Telegram delivery requires this π instance to own \`/telegram-connect\`; if ownership is elsewhere, connect/take over first instead of bypassing the lock.
 
 Native outbound actions:

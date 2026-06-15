@@ -29,10 +29,15 @@ export interface TelegramVoice {
   mime_type?: string;
 }
 
+export interface TelegramRichMessage {
+  blocks?: unknown[];
+}
+
 export interface TelegramReplyToMessage {
   message_id?: number;
   text?: string;
   caption?: string;
+  rich_message?: TelegramRichMessage;
 }
 
 export interface TelegramSticker {
@@ -43,6 +48,7 @@ export interface TelegramMediaMessage {
   message_id: number;
   text?: string;
   caption?: string;
+  rich_message?: TelegramRichMessage;
   reply_to_message?: TelegramReplyToMessage;
   media_group_id?: string;
   photo?: TelegramPhotoSize[];
@@ -173,10 +179,94 @@ function isImageMimeType(mimeType: string | undefined): boolean {
   return mimeType?.toLowerCase().startsWith("image/") ?? false;
 }
 
+function getObjectField(value: unknown, field: string): unknown {
+  if (typeof value !== "object" || value === null || !(field in value)) {
+    return undefined;
+  }
+  return Reflect.get(value, field);
+}
+
+function joinRichTextParts(parts: string[], separator = ""): string {
+  return parts.filter(Boolean).join(separator).trim();
+}
+
+function extractTelegramRichText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return joinRichTextParts(value.map(extractTelegramRichText));
+  }
+  if (typeof value !== "object" || value === null) return "";
+  const text = getObjectField(value, "text");
+  if (text !== undefined) return extractTelegramRichText(text);
+  const expression = getObjectField(value, "expression");
+  if (typeof expression === "string") return expression;
+  const alternativeText = getObjectField(value, "alternative_text");
+  if (typeof alternativeText === "string") return alternativeText;
+  return "";
+}
+
+function extractTelegramRichBlockText(block: unknown): string {
+  if (typeof block !== "object" || block === null) return "";
+  const directText = extractTelegramRichText(getObjectField(block, "text"));
+  if (directText) return directText;
+  const summary = extractTelegramRichText(getObjectField(block, "summary"));
+  const nestedBlocks = extractTelegramRichMessageBlocksText(
+    getObjectField(block, "blocks"),
+  );
+  const items = getObjectField(block, "items");
+  const itemText = Array.isArray(items)
+    ? items
+        .map((item) => {
+          const label = getObjectField(item, "label");
+          const body = extractTelegramRichMessageBlocksText(
+            getObjectField(item, "blocks"),
+          );
+          return typeof label === "string" && body ? `${label} ${body}` : body;
+        })
+        .filter(Boolean)
+        .join("\n")
+    : "";
+  const cells = getObjectField(block, "cells");
+  const cellText = Array.isArray(cells)
+    ? cells
+        .map((row) =>
+          Array.isArray(row)
+            ? row
+                .map((cell) => extractTelegramRichText(getObjectField(cell, "text")))
+                .filter(Boolean)
+                .join(" | ")
+            : "",
+        )
+        .filter(Boolean)
+        .join("\n")
+    : "";
+  const caption = extractTelegramRichText(getObjectField(block, "caption"));
+  return joinRichTextParts(
+    [summary, nestedBlocks, itemText, cellText, caption],
+    "\n",
+  );
+}
+
+function extractTelegramRichMessageBlocksText(blocks: unknown): string {
+  if (!Array.isArray(blocks)) return "";
+  return joinRichTextParts(blocks.map(extractTelegramRichBlockText), "\n\n");
+}
+
+function extractTelegramRichMessageText(
+  richMessage: TelegramRichMessage | undefined,
+): string {
+  return extractTelegramRichMessageBlocksText(richMessage?.blocks);
+}
+
 export function extractTelegramMessageText(
   message: TelegramMediaMessage,
 ): string {
-  return (message.text || message.caption || "").trim();
+  return (
+    extractTelegramRichMessageText(message.rich_message) ||
+    message.text ||
+    message.caption ||
+    ""
+  ).trim();
 }
 
 function truncateTelegramReplyContextText(text: string): string {
@@ -188,6 +278,7 @@ export function extractTelegramReplyContextText(
   message: TelegramMediaMessage,
 ): string {
   const quoted = (
+    extractTelegramRichMessageText(message.reply_to_message?.rich_message) ||
     message.reply_to_message?.text ||
     message.reply_to_message?.caption ||
     ""

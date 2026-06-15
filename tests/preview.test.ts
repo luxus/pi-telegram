@@ -12,6 +12,7 @@ import {
   clearTelegramPreview,
   createTelegramAssistantMessagePreviewHooks,
   createTelegramAssistantPreviewRuntime,
+  createTelegramNativeMarkdownMessageEditor,
   createTelegramNativeMarkdownPreviewFinalizer,
   createTelegramPreviewController,
   createTelegramPreviewControllerRuntime,
@@ -200,6 +201,27 @@ test("Preview message transport adapts Bot API bodies and reply metadata", async
       text: "default",
       parse_mode: undefined,
       reply_parameters: { message_id: 10, allow_sending_without_reply: true },
+    },
+  ]);
+});
+
+test("Native Markdown message editor normalizes rich markdown", async () => {
+  const calls: unknown[] = [];
+  const editMarkdown = createTelegramNativeMarkdownMessageEditor({
+    editMessageText: async (body) => {
+      calls.push(body);
+      return "edited";
+    },
+  });
+  await editMarkdown(7, 55, "> quoted\n\n**$BTC**");
+  assert.deepEqual(calls, [
+    {
+      chat_id: 7,
+      message_id: 55,
+      rich_message: {
+        markdown: ">quoted\n\n**\\$BTC**",
+        skip_entity_detection: true,
+      },
     },
   ]);
 });
@@ -540,18 +562,18 @@ test("Preview hook runtime binds assistant message start and update deps", async
   assert.equal(previewState?.pendingText, "next markdown");
 });
 
-test("Preview runtime sends raw native Markdown drafts", async () => {
+test("Preview runtime sends normalized native Markdown drafts", async () => {
   const harness = createPreviewRuntimeHarness({
     mode: "draft",
-    pendingText: "## Intro\n\nTail",
+    pendingText: "## Intro\n\n**$BTC**",
     lastSentText: "",
     flushTimer: setTimeout(() => {}, 1000),
   });
   await flushTelegramPreview(7, harness.deps);
-  assert.deepEqual(harness.events, ["draft:7:10:## Intro\n\nTail"]);
+  assert.deepEqual(harness.events, ["draft:7:10:## Intro\n\n**\\$BTC**"]);
   assert.equal(harness.getState()?.mode, "draft");
   assert.equal(harness.getState()?.draftId, 10);
-  assert.equal(harness.getState()?.lastSentText, "## Intro\n\nTail");
+  assert.equal(harness.getState()?.lastSentText, "## Intro\n\n**$BTC**");
   assert.equal(harness.getState()?.lastSentParseMode, undefined);
   assert.equal(harness.getDraftSupport(), "supported");
 });
@@ -560,7 +582,7 @@ test("Preview runtime preserves original blank-line spacing in draft Markdown", 
   const cases = [
     {
       markdown: "Para\n\n\n> Quote",
-      expectedEvent: "draft:7:10:Para\n\n\n> Quote",
+      expectedEvent: "draft:7:10:Para\n\n\n>Quote",
       expectedText: "Para\n\n\n> Quote",
     },
     {

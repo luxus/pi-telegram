@@ -144,6 +144,38 @@ test("Media helpers keep raw text command-safe and add reply context only for pr
   );
 });
 
+test("Media helpers prefer rich-message text for reply context", () => {
+  const message = {
+    message_id: 1,
+    text: "current",
+    reply_to_message: {
+      text: "## Raw **Markdown** fallback",
+      rich_message: {
+        blocks: [
+          { type: "heading", text: "Rendered heading", size: 2 },
+          {
+            type: "paragraph",
+            text: ["Plain ", { type: "bold", text: "reply" }, " text"],
+          },
+          {
+            type: "list",
+            items: [
+              {
+                label: "1.",
+                blocks: [{ type: "paragraph", text: "First item" }],
+              },
+            ],
+          },
+        ],
+      },
+    },
+  };
+  assert.equal(
+    extractTelegramMessagePromptText(message),
+    "current\n\n[reply] Rendered heading\n\nPlain reply text\n\n1. First item",
+  );
+});
+
 test("Media helpers truncate long reply context for prompt text", () => {
   const longQuote = `${"a".repeat(1000)} extra`;
   assert.equal(

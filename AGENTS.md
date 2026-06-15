@@ -68,14 +68,14 @@ The core product loop is mobile continuation: start or supervise work in the ter
 - Abort-history mode is scoped to Telegram-owned active turns. Internally this is `foldQueuedPromptsIntoHistory`: local/non-Telegram agent starts after abort clear it so the next Telegram prompt appends to the local queue instead of absorbing older queued turns as history
 - `/start`, `/help`, and `/status` open the unified command-help/status-row/control menu; `/model`, `/thinking`, and `/queue` jump to sections directly; visible bot commands are `/start`, `/compact`, `/next`, `/continue`, `/abort`, `/stop`
 - Command/menu emoji are fixed UI adornments owned by the `commands` map; do not add a persisted emoji toggle or Settings menu until there is a real setting to own
-- Telegram `reply_to_message` context is prompt-only and must not affect slash-command parsing
+- Telegram `reply_to_message` context is prompt-only and must not affect slash-command parsing; when Telegram includes `rich_message` blocks on a quoted rich reply, extract plain text from those blocks before falling back to raw `text`/`caption` so prompt context does not leak raw Rich Markdown source
 - Long-lived timers, pollers, watchers, and deferred queue dispatch must be session-bound and avoid stale live π contexts after session replacement
 - Do not add Telegram commands that imitate Pi interactive session replacement, navigation, or TUI rendering through private internals, ANSI terminal clearing, raw TTY injection, or a shadow `pi` subprocess. Features such as a real Telegram `/new` require a public Pi API that runs the same session-replacement path as the terminal command.
 - In-flight `/model` switching is limited to Telegram-owned active turns; if a tool call is active, abort is delayed until the tool finishes
 
 ## 5.3 Telegram Delivery Semantics
 
-- Assistant and guest replies use Telegram-native Rich Markdown via Rich Message APIs, not Markdown→HTML conversion. Bridge-owned UI surfaces such as commands, menus, status, queue controls, and sections should keep explicit Telegram HTML/plain rendering by default because readability and maintainability are higher there. Companion sections may explicitly choose Markdown, HTML, or plain text per view
+- Assistant and guest replies use Telegram-native Rich Markdown via Rich Message APIs, not Markdown→HTML conversion. Bridge-owned UI surfaces such as commands, menus, status, queue controls, and sections should keep explicit Telegram HTML/plain rendering by default because readability and maintainability are higher there. Companion sections may explicitly choose Markdown, HTML, or plain text per view. Keep native Rich Markdown source close to model-authored Markdown, but normalize Bot-API-fragile equivalents when evidence shows a Telegram parser/client edge, such as space-after-marker blockquotes (`> quote` -> `>quote`) and dollar-prefixed ticker atoms (`$BLDR` -> `\$BLDR`) outside code fences/spans
 - Use `docs/telegram-bot-api-rich-messages.md` as the local Bot API/Rich Messages reference for native Rich Markdown work
 - Formula guidance belongs in the Telegram-turn prompt contract: use `$...$` for inline math and `$$...$$` for block math; backticks intentionally render formulas as literal code
 - Real code blocks must stay literal and escaped

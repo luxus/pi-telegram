@@ -23,6 +23,7 @@ import {
   extractLatestAssistantMessageText,
   getAgentMessageText,
   isAssistantAgentMessage,
+  normalizeTelegramNativeMarkdown,
   resetTransportReplyDedup,
   sendTelegramNativeMarkdownReply,
   sendTelegramPlainReply,
@@ -360,6 +361,38 @@ test("Guest replies answer with native Rich Markdown content", async () => {
       },
     },
   ]);
+});
+
+test("Native Markdown delivery normalizes space-after-marker blockquotes outside code", () => {
+  const markdown = "> quoted\n\n```md\n> quoted code\n```";
+  assert.equal(
+    normalizeTelegramNativeMarkdown(markdown),
+    ">quoted\n\n```md\n> quoted code\n```",
+  );
+});
+
+test("Native Markdown delivery escapes dollar ticker atoms outside code", () => {
+  const markdown = [
+    "Токен $BLDR может ломать math parsing.",
+    "Bold ticker **$BTC** тоже ломает rich parsing.",
+    "Токен $NTVE, $VETO. и $NTVE/Bucket тоже опасны.",
+    "Inline code: `$BLDR`, formula $x^2 + y^2$, and explicit math $BTC$ stay unchanged.",
+    "```md",
+    "$BLDR in code fence",
+    "```",
+  ].join("\n");
+  assert.equal(
+    normalizeTelegramNativeMarkdown(markdown),
+    [
+      "Токен \\$BLDR может ломать math parsing.",
+      "Bold ticker **\\$BTC** тоже ломает rich parsing.",
+      "Токен \\$NTVE, \\$VETO. и \\$NTVE/Bucket тоже опасны.",
+      "Inline code: `$BLDR`, formula $x^2 + y^2$, and explicit math $BTC$ stay unchanged.",
+      "```md",
+      "$BLDR in code fence",
+      "```",
+    ].join("\n"),
+  );
 });
 
 test("Native Markdown splitter prefers paragraph boundaries", () => {

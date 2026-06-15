@@ -257,17 +257,58 @@ export async function sendTelegramPlainReply(
   return deps.sendRenderedChunks(chunks);
 }
 
+function normalizeTelegramNativeMarkdownLine(line: string): string {
+  let result = line.replace(/^( {0,3}>)[ \t]/, "$1");
+  const codeSpans: string[] = [];
+  result = result.replace(/`+[^`]*`+/g, (code) => {
+    const token = `\u0000${codeSpans.length}\u0000`;
+    codeSpans.push(code);
+    return token;
+  });
+  result = result.replace(
+    /(^|[^\\$])\$([A-Z][A-Z0-9]{1,})(?!\$)(?=\b|[.,;:)/-])/g,
+    (_match, prefix: string, ticker: string) => `${prefix}\\$${ticker}`,
+  );
+  return result.replace(/\u0000(\d+)\u0000/g, (_match, index) => codeSpans[Number(index)] ?? "");
+}
+
+export function normalizeTelegramNativeMarkdown(markdown: string): string {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  let fence: { marker: "`" | "~"; length: number } | undefined;
+  return lines
+    .map((line) => {
+      const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      const inFence = fence !== undefined;
+      if (!inFence && fenceMatch) {
+        const markerText = fenceMatch[1] ?? "```";
+        fence = { marker: markerText[0] as "`" | "~", length: markerText.length };
+        return line;
+      }
+      if (
+        inFence &&
+        new RegExp(`^ {0,3}${fence?.marker}{${fence?.length},}\\s*$`).test(line)
+      ) {
+        fence = undefined;
+        return line;
+      }
+      if (!inFence) return normalizeTelegramNativeMarkdownLine(line);
+      return line;
+    })
+    .join("\n");
+}
+
 export function splitTelegramNativeMarkdown(markdown: string): string[] {
+  const normalizedMarkdown = normalizeTelegramNativeMarkdown(markdown);
   if (
-    markdown.length <= TELEGRAM_RICH_MESSAGE_MAX_CHARS &&
-    countTelegramNativeMarkdownBlocks(markdown) <= TELEGRAM_RICH_MESSAGE_MAX_BLOCKS
+    normalizedMarkdown.length <= TELEGRAM_RICH_MESSAGE_MAX_CHARS &&
+    countTelegramNativeMarkdownBlocks(normalizedMarkdown) <= TELEGRAM_RICH_MESSAGE_MAX_BLOCKS
   ) {
-    return [markdown];
+    return [normalizedMarkdown];
   }
   const chunks: string[] = [];
   let current = "";
   let currentBlockCount = 0;
-  for (const rawBlock of splitTelegramNativeMarkdownBlocks(markdown)) {
+  for (const rawBlock of splitTelegramNativeMarkdownBlocks(normalizedMarkdown)) {
     for (const block of splitTelegramNativeMarkdownCountedBlocks(rawBlock)) {
       const blockCount = countTelegramNativeMarkdownBlocks(block);
       const candidate = current ? `${current}\n\n${block}` : block;

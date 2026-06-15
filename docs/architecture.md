@@ -52,7 +52,7 @@ The repository uses a **Flat Domain DAG**:
 - `config` / `setup`: `telegram.json`, bot token setup, first-user pairing, authorization, env fallback, atomic persistence, and live config accessors.
 - `locks` / `polling`: singleton polling ownership, takeover/restart behavior, long-poll controller state, offset persistence, and poll-loop wiring.
 - `updates` / `routing`: update classification, authorization planning, callbacks, edited messages, reactions, and inbound route composition.
-- `media` / `text-groups` / `time-injection` / `turns` / `inbound`: inbound text/media/file extraction, media-group debounce, long-text coalescing, optional `[time]` context, handler execution, and prompt-turn assembly/editing.
+- `media` / `text-groups` / `time-injection` / `turns` / `inbound`: inbound text/media/file extraction, rich-message reply-context plaintext recovery, media-group debounce, long-text coalescing, optional `[time]` context, handler execution, and prompt-turn assembly/editing.
 - `queue`: queue item contracts, lane admission/order, readiness gates, mutations, dispatch runtime, prompt/control enqueueing, and session/agent/tool lifecycle sequencing.
 - `runtime`: session-local coordination primitives: counters, flags, setup guard, abort handler, typing timers, dispatch flags, and reset binding.
 - `model` / `menu-model` / `menu-thinking` / `menu-status` / `menu-queue` / `menu-settings` / `menu` / `commands`: model identity, thinking levels, scoped model handling, menu render/callback behavior, slash commands, bot commands, and interactive controls.
@@ -196,6 +196,8 @@ Assistant replies use Telegram-native Rich Markdown. Final Markdown is sent dire
 Assistant delivery guarantees:
 
 - Model-authored Markdown is the source of truth; the bridge does not pre-render assistant Markdown to HTML.
+- Before native Rich Markdown delivery, the bridge normalizes known Bot-API-fragile source forms without changing visible meaning, including space-after-marker blockquotes and dollar-prefixed ticker atoms that Telegram may otherwise treat as unterminated math.
+- Quoted rich replies use Telegram `rich_message` blocks as the prompt-context source when available, so `[reply]` context receives rendered plain text instead of raw `InputRichMessage.markdown` fallback text.
 - Long native Markdown replies are split only at Telegram Rich Message transport limits.
 - Streaming previews pass assistant Markdown through to `sendRichMessageDraft` with ownership checks, voice suppression, serialized flushes, and an editable plain-message fallback when draft delivery is unavailable.
 - Preview flushes are serialized so older edits cannot race newer drafts; final delivery waits for active draft flushes and does not perform a post-final draft-clear call.

@@ -101,12 +101,18 @@ export interface TelegramSticker {
   emoji?: string;
 }
 
+export interface TelegramRichMessage {
+  blocks?: unknown[];
+  is_rtl?: boolean;
+}
+
 export interface TelegramMessage {
   message_id: number;
   chat: TelegramChat;
   from?: TelegramUser;
   text?: string;
   caption?: string;
+  rich_message?: TelegramRichMessage;
   media_group_id?: string;
   photo?: TelegramPhotoSize[];
   document?: TelegramDocument;
@@ -160,6 +166,7 @@ export interface TelegramGuestMessage {
   date: number;
   text?: string;
   caption?: string;
+  rich_message?: TelegramRichMessage;
   guest_query_id: string;
   guest_bot_caller_user?: TelegramUser;
   guest_bot_caller_chat?: TelegramChat;

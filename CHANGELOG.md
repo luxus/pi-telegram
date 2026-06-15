@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.17.1: Rich Markdown Parser Hotfix
+
+- `[Rich Markdown]` Normalize Bot-API-fragile source before native Rich Markdown delivery, including space-after-marker blockquotes and dollar-prefixed ticker atoms such as `$BLDR` / `$NTVE`, prefer Telegram `rich_message` blocks over raw `text`/`caption` when extracting quoted reply context for prompts, and keep Telegram copyability guidance generic by recommending inline code for short copyable literals. Impact: assistant replies are less likely to render as raw Markdown on Telegram Rich Message parser/client edges, replying to a native Rich Markdown bot message no longer injects raw Markdown source into `[reply]`, and prompts nudge copyable identifiers without ticker-specific bloat.
+
 ## 0.17.0: Native Rich Markdown Delivery
 
 - `[Rich Markdown]` Assistant and guest replies now use Telegram-native Rich Message APIs directly: final assistant Markdown goes through `sendRichMessage`, streaming drafts go through `sendRichMessageDraft`, editable fallback previews finalize through `editMessageText.rich_message`, and guest replies use `InputRichMessageContent`. Impact: model-authored Markdown reaches Telegram as native Rich Markdown instead of passing through the legacy Markdown-to-HTML assistant path.
