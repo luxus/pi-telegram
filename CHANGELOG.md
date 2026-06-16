@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.17.4: Native Rich Markdown Splitter Hotfix
+
+- `[Rich Markdown]` Rewrap oversized fenced code, display-math, and fully wrapped inline-formatting blocks when splitting native Rich Markdown at Telegram transport limits. Impact: very long structured Markdown blocks no longer produce invalid partial Rich Markdown chunks, so final assistant replies can stay native without losing long code/math/formatted output.
+- `[Tests]` Added regressions for oversized fenced code, display math, and inline formatting split behavior. Impact: future native splitter changes must preserve structurally valid chunks beyond Telegram's single-message size limit.
+
 ## 0.17.3: Native Draft Preview Hotfix
 
 - `[Rich Markdown]` Normalize multiline display-math blocks written as `$$` / content / `$$` into Telegram-supported `math` code fences before native Rich Markdown delivery, while preserving literal delimiters inside code fences. Impact: assistant replies following the Telegram prompt guidance for block formulas no longer risk making the whole Rich Markdown message render as raw Markdown.

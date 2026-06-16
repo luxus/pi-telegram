@@ -456,6 +456,12 @@ function countTelegramNativeMarkdownBlocks(block: string): number {
 }
 
 function splitTelegramNativeMarkdownLongBlock(block: string): string[] {
+  return splitTelegramNativeMarkdownLongFenceBlock(block) ??
+    splitTelegramNativeMarkdownLongWrappedInlineBlock(block) ??
+    splitTelegramNativeMarkdownLongPlainBlock(block);
+}
+
+function splitTelegramNativeMarkdownLongPlainBlock(block: string): string[] {
   const chunks: string[] = [];
   let remaining = block;
   while (remaining.length > TELEGRAM_RICH_MESSAGE_MAX_CHARS) {
@@ -468,8 +474,70 @@ function splitTelegramNativeMarkdownLongBlock(block: string): string[] {
   return chunks;
 }
 
-function findTelegramNativeMarkdownSplitIndex(text: string): number {
-  const hardLimit = TELEGRAM_RICH_MESSAGE_MAX_CHARS;
+function splitTelegramNativeMarkdownLongFenceBlock(block: string): string[] | undefined {
+  const lines = block.split("\n");
+  const opening = lines[0] ?? "";
+  const closing = lines[lines.length - 1] ?? "";
+  const openingMatch = opening?.match(/^ {0,3}(`{3,}|~{3,})/);
+  if (!openingMatch || !closing || lines.length < 2) return undefined;
+  const markerText = openingMatch[1] ?? "```";
+  const marker = markerText[0] as "`" | "~";
+  if (!new RegExp(`^ {0,3}${marker}{${markerText.length},}\\s*$`).test(closing)) {
+    return undefined;
+  }
+  const maxContentLength = TELEGRAM_RICH_MESSAGE_MAX_CHARS -
+    opening.length -
+    closing.length -
+    2;
+  if (maxContentLength <= 0) return undefined;
+  const content = lines.slice(1, -1).join("\n");
+  return splitTelegramNativeMarkdownWrappedContent(
+    content,
+    maxContentLength,
+    (chunk) => `${opening}\n${chunk}${chunk.endsWith("\n") ? "" : "\n"}${closing}`,
+  );
+}
+
+function splitTelegramNativeMarkdownLongWrappedInlineBlock(
+  block: string,
+): string[] | undefined {
+  const delimiter = ["**", "__", "~~", "`", "*", "_"]
+    .find((candidate) =>
+      block.startsWith(candidate) &&
+      block.endsWith(candidate) &&
+      block.length > candidate.length * 2
+    );
+  if (!delimiter) return undefined;
+  const maxContentLength = TELEGRAM_RICH_MESSAGE_MAX_CHARS - delimiter.length * 2;
+  if (maxContentLength <= 0) return undefined;
+  return splitTelegramNativeMarkdownWrappedContent(
+    block.slice(delimiter.length, -delimiter.length),
+    maxContentLength,
+    (chunk) => `${delimiter}${chunk}${delimiter}`,
+  );
+}
+
+function splitTelegramNativeMarkdownWrappedContent(
+  content: string,
+  maxContentLength: number,
+  wrap: (chunk: string) => string,
+): string[] {
+  const chunks: string[] = [];
+  let remaining = content;
+  while (remaining.length > maxContentLength) {
+    const window = remaining.slice(0, maxContentLength + 1);
+    const splitIndex = findTelegramNativeMarkdownSplitIndex(window, maxContentLength);
+    chunks.push(wrap(remaining.slice(0, splitIndex)));
+    remaining = remaining.slice(splitIndex);
+  }
+  if (remaining.length > 0) chunks.push(wrap(remaining));
+  return chunks;
+}
+
+function findTelegramNativeMarkdownSplitIndex(
+  text: string,
+  hardLimit = TELEGRAM_RICH_MESSAGE_MAX_CHARS,
+): number {
   const paragraphIndex = text.lastIndexOf("\n\n", hardLimit);
   if (paragraphIndex > 0) return paragraphIndex + 2;
   const lineIndex = text.lastIndexOf("\n", hardLimit);

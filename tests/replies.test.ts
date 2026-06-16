@@ -526,6 +526,44 @@ test("Native Markdown splitter keeps fenced code blocks together when possible",
   assert.equal(chunks[1], `${codeBlock}\n\ntail`);
 });
 
+test("Native Markdown splitter rewraps oversized fenced code blocks", () => {
+  const chunks = splitTelegramNativeMarkdown(
+    `\`\`\`ts\n${"x".repeat(TELEGRAM_RICH_MESSAGE_MAX_CHARS + 500)}\n\`\`\``,
+  );
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.length <= TELEGRAM_RICH_MESSAGE_MAX_CHARS));
+  assert.ok(chunks.every((chunk) => chunk.startsWith("```ts\n")));
+  assert.ok(chunks.every((chunk) => chunk.endsWith("\n```")));
+  const contentLength = chunks
+    .map((chunk) => chunk.split("\n").slice(1, -1).join("\n").length)
+    .reduce((sum, length) => sum + length, 0);
+  assert.equal(contentLength, TELEGRAM_RICH_MESSAGE_MAX_CHARS + 500);
+});
+
+test("Native Markdown splitter rewraps oversized display math blocks", () => {
+  const chunks = splitTelegramNativeMarkdown(
+    `$$\n${"x".repeat(TELEGRAM_RICH_MESSAGE_MAX_CHARS + 500)}\n$$`,
+  );
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.length <= TELEGRAM_RICH_MESSAGE_MAX_CHARS));
+  assert.ok(chunks.every((chunk) => chunk.startsWith("```math\n")));
+  assert.ok(chunks.every((chunk) => chunk.endsWith("\n```")));
+});
+
+test("Native Markdown splitter rewraps oversized inline formatting blocks", () => {
+  const chunks = splitTelegramNativeMarkdown(
+    `**${"x".repeat(TELEGRAM_RICH_MESSAGE_MAX_CHARS + 500)}**`,
+  );
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.length <= TELEGRAM_RICH_MESSAGE_MAX_CHARS));
+  assert.ok(chunks.every((chunk) => chunk.startsWith("**")));
+  assert.ok(chunks.every((chunk) => chunk.endsWith("**")));
+  assert.equal(
+    chunks.map((chunk) => chunk.slice(2, -2).length).reduce((sum, length) => sum + length, 0),
+    TELEGRAM_RICH_MESSAGE_MAX_CHARS + 500,
+  );
+});
+
 test("Native Markdown splitter respects the rich-message block limit for lists", () => {
   const markdown = Array.from(
     { length: TELEGRAM_RICH_MESSAGE_MAX_BLOCKS + 5 },
