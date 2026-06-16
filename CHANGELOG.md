@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.5: Screenshot Refresh
+
+- `[Docs]` Refreshed the package screenshot.
+
 ## 0.17.4: Native Rich Markdown Splitter Hotfix
 
 - `[Rich Markdown]` Rewrap oversized fenced code, display-math, and fully wrapped inline-formatting blocks when splitting native Rich Markdown at Telegram transport limits. Impact: very long structured Markdown blocks no longer produce invalid partial Rich Markdown chunks, so final assistant replies can stay native without losing long code/math/formatted output.
