@@ -73,6 +73,7 @@ export default function (pi: Pi.ExtensionAPI) {
     BusFollower.createTelegramBusFollowerRegistrationState();
   let telegramBusLeaderTarget: Config.TelegramProactivePushTarget | undefined;
   let telegramBusLeaderSlot: string | undefined;
+  let telegramBusLeaderThreadName: string | undefined;
   let telegramTopicModeUnavailable = false;
   let telegramTopicProvisioningCount = 0;
   const messageOwnershipStore = Ownership.createTelegramMessageOwnershipStore();
@@ -279,7 +280,8 @@ export default function (pi: Pi.ExtensionAPI) {
       if (threadStore.getBotState().threadMode === "disabled") return undefined;
       return (
         getCurrentThreadRecord()?.threadName ??
-        telegramBusFollowerRegistrationState.getThreadName()
+        telegramBusFollowerRegistrationState.getThreadName() ??
+        telegramBusLeaderThreadName
       );
     },
   });
@@ -647,6 +649,22 @@ export default function (pi: Pi.ExtensionAPI) {
         followers: telegramBusFollowerRegistry.list(),
       });
     },
+    getLocalThreadLabelForTarget(target) {
+      const followerTarget = telegramBusFollowerRegistrationState.getTarget();
+      if (
+        followerTarget?.chatId === target.chatId &&
+        followerTarget.threadId === target.threadId
+      ) {
+        return telegramBusFollowerRegistrationState.getThreadName();
+      }
+      if (
+        telegramBusLeaderTarget?.chatId === target.chatId &&
+        telegramBusLeaderTarget.threadId === target.threadId
+      ) {
+        return telegramBusLeaderThreadName;
+      }
+      return undefined;
+    },
     getCurrentLeaderEpoch,
     getThreadReconciliationMachineState() {
       return threadReconciliationRuntime.getState();
@@ -681,6 +699,7 @@ export default function (pi: Pi.ExtensionAPI) {
     dispatchNextQueuedTelegramTurn,
     requestDeferredDispatchNextQueuedTelegramTurn:
       deferredQueueDispatchRuntime.request,
+    hasDeferredDispatchContext: deferredQueueDispatchRuntime.isBound,
     startTypingLoop: promptDispatchRuntime.startTypingLoop,
     stopTypingLoop: typing.stop,
     answerCallbackQuery,
@@ -880,6 +899,7 @@ export default function (pi: Pi.ExtensionAPI) {
         setLeaderTarget(input) {
           telegramBusLeaderTarget = input.target;
           telegramBusLeaderSlot = input.slot;
+          telegramBusLeaderThreadName = input.threadName;
         },
         onProvisioningStart() {
           telegramTopicProvisioningCount += 1;
@@ -1099,6 +1119,7 @@ export default function (pi: Pi.ExtensionAPI) {
       clearLeaderTarget() {
         telegramBusLeaderTarget = undefined;
         telegramBusLeaderSlot = undefined;
+        telegramBusLeaderThreadName = undefined;
       },
       getSyncState() {
         return telegramSyncState;

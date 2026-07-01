@@ -2,9 +2,35 @@
 
 _Current deterministic status: Threaded Mode implementation, native typing/activity status, regression coverage, docs/context reconciliation, typecheck, full tests, pack check, audit, Domain DAG validation, context validation, and core live Threaded Mode smoke are green. This backlog intentionally tracks only release-relevant remaining work: native Windows smoke, evidence-gated Telegram client follow-ups, and upstream Pi API blockers._
 
+## P0 — Live Threaded Mode Regression Sweep
+
+Context: live Linux testing exposed regressions around prompt dispatch readiness, visible thread rename noise during automatic leader reclaim, status thread-name fallback flicker, and follower voice/update forwarding health. These are local runtime correctness issues and must be validated before returning to Windows smoke.
+
+Open work:
+
+- [x] Hide minimal model-menu one-page pagination and keep scope tabs progressive.
+- [x] Add immediate-plus-deferred inbound prompt dispatch so queued prompts do not wait for a later `/reload` or command.
+- [x] Stop automatic leader reclaim/reconciliation paths from visibly calling `editForumTopic` for internal identity restoration.
+- [x] Prevent leader auto-claim of an unknown unbound thread while another live thread target exists, covering same-directory leader/follower smear risk.
+- [x] Prefer local live leader/follower target labels over stale shared thread-store records when building prompt prefixes.
+- [x] Permit follower-safe bot identity reads and own-chat native activity through the leader API proxy without granting cross-thread message/file/topic writes.
+- [x] Preserve leader thread-name fallback in live status state to reduce `Dune`/generic `Telegram` flicker.
+- [ ] Live smoke on Linux with one leader and one follower:
+  - [x] clean-state pass after removing `tmp/telegram` so stale diagnostic snapshots do not obscure live behavior;
+  - [ ] dirty-state pass with old `state.json`/`logs.jsonl` present to prove live locks, bus registration, target ownership, and reconciliation override stale diagnostics;
+  - [x] follower thread receives raw voice/message updates through the leader bus;
+  - [x] follower-local handlers from that instance's `telegram.json` process voice independently;
+  - [x] same-directory leader/follower sessions keep distinct thread bindings;
+  - [ ] leader reload recovers without duplicate visible thread renames;
+  - [ ] prompts dispatch without a second command;
+  - [ ] status remains stable around thread name and role while active turns start/end.
+- [ ] Add/keep proactive race protections so `state.json` never becomes authoritative over live lock ownership, bus registration, or current target identity.
+
+Done when: local Linux live Threaded Mode smoke is stable for leader reload, follower connect, prompt dispatch, voice forwarding, and status naming without visible rename noise.
+
 ## P0 — Native Windows Threaded Mode Support
 
-Context: Threaded Mode uses a local leader/follower IPC bus. Unix-like platforms use Node `net` over Unix sockets; native Windows uses Node `net` named-pipe paths. The product expectation is identical behavior across both transports: leader/follower registration, heartbeats, forwarded Telegram API calls, thread target preservation, lifecycle cleanup, and shutdown semantics should not depend on socket-vs-pipe transport.
+Context: Threaded Mode uses a local leader/follower IPC bus. Unix-like platforms use Node `net` over Unix sockets; native Windows uses Node `net` named-pipe paths. The product expectation is identical behavior across both transports: leader/follower registration, heartbeats, forwarded Telegram API calls, thread target preservation, lifecycle cleanup, and shutdown semantics should not depend on socket-vs-pipe transport. This remains after the local Linux regression sweep is green.
 
 Open work:
 

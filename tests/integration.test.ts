@@ -580,7 +580,7 @@ test("Extension runtime dispatches accepted queued work after polling ownership 
     });
     await handlers.get("session_start")?.({}, ctx);
     await commands.get("telegram-connect")?.handler("", ctx);
-    await waitForEventLoopCondition(() => sentMessages.length === 1);
+    await waitForCondition(() => sentMessages.length === 1);
     assert.match(
       getRuntimeHarnessMessageText(sentMessages[0] as RuntimeHarnessMessage),
       /^\[telegram\] first accepted$/,

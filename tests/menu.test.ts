@@ -403,6 +403,21 @@ test("Menu helpers apply menu mutations and resolve model selections", () => {
   assert.equal(getTelegramModelSelection(state, "0").kind, "selected");
 });
 
+test("Menu helpers omit pagination controls for one-page unscoped model lists", () => {
+  const modelA = createMenuModel("openai", "gpt-5");
+  const modelB = createMenuModel("openai", "gpt-5-mini");
+  const state = createMenuState<MenuModel>(2, {
+    scope: "all",
+    scopedModels: [],
+    allModels: [{ model: modelA }, { model: modelB }],
+  });
+  const markup = buildModelMenuReplyMarkup(state, modelA, 6);
+  assert.deepEqual(
+    markup.inline_keyboard.map((row) => row.map((button) => button.callback_data)),
+    [["menu:back"], ["model:open:0"], ["model:open:1"]],
+  );
+});
+
 test("Menu helpers derive normalized menu pages without mutating state", () => {
   const modelA = createMenuModel("openai", "gpt-5");
   const modelB = createMenuModel("anthropic", "claude-3");
@@ -2070,10 +2085,6 @@ test("Menu helpers build model, thinking, and status UI payloads", () => {
   ]);
   assert.equal(
     modelMarkup.inline_keyboard[2]?.[0]?.callback_data,
-    "model:pages",
-  );
-  assert.equal(
-    modelMarkup.inline_keyboard[3]?.[0]?.callback_data,
     "model:open:0",
   );
   const thinkingText = buildThinkingMenuText();

@@ -127,6 +127,12 @@ export function isTelegramFollowerApiCallAllowed(input: {
     if (target.threadId === undefined) return true;
     return matchesId(record.message_thread_id, target.threadId);
   };
+  const isTargetChatScoped = (body: unknown): boolean => {
+    if (!target) return false;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const record = body as Record<string, unknown>;
+    return matchesId(record.chat_id, target.chatId);
+  };
   if (input.method === "downloadFile") return true;
   if (input.method === "call") {
     const apiMethod = input.args[0];
@@ -137,6 +143,8 @@ export function isTelegramFollowerApiCallAllowed(input: {
     ) {
       return true;
     }
+    if (apiMethod === "getMe") return true;
+    if (apiMethod === "sendChatAction") return isTargetChatScoped(input.args[1]);
     return allowedCallMethods.has(apiMethod) && isTargetScoped(input.args[1]);
   }
   if (input.method === "callMultipart") {

@@ -322,6 +322,39 @@ test("Bus follower API allowlist permits scoped own-thread voice uploads", () =>
   );
 });
 
+test("Bus follower API allowlist permits own-chat typing and safe identity reads", () => {
+  const follower = {
+    instanceId: "inst-a",
+    connectedAtMs: 1000,
+    lastHeartbeatMs: 1000,
+    target: { chatId: 100, threadId: 42 },
+  };
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["getMe", {}],
+    }),
+    true,
+  );
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["sendChatAction", { chat_id: 100, action: "typing" }],
+    }),
+    true,
+  );
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["sendChatAction", { chat_id: 101, action: "typing" }],
+    }),
+    false,
+  );
+});
+
 test("Bus follower API allowlist permits scoped own-topic rename only", () => {
   const follower = {
     instanceId: "inst-a",

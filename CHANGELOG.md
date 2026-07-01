@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+## 0.18.3: Threaded Mode live hotfix
+
+- `[Threaded Mode]` Inbound Telegram prompts now request an immediate dispatch and a session-bound deferred retry. Impact: hosts where Pi is not yet dispatch-ready at update handling time no longer need a later `/reload` or command to process the queued prompt.
+- `[Thread Lifecycle]` Automatic leader reclaim/reconciliation paths no longer call `editForumTopic` just to restore internal thread identity, and an unknown unbound thread is no longer auto-claimed by the leader while another live thread target exists. Prompt thread labels now prefer the local live leader/follower target over stale shared thread-store records. Impact: ordinary prompts and voice messages should not produce duplicate Telegram service messages such as `renamed the thread to ...`, and a same-directory follower thread is less likely to be smeared onto the leader binding or mislabeled in prompts.
+- `[Threaded Mode]` Follower Bot API authorization now permits safe bot identity reads and chat-level typing/activity within the follower's assigned chat, while preserving thread-scoped write restrictions for messages/files/topic mutation. Impact: forwarded follower updates no longer fail just because native activity/capability paths use the aggregate chat surface.
+- `[Status]` Leader target assignment now carries the live thread name into status fallback state. Impact: the status bar is less likely to flicker from `Dune Leader/Active` to generic `Telegram Leader` when the current active turn or thread-store lookup changes.
+- `[Model Menu]` The Telegram model menu now hides one-page pagination controls and keeps scope tabs hidden unless scoped models exist. Impact: the minimal model menu shows only main-menu navigation and the available models.
+
 ## 0.18.2: setup pairing start hotfix
 
 - `[Setup]` `/telegram-setup` now updates the live in-memory config immediately after persisting the validated bot token and before starting polling. Impact: first-time setup no longer shows `Send /start...` followed by `Telegram bot is not configured`, and `/start` can be received without restarting Pi.

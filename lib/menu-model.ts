@@ -1023,23 +1023,16 @@ export function buildModelMenuReplyMarkup(
     menuPage.page === 0 ? menuPage.pageCount - 1 : menuPage.page - 1;
   const nextPage =
     menuPage.page === menuPage.pageCount - 1 ? 0 : menuPage.page + 1;
-  rows.push(
-    menuPage.pageCount > 1
-      ? [
-          { text: "⬅️", callback_data: `model:page:${previousPage}` },
-          {
-            text: `${menuPage.page + 1}/${menuPage.pageCount}`,
-            callback_data: "model:pages",
-          },
-          { text: "➡️", callback_data: `model:page:${nextPage}` },
-        ]
-      : [
-          {
-            text: `${menuPage.page + 1}/${menuPage.pageCount}`,
-            callback_data: "model:pages",
-          },
-        ],
-  );
+  if (menuPage.pageCount > 1) {
+    rows.push([
+      { text: "⬅️", callback_data: `model:page:${previousPage}` },
+      {
+        text: `${menuPage.page + 1}/${menuPage.pageCount}`,
+        callback_data: "model:pages",
+      },
+      { text: "➡️", callback_data: `model:page:${nextPage}` },
+    ]);
+  }
   rows.push(
     ...menuPage.items.map((entry, index) => [
       {

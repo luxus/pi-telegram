@@ -306,6 +306,7 @@ test("Bus leader target provisioner creates thread and announces connection", as
     assert.deepEqual(leaderTarget, {
       target: { chatId: 7, threadId: 11 },
       slot: "A",
+      threadName: "Atlas",
     });
     assert.deepEqual(calls, [
       { method: "createForumTopic", body: { chat_id: 7, name: "Atlas" } },

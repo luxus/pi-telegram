@@ -152,6 +152,10 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     },
     updateStatus: () => events.push("status"),
     dispatchNextQueuedTelegramTurn: () => events.push("dispatch"),
+    requestDeferredDispatchNextQueuedTelegramTurn: (dispatch) => {
+      events.push("deferred-dispatch");
+      dispatch({ cwd: "/deferred" });
+    },
     answerCallbackQuery: async (callbackQueryId) => {
       events.push(`answer:${callbackQueryId}`);
     },
@@ -196,7 +200,12 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
     queued?.content[0]?.type === "text" ? queued.content[0].text : "",
     "[telegram] hello from telegram",
   );
-  assert.deepEqual(events, ["status", "dispatch"]);
+  assert.deepEqual(events, [
+    "status",
+    "dispatch",
+    "deferred-dispatch",
+    "dispatch",
+  ]);
   bridgeRuntime.lifecycle.setFoldQueuedPromptsIntoHistory(true);
   await routeRuntime.handleUpdate(
     {
@@ -333,6 +342,9 @@ interface RouteHarnessOptions {
   >["foreignOwnedUpdateForwarder"];
   getCurrentLeaderEpoch?: () => number | string | undefined;
   getLiveThreadTargets?: () => Queue.TelegramQueueTarget[];
+  getLocalThreadLabelForTarget?: (
+    target: Queue.TelegramQueueTarget,
+  ) => string | undefined;
   instanceId?: string;
   getCommands?: () => any[];
   mediaGroupRuntime?: Media.TelegramMediaGroupController<
@@ -406,6 +418,7 @@ function createRouteHarness(options: RouteHarnessOptions = {}) {
     foreignOwnedUpdateForwarder: options.foreignOwnedUpdateForwarder,
     getCurrentInstanceId: () => options.instanceId ?? "leader-a",
     getLiveThreadTargets: options.getLiveThreadTargets,
+    getLocalThreadLabelForTarget: options.getLocalThreadLabelForTarget,
     getCurrentLeaderEpoch: options.getCurrentLeaderEpoch,
     bridgeRuntime,
     activeTurnRuntime,
@@ -502,7 +515,7 @@ function unboundTopicUpdate(text = "hello"): TestUpdate {
   };
 }
 
-test("Routing runtime binds the first unbound thread to the leader when leader has no active thread", async () => {
+test("Routing runtime binds the first unbound thread to the leader without visible rename when leader has no active thread", async () => {
   await withTopicStore(async (threadStore) => {
     const apiCalls: unknown[] = [];
     const nowMs = Date.now();
@@ -535,17 +548,12 @@ test("Routing runtime binds the first unbound thread to the leader when leader h
     assert.equal(record?.slot, "A");
     assert.equal(record?.threadName, "Axial");
     assert.deepEqual(record?.target, { chatId: 100, threadId: 42 });
-    assert.deepEqual(apiCalls, [
-      {
-        method: "editForumTopic",
-        body: { chat_id: 100, message_thread_id: 42, name: "Axial" },
-      },
-    ]);
+    assert.deepEqual(apiCalls, []);
     assert.equal(telegramQueueStore.getQueuedItems().length, 1);
   });
 });
 
-test("Routing runtime assigns baked name when reclaiming unnamed leader startup topic", async () => {
+test("Routing runtime assigns internal baked name without visibly renaming unnamed leader startup topic", async () => {
   await withTopicStore(async (threadStore) => {
     const apiCalls: unknown[] = [];
     threadStore.upsert({
@@ -574,12 +582,7 @@ test("Routing runtime assigns baked name when reclaiming unnamed leader startup 
     assert.equal(record?.status, "active");
     assert.equal(record?.slot, "A");
     assert.equal(record?.threadName, "Anchor");
-    assert.deepEqual(apiCalls, [
-      {
-        method: "editForumTopic",
-        body: { chat_id: 100, message_thread_id: 42, name: "Anchor" },
-      },
-    ]);
+    assert.deepEqual(apiCalls, []);
     const queued = telegramQueueStore.getQueuedItems()[0];
     assert.equal(
       queued?.kind === "prompt" && queued.content[0]?.type === "text"
@@ -590,7 +593,7 @@ test("Routing runtime assigns baked name when reclaiming unnamed leader startup 
   });
 });
 
-test("Routing runtime restores stale leader thread identity when reclaiming unbound thread", async () => {
+test("Routing runtime restores stale leader thread identity internally without visible rename", async () => {
   await withTopicStore(async (threadStore) => {
     const apiCalls: unknown[] = [];
     threadStore.upsert({
@@ -626,16 +629,11 @@ test("Routing runtime restores stale leader thread identity when reclaiming unbo
     assert.equal(record?.slot, "A");
     assert.equal(record?.threadName, "Axial");
     assert.deepEqual(record?.target, { chatId: 100, threadId: 42 });
-    assert.deepEqual(apiCalls, [
-      {
-        method: "editForumTopic",
-        body: { chat_id: 100, message_thread_id: 42, name: "Axial" },
-      },
-    ]);
+    assert.deepEqual(apiCalls, []);
   });
 });
 
-test("Routing runtime assigns baked name when restoring unnamed stale prior leader", async () => {
+test("Routing runtime assigns internal baked name when restoring unnamed stale prior leader", async () => {
   await withTopicStore(async (threadStore) => {
     const apiCalls: unknown[] = [];
     threadStore.upsert({
@@ -670,12 +668,7 @@ test("Routing runtime assigns baked name when restoring unnamed stale prior lead
     assert.equal(record?.slot, "A");
     assert.equal(record?.threadName, "Anchor");
     assert.deepEqual(record?.target, { chatId: 100, threadId: 42 });
-    assert.deepEqual(apiCalls, [
-      {
-        method: "editForumTopic",
-        body: { chat_id: 100, message_thread_id: 42, name: "Anchor" },
-      },
-    ]);
+    assert.deepEqual(apiCalls, []);
     const queued = telegramQueueStore.getQueuedItems()[0];
     assert.equal(
       queued?.kind === "prompt" && queued.content[0]?.type === "text"
@@ -804,6 +797,71 @@ test("Routing runtime preserves active follower topics when the follower is not 
         "reply:Instance Beacon is not connected to the Telegram bus yet. Run /telegram-connect in that Pi instance; keeping this thread.",
       ),
       true,
+    );
+  });
+});
+
+test("Routing runtime does not claim an unknown unbound thread while another thread is live", async () => {
+  await withTopicStore(async (threadStore) => {
+    threadStore.upsert({
+      profileKey: "cwd:/repo",
+      target: { chatId: 100, threadId: 7 },
+      status: "active",
+      createdAtMs: 1000,
+      updatedAtMs: 1000,
+      instanceId: "leader-a",
+      slot: "D",
+      threadName: "Dune",
+    });
+    await threadStore.persist();
+    const { events, routeRuntime, telegramQueueStore } = createRouteHarness({
+      threadStore,
+      getLiveThreadTargets: () => [{ chatId: 100, threadId: 7 }],
+    });
+
+    await routeRuntime.handleUpdate(unboundTopicUpdate("stray follower text"), {
+      cwd: "/repo",
+    });
+
+    assert.deepEqual(
+      threadStore.getByProfileKey("cwd:/repo")?.target,
+      { chatId: 100, threadId: 7 },
+    );
+    assert.deepEqual(telegramQueueStore.getQueuedItems(), []);
+    assert.equal(events.some((event) => event.startsWith("interactive:")), true);
+  });
+});
+
+test("Routing runtime prefers local thread label over stale shared store binding", async () => {
+  await withTopicStore(async (threadStore) => {
+    threadStore.upsert({
+      profileKey: "cwd:/repo",
+      target: { chatId: 100, threadId: 42 },
+      status: "active",
+      createdAtMs: 1000,
+      updatedAtMs: 1000,
+      instanceId: "leader-a",
+      slot: "D",
+      threadName: "Dune",
+    });
+    await threadStore.persist();
+    const { routeRuntime, telegramQueueStore } = createRouteHarness({
+      threadStore,
+      instanceId: "follower-b",
+      getLocalThreadLabelForTarget: (target) =>
+        target.chatId === 100 && target.threadId === 42 ? "Juno" : undefined,
+    });
+
+    await routeRuntime.handleUpdate(unboundTopicUpdate("for follower"), {
+      cwd: "/repo",
+    });
+
+    const queued = telegramQueueStore.getQueuedItems()[0];
+    assert.equal(
+      queued?.kind === "prompt" && queued.content[0]?.type === "text"
+        ? queued.content[0].text
+        : "",
+      "[telegram|thread:Juno] for follower",
     );
   });
 });
@@ -1930,7 +1988,7 @@ test("Routing runtime restores follower thread through bus replacement", async (
   });
 });
 
-test("Routing runtime reclaims unbound prompt when current leader target is stale", async () => {
+test("Routing runtime reclaims unbound prompt without visible rename when current leader target is stale", async () => {
   await withTopicStore(async (threadStore) => {
     const apiCalls: unknown[] = [];
     threadStore.upsert({
@@ -1975,10 +2033,6 @@ test("Routing runtime reclaims unbound prompt when current leader target is stal
         method: "sendChatAction",
         body: { chat_id: 100, message_thread_id: 7, action: "typing" },
       },
-      {
-        method: "editForumTopic",
-        body: { chat_id: 100, message_thread_id: 42, name: "Axial" },
-      },
     ]);
     assert.equal(events.some((event) => event.startsWith("interactive:")), false);
     assert.equal(events.some((event) => event.includes("closeForumTopic")), false);
@@ -1986,7 +2040,7 @@ test("Routing runtime reclaims unbound prompt when current leader target is stal
   });
 });
 
-test("Routing runtime assigns baked name when reclaiming unnamed stale current leader target", async () => {
+test("Routing runtime assigns internal baked name when reclaiming unnamed stale current leader target", async () => {
   await withTopicStore(async (threadStore) => {
     const apiCalls: unknown[] = [];
     threadStore.upsert({
@@ -2027,10 +2081,6 @@ test("Routing runtime assigns baked name when reclaiming unnamed stale current l
       {
         method: "sendChatAction",
         body: { chat_id: 100, message_thread_id: 7, action: "typing" },
-      },
-      {
-        method: "editForumTopic",
-        body: { chat_id: 100, message_thread_id: 42, name: "Anchor" },
       },
     ]);
   });

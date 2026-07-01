@@ -415,6 +415,9 @@ export interface TelegramInboundRouteRuntimeDeps<
   getMessageOwnership?: Updates.TelegramMessageOwnershipLookup;
   getTargetOwnership?: Updates.TelegramTargetOwnershipLookup;
   getLiveThreadTargets?: () => Queue.TelegramQueueTarget[];
+  getLocalThreadLabelForTarget?: (
+    target: Queue.TelegramQueueTarget,
+  ) => string | undefined;
   getCurrentLeaderEpoch?: () => number | string | undefined;
   getThreadReconciliationMachineState?: () =>
     | ThreadReconciler.ThreadReconciliationMachineState
@@ -484,6 +487,7 @@ export interface TelegramInboundRouteRuntimeDeps<
   requestDeferredDispatchNextQueuedTelegramTurn?: (
     dispatch: (ctx: TContext) => void,
   ) => void;
+  hasDeferredDispatchContext?: () => boolean;
   startTypingLoop?: (
     ctx: TContext,
     chatId?: number,
@@ -593,6 +597,17 @@ export function createTelegramInboundRouteRuntime<
   const guidedUnboundTopicKeys = new Set<string>();
   let nextUnboundRerouteId = 0;
   let nextAllTabCommandId = 0;
+  const requestDispatchNextQueuedTelegramTurn = (ctx: TContext): void => {
+    deps.dispatchNextQueuedTelegramTurn(ctx);
+    if (
+      deps.requestDeferredDispatchNextQueuedTelegramTurn &&
+      deps.hasDeferredDispatchContext?.() !== false
+    ) {
+      deps.requestDeferredDispatchNextQueuedTelegramTurn(
+        deps.dispatchNextQueuedTelegramTurn,
+      );
+    }
+  };
   const prunePendingUnboundReroutes = () => {
     const nowMs = Date.now();
     for (const [id, entry] of pendingUnboundReroutes) {
@@ -712,7 +727,7 @@ export function createTelegramInboundRouteRuntime<
       };
       deps.queueMutationRuntime.append(turn, ctx);
       deps.updateStatus(ctx);
-      deps.dispatchNextQueuedTelegramTurn(ctx);
+      requestDispatchNextQueuedTelegramTurn(ctx);
     },
   });
   const cloneTelegramMessagesForThread = (
@@ -1257,7 +1272,7 @@ export function createTelegramInboundRouteRuntime<
               context,
             );
             deps.updateStatus(context);
-            deps.dispatchNextQueuedTelegramTurn(context);
+            requestDispatchNextQueuedTelegramTurn(context);
           },
         },
       );
@@ -1350,9 +1365,17 @@ export function createTelegramInboundRouteRuntime<
       const chatId = message.chat.id;
       const threadId = message.message_thread_id;
       if (!threadId) return undefined;
+      const localLabel = deps.getLocalThreadLabelForTarget?.({
+        chatId,
+        threadId,
+      });
+      if (localLabel) return localLabel;
       const records = deps.threadStore.list();
+      const currentInstanceId = deps.getCurrentInstanceId?.();
       for (const r of records) {
         if (r.target.chatId !== chatId || r.target.threadId !== threadId)
+          continue;
+        if (currentInstanceId && r.instanceId && r.instanceId !== currentInstanceId)
           continue;
         return r.threadName &&
           Threads.isTelegramTopicThreadNameValidForSlot(r.threadName, r.slot)
@@ -1380,7 +1403,7 @@ export function createTelegramInboundRouteRuntime<
       statusSummary: "continue",
     };
     deps.queueMutationRuntime.append(continueTurn, ctx);
-    deps.dispatchNextQueuedTelegramTurn(ctx);
+    requestDispatchNextQueuedTelegramTurn(ctx);
   };
   const reservedCommandNames = () =>
     new Set(Commands.getTelegramReservedCommandNames());
@@ -1454,7 +1477,7 @@ export function createTelegramInboundRouteRuntime<
         : { ...turn, replyToMessageId: 0 };
     },
     updateStatus: deps.updateStatus,
-    dispatchNextQueuedTelegramTurn: deps.dispatchNextQueuedTelegramTurn,
+    dispatchNextQueuedTelegramTurn: requestDispatchNextQueuedTelegramTurn,
   }).enqueue;
   const sendUnboundRerouteChooserNow = async (
     messages: TMessage[],
@@ -1831,7 +1854,7 @@ export function createTelegramInboundRouteRuntime<
       Queue.appendTelegramQueueItem(items, guestTurn),
     );
     deps.updateStatus(ctx);
-    deps.dispatchNextQueuedTelegramTurn(ctx);
+    requestDispatchNextQueuedTelegramTurn(ctx);
   };
   return Updates.createTelegramPairedUpdateRuntime<TContext, TUpdate>({
     getAllowedUserId: deps.configStore.getAllowedUserId,
@@ -1951,7 +1974,13 @@ export function createTelegramInboundRouteRuntime<
       ]).trim();
       const instanceId = deps.getCurrentInstanceId?.();
       const leaderProfileKey = getLeaderTopicProfileKey(ctx, instanceId);
-      const existing = deps.threadStore.list().find((r) => {
+      const records = deps.threadStore.list();
+      const routableRecords = getTelegramRoutableThreadRecords(
+        records,
+        deps.getLiveThreadTargets?.(),
+      );
+      const hasAnyRoutableThread = routableRecords.length > 0;
+      const existing = records.find((r) => {
         return (
           r.target.chatId === target.chatId &&
           r.target.threadId === target.threadId
@@ -2003,7 +2032,8 @@ export function createTelegramInboundRouteRuntime<
             deps.threadStore.list(),
             leaderProfileKey,
             instanceId,
-          )
+          ) &&
+          !hasAnyRoutableThread
         ) {
           const priorLeaderRecord =
             deps.threadStore.getByProfileKey(leaderProfileKey);
@@ -2039,25 +2069,6 @@ export function createTelegramInboundRouteRuntime<
             slot,
           });
           await deps.threadStore.persist();
-          if (deps.callApi) {
-            try {
-              await deps.callApi("editForumTopic", {
-                chat_id: target.chatId,
-                message_thread_id: target.threadId,
-                name: Threads.getTelegramTopicTitleForThreadName(
-                  threadName,
-                  slot,
-                ),
-              });
-            } catch (renameError) {
-              deps.recordRuntimeEvent?.("telegram", renameError, {
-                phase: "leader-topic-reclaim-rename",
-                chatId: target.chatId,
-                threadId: target.threadId,
-                slot,
-              });
-            }
-          }
           deps.recordRuntimeEvent?.(
             "bus",
             "Bus leader reclaimed unbound thread",
@@ -2106,13 +2117,8 @@ export function createTelegramInboundRouteRuntime<
         );
         return;
       }
-      const records = deps.threadStore.list();
       const command = getKnownTelegramAllTabCommand(text);
-      if (
-        command &&
-        getTelegramRoutableThreadRecords(records, deps.getLiveThreadTargets?.())
-          .length > 0
-      ) {
+      if (command && hasAnyRoutableThread) {
         if (
           await sendAllTabCommandChooser(command, text, message as TMessage, {
             target: { chatId: target.chatId, threadId: target.threadId },
@@ -2172,23 +2178,6 @@ export function createTelegramInboundRouteRuntime<
               slot,
             });
             await deps.threadStore.persist();
-            try {
-              await deps.callApi("editForumTopic", {
-                chat_id: target.chatId,
-                message_thread_id: target.threadId,
-                name: Threads.getTelegramTopicTitleForThreadName(
-                  threadName,
-                  slot,
-                ),
-              });
-            } catch (renameError) {
-              deps.recordRuntimeEvent?.("telegram", renameError, {
-                phase: "leader-topic-unbound-reclaim-rename",
-                chatId: target.chatId,
-                threadId: target.threadId,
-                slot,
-              });
-            }
             deps.recordRuntimeEvent?.(
               "bus",
               "Bus leader reclaimed stale-current unbound thread",
@@ -2208,7 +2197,8 @@ export function createTelegramInboundRouteRuntime<
       }
       if (
         leaderProfileKey &&
-        !hasActiveLeaderTopic(records, leaderProfileKey, instanceId)
+        !hasActiveLeaderTopic(records, leaderProfileKey, instanceId) &&
+        !hasAnyRoutableThread
       ) {
         const priorLeaderRecord =
           deps.threadStore.getByProfileKey(leaderProfileKey);
@@ -2254,25 +2244,6 @@ export function createTelegramInboundRouteRuntime<
           slot,
         });
         await deps.threadStore.persist();
-        if (deps.callApi) {
-          try {
-            await deps.callApi("editForumTopic", {
-              chat_id: target.chatId,
-              message_thread_id: target.threadId,
-              name: Threads.getTelegramTopicTitleForThreadName(
-                threadName,
-                slot,
-              ),
-            });
-          } catch (renameError) {
-            deps.recordRuntimeEvent?.("telegram", renameError, {
-              phase: "leader-topic-reclaim-rename",
-              chatId: target.chatId,
-              threadId: target.threadId,
-              slot,
-            });
-          }
-        }
         deps.recordRuntimeEvent?.(
           "bus",
           "Bus leader reclaimed unbound thread",

@@ -68,7 +68,11 @@ export interface TelegramBusLeaderTargetProvisionerDeps<TContext> {
   ) => void;
   getSyncState: () => Sync.TelegramSyncState;
   setSyncState: (state: Sync.TelegramSyncState) => void;
-  setLeaderTarget: (input: { target: TelegramTarget; slot?: string }) => void;
+  setLeaderTarget: (input: {
+    target: TelegramTarget;
+    slot?: string;
+    threadName?: string;
+  }) => void;
   onProvisioningStart?: () => void;
   onProvisioningEnd?: () => void;
   recordRuntimeEvent: (
@@ -476,7 +480,11 @@ export function createTelegramBusLeaderTargetProvisioner<TContext>(
       deps.onProvisioningEnd?.();
     }
     if (!ownTarget) return;
-    deps.setLeaderTarget({ target: ownTarget.target, slot: ownTarget.slot });
+    deps.setLeaderTarget({
+      target: ownTarget.target,
+      slot: ownTarget.slot,
+      threadName: ownTarget.threadName,
+    });
     const nowMs = getNowMs();
     let syncState = deps.getSyncState();
     syncState = Sync.markTelegramSyncSliceFresh(syncState, "target-bindings", {
