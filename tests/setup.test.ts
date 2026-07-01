@@ -109,6 +109,48 @@ test("Setup runner reports invalid tokens without persisting or starting polling
   assert.deepEqual(calls, ["error:Unauthorized"]);
 });
 
+test("Setup prompt runtime stores config before starting polling", async () => {
+  const calls: string[] = [];
+  let currentToken: string | undefined;
+  const runtime = createTelegramSetupPromptRuntime({
+    env: {},
+    getConfig: () => ({}),
+    setConfig: (config) => {
+      currentToken = config.botToken;
+      calls.push(`set:${config.botToken}`);
+    },
+    setupGuard: {
+      start: () => true,
+      finish: () => calls.push("finish"),
+    },
+    getMe: async () => ({ ok: true, result: { id: 7, username: "demo_bot" } }),
+    persistConfig: async (config) => {
+      calls.push(`persist:${config.botToken}`);
+    },
+    startPolling: () => calls.push(`start:${currentToken ?? "missing"}`),
+    updateStatus: () => calls.push("status"),
+  });
+
+  await runtime({
+    hasUI: true,
+    ui: {
+      input: async () => "token",
+      editor: async () => "token",
+      notify: (message) => calls.push(`notify:${message}`),
+    },
+  });
+
+  assert.deepEqual(calls, [
+    "persist:token",
+    "set:token",
+    "notify:Telegram bot connected: @demo_bot",
+    "notify:Send /start to your bot in Telegram to pair this extension with your account.",
+    "start:token",
+    "status",
+    "finish",
+  ]);
+});
+
 test("Setup prompt runtime reports token check errors and always finishes", async () => {
   const calls: string[] = [];
   let locked = false;

@@ -172,19 +172,21 @@ export function createTelegramSetupPromptRuntime<
   return async (ctx: TContext): Promise<void> => {
     if (!ctx.hasUI || !deps.setupGuard.start()) return;
     try {
-      const nextConfig = await runTelegramSetup({
+      await runTelegramSetup({
         hasUI: ctx.hasUI,
         env: deps.env ?? process.env,
         config: deps.getConfig(),
         promptInput: (label, value) => ctx.ui.input(label, value),
         promptEditor: (label, value) => ctx.ui.editor(label, value),
         getMe: deps.getMe,
-        persistConfig: deps.persistConfig,
+        persistConfig: async (config) => {
+          await deps.persistConfig(config);
+          deps.setConfig(config);
+        },
         notify: (message, level) => ctx.ui.notify(message, level),
         startPolling: () => deps.startPolling(ctx),
         updateStatus: () => deps.updateStatus(ctx),
       });
-      if (nextConfig) deps.setConfig(nextConfig);
     } catch (error) {
       deps.recordRuntimeEvent?.("setup", error);
       throw error;

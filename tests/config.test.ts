@@ -662,11 +662,11 @@ test("Setup prompt runtime guards concurrent setup and stores successful config"
     "editor:env-token",
     "getMe:new-token",
     "persist:new-token",
+    "set:demo_bot",
     "notify:info:Telegram bot connected: @demo_bot",
     "notify:info:Send /start to your bot in Telegram to pair this extension with your account.",
     "poll",
     "status",
-    "set:demo_bot",
     "finish",
     "start",
   ]);

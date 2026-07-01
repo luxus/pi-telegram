@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.18.2: setup pairing start hotfix
+
+- `[Setup]` `/telegram-setup` now updates the live in-memory config immediately after persisting the validated bot token and before starting polling. Impact: first-time setup no longer shows `Send /start...` followed by `Telegram bot is not configured`, and `/start` can be received without restarting Pi.
+
 ## 0.18.1: Windows setup transport hotfix
 
 - `[Setup]` `/telegram-setup` token validation now uses the same fallback-aware Telegram transport as normal API calls. Impact: Windows/QEMU hosts that fail native `fetch` during bot-token validation can retry through IPv4 fallback instead of failing before config is saved.
