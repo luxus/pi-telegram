@@ -1379,6 +1379,7 @@ test("Routing runtime preserves later unbound threads and offers reroute", async
     assert.match(chooser ?? "", /Select the Pi thread that should handle it:/);
     const markup = events.find((event) => event.startsWith("markup:"));
     assert.match(markup ?? "", /"callback_data":"reroute:1:7"/);
+    assert.match(markup ?? "", /"callback_data":"rerouterestore:1"/);
 
     await routeRuntime.handleUpdate(
       {
@@ -1827,6 +1828,8 @@ test("Routing runtime blocks follower thread restore until bus replacement exist
       { cwd: "/repo" },
     );
     const restoreMarkup = events.filter((event) => event.startsWith("markup:")).at(-1);
+    assert.match(restoreMarkup ?? "", /"text":"➡️ Anchor"/);
+    assert.match(restoreMarkup ?? "", /"callback_data":"reroutenew:1:7"/);
     assert.match(restoreMarkup ?? "", /"text":"➡️ Beta"/);
     assert.match(restoreMarkup ?? "", /"callback_data":"reroutenew:1:8"/);
 

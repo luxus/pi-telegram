@@ -662,6 +662,9 @@ export default function (pi: Pi.ExtensionAPI) {
       return telegramInstanceId;
     },
     getMessageOwnership: messageOwnershipStore.get,
+    recordMessageOwnership(input) {
+      messageOwnershipStore.record(input);
+    },
     getTargetOwnership(target) {
       return Bus.getTelegramFollowerTargetOwnership({
         target,
@@ -821,7 +824,29 @@ export default function (pi: Pi.ExtensionAPI) {
           telegramBusLifecycleOverridePhase = phase;
         },
         updateStatus,
-        async promoteToLeader(ctx) {
+        async promoteToLeader(ctx, binding) {
+          const promotedRecord =
+            await Threads.promoteTelegramFollowerBindingToLeader({
+              store: threadStore,
+              instanceId: telegramInstanceId,
+              cwd: ctx.cwd,
+              target: binding.target,
+              slot: binding.slot,
+              threadName: binding.threadName,
+            });
+          if (promotedRecord) {
+            recordRuntimeEvent(
+              "bus",
+              "Follower thread binding promoted to leader",
+              {
+                phase: "follower-promoted-binding",
+                chatId: promotedRecord.target.chatId,
+                threadId: promotedRecord.target.threadId,
+                slot: promotedRecord.slot,
+                threadName: promotedRecord.threadName,
+              },
+            );
+          }
           await lockedPollingRuntime.start(ctx, { force: true });
         },
         sleep(ms) {
@@ -898,6 +923,14 @@ export default function (pi: Pi.ExtensionAPI) {
     startPolling: pollingRuntime.start,
     stopPolling: pollingRuntime.stop,
     authorizeFollowerApiCall: Bus.isTelegramFollowerApiCallAllowed,
+    recordFollowerMessageOwnership(record) {
+      messageOwnershipStore.record({
+        chatId: record.chatId,
+        messageId: record.messageId,
+        target: record.target,
+        instanceId: record.follower.instanceId,
+      });
+    },
     provisionLeaderTarget:
       BusLeader.createTelegramBusLeaderTargetProvisioner<Pi.ExtensionContext>({
         getAllowedUserId: configStore.getAllowedUserId,
@@ -1273,8 +1306,6 @@ export default function (pi: Pi.ExtensionAPI) {
     sendRecordVoiceAction,
     sendMarkdownReply,
     sendTextReply,
-    editInteractiveMessage,
-    deleteMessage: deleteTelegramMessage,
     dispatchNextQueuedTelegramTurn,
     answerGuestQuery,
     sendGuestReply,

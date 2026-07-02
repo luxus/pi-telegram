@@ -202,6 +202,20 @@ test("Status bar text renders bridge connection and queue states", () => {
       pollingActive: false,
       paired: true,
       busRole: "follower",
+      instanceThreadName: "Amber",
+      compactionInProgress: false,
+      processing: true,
+      processingStatus: "active",
+      queuedStatus: "",
+    }),
+    "<accent>Amber</accent> <warning>active</warning>",
+  );
+  assert.equal(
+    buildTelegramStatusBarText(theme, {
+      hasBotToken: true,
+      pollingActive: false,
+      paired: true,
+      busRole: "follower",
       busLifecyclePhase: "electing",
       compactionInProgress: false,
       processing: false,

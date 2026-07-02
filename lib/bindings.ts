@@ -21,7 +21,6 @@ import * as Replies from "./replies.ts";
 import * as Runtime from "./runtime.ts";
 import * as Setup from "./setup.ts";
 import * as Status from "./status.ts";
-import * as Target from "./target.ts";
 import * as TelegramApi from "./telegram-api.ts";
 
 type ActivePiModel = NonNullable<Pi.ExtensionContext["model"]>;
@@ -166,14 +165,6 @@ interface TelegramLifecycleBindingDeps {
     Keyboard.TelegramInlineKeyboardMarkup
   >["sendTextReply"] &
     NonNullable<OutboundHandlers.TelegramVoiceReplySenderDeps["sendTextReply"]>;
-  editInteractiveMessage: (
-    chatId: number,
-    messageId: number,
-    text: string,
-    mode: "html" | "markdown",
-    replyMarkup: Keyboard.TelegramInlineKeyboardMarkup,
-  ) => Promise<void>;
-  deleteMessage: (chatId: number, messageId: number) => Promise<void>;
   dispatchNextQueuedTelegramTurn: (ctx: Pi.ExtensionContext) => void;
   answerGuestQuery: NonNullable<
     Queue.TelegramAgentEndHookRuntimeDeps<
@@ -225,8 +216,6 @@ export function registerTelegramLifecycleRuntimeHooks({
   sendRecordVoiceAction,
   sendMarkdownReply,
   sendTextReply,
-  editInteractiveMessage,
-  deleteMessage,
   dispatchNextQueuedTelegramTurn,
   answerGuestQuery,
   sendGuestReply,
@@ -367,12 +356,12 @@ export function registerTelegramLifecycleRuntimeHooks({
     onSessionBeforeCompact: compactionObserver.onSessionBeforeCompact,
     onSessionCompact: compactionObserver.onSessionCompact,
     onAgentStart: agentStartWithDedupReset,
-    async onToolExecutionStart(event, _ctx) {
+    async onToolExecutionStart(_event, _ctx) {
       agentLifecycleHooks.onToolExecutionStart();
     },
     onToolExecutionUpdate() {},
-    async onToolExecutionEnd(event, ctx) {
-      agentLifecycleHooks.onToolExecutionEnd(event, ctx);
+    async onToolExecutionEnd(_event, ctx) {
+      agentLifecycleHooks.onToolExecutionEnd(_event, ctx);
     },
     onAgentEnd: agentLifecycleHooks.onAgentEnd,
     onBeforeAgentStart: Prompts.createTelegramProactiveBeforeAgentStartHook({

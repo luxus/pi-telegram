@@ -1076,6 +1076,85 @@ test("Update runtime forwards reactions owned by another instance", async () => 
   assert.deepEqual(events, ["forward:instance-b:ctx"]);
 });
 
+test("Update runtime records forwarded message ownership for later reactions", async () => {
+  const events: string[] = [];
+  const ownership = new Map<string, { instanceId: string }>();
+  const runtime = createTelegramUpdateRuntime({
+    getAllowedUserId: () => 7,
+    getCurrentInstanceId: () => "leader",
+    getMessageOwnership: (chatId, messageId) =>
+      ownership.get(`${chatId}:${messageId}`),
+    getTargetOwnership: (target) =>
+      target.chatId === 7 && target.threadId === 44
+        ? { instanceId: "follower" }
+        : undefined,
+    recordMessageOwnership: (record) => {
+      events.push(
+        `record:${record.chatId}:${record.messageId}:${record.target?.threadId}:${record.instanceId}`,
+      );
+      ownership.set(`${record.chatId}:${record.messageId}`, {
+        instanceId: record.instanceId,
+      });
+    },
+    foreignOwnedUpdateForwarder: {
+      forwardMessage: ({ ownership }) => {
+        events.push(`forward-message:${ownership.instanceId}`);
+        return true;
+      },
+      forwardReaction: ({ ownership }) => {
+        events.push(`forward-reaction:${ownership.instanceId}`);
+        return true;
+      },
+    },
+    removePendingMediaGroupMessages: () => {
+      events.push("media");
+    },
+    removeQueuedTelegramTurnsByMessageIds: () => {
+      events.push("remove");
+      return 0;
+    },
+    clearQueuedTelegramTurnPriorityByMessageId: () => false,
+    prioritizeQueuedTelegramTurnByMessageId: () => false,
+    pairTelegramUserIfNeeded: async () => false,
+    answerCallbackQuery: async () => {},
+    answerGuestQuery: async () => {},
+    handleAuthorizedTelegramCallbackQuery: async () => {},
+    sendTextReply: async () => undefined,
+    handleAuthorizedTelegramMessage: async () => {},
+    handleAuthorizedTelegramEditedMessage: async () => {},
+  });
+
+  await runtime.handleUpdate(
+    {
+      message: {
+        chat: { id: 7, type: "private" },
+        from: { id: 7, is_bot: false },
+        message_id: 100,
+        message_thread_id: 44,
+      },
+    },
+    TEST_CONTEXT,
+  );
+  await runtime.handleUpdate(
+    {
+      message_reaction: {
+        chat: { id: 7, type: "private" },
+        user: { id: 7, is_bot: false },
+        message_id: 100,
+        old_reaction: [],
+        new_reaction: [{ type: "emoji", emoji: "👎" }],
+      },
+    },
+    TEST_CONTEXT,
+  );
+
+  assert.deepEqual(events, [
+    "record:7:100:44:follower",
+    "forward-message:follower",
+    "forward-reaction:follower",
+  ]);
+});
+
 test("Update runtime executes delete and reaction plans through the right side effects", async () => {
   const events: string[] = [];
   await executeTelegramUpdatePlan(
@@ -1397,6 +1476,46 @@ test("Update runtime forwards messages owned by another target instance", async 
     },
   );
   assert.deepEqual(events, ["target:-10010:55", "forward:instance-b:ctx:20"]);
+});
+
+test("Update runtime forwards edited messages owned by another message instance", async () => {
+  const events: string[] = [];
+  await executeTelegramUpdate(
+    {
+      edited_message: {
+        chat: { id: 7, type: "private" },
+        message_id: 21,
+        from: { id: 7, is_bot: false },
+      },
+    },
+    7,
+    {
+      ctx: TEST_CONTEXT,
+      getCurrentInstanceId: () => "instance-a",
+      getMessageOwnership: () => ({ instanceId: "instance-b" }),
+      foreignOwnedUpdateForwarder: {
+        forwardEditedMessage: ({ message, ownership, ctx }) => {
+          events.push(
+            `forward-edit:${ownership.instanceId}:${ctx}:${(message as { message_id?: number }).message_id}`,
+          );
+          return true;
+        },
+      },
+      removePendingMediaGroupMessages: () => {},
+      removeQueuedTelegramTurnsByMessageIds: () => 0,
+      handleAuthorizedTelegramReactionUpdate: async () => {},
+      pairTelegramUserIfNeeded: async () => false,
+      answerCallbackQuery: async () => {},
+      answerGuestQuery: async () => {},
+      handleAuthorizedTelegramCallbackQuery: async () => {},
+      sendTextReply: async () => undefined,
+      handleAuthorizedTelegramMessage: async () => {},
+      handleAuthorizedTelegramEditedMessage: async () => {
+        events.push("edited-message");
+      },
+    },
+  );
+  assert.deepEqual(events, ["forward-edit:instance-b:ctx:21"]);
 });
 
 test("Update runtime forwards edited messages owned by another target instance", async () => {

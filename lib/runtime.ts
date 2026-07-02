@@ -4,7 +4,7 @@
  * Owns small session-local runtime primitives that are shared by orchestration but are not specific to queueing, rendering, polling, or Telegram transport
  */
 
-const TELEGRAM_TYPING_ACTION_INTERVAL_MS = 1500;
+const TELEGRAM_TYPING_ACTION_INTERVAL_MS = 2500;
 const TELEGRAM_TYPING_IDLE_DRAIN_MAX_MS = 250;
 
 export interface TelegramRuntimeQueueCounters {
@@ -398,13 +398,9 @@ export function createTelegramTypingLoopStarter<TContext>(
       chatId: chatId ?? deps.getDefaultChatId(),
       target: options?.target,
       intervalMs: deps.intervalMs ?? TELEGRAM_TYPING_ACTION_INTERVAL_MS,
-      sendTypingAction: async (targetChatId) => {
+      sendTypingAction: async (targetChatId, actionOptions) => {
         try {
-          const threadParams = getTelegramTypingLoopThreadParams(options?.target);
-          await deps.sendTypingAction(targetChatId, threadParams);
-          if (threadParams?.message_thread_id !== undefined) {
-            await deps.sendAggregateTypingAction?.(targetChatId);
-          }
+          await deps.sendTypingAction(targetChatId, actionOptions);
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
@@ -419,6 +415,26 @@ export function createTelegramTypingLoopStarter<TContext>(
           });
         }
       },
+      sendAggregateTypingAction: deps.sendAggregateTypingAction
+        ? async (targetChatId) => {
+            try {
+              await deps.sendAggregateTypingAction?.(targetChatId);
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : String(error);
+              updateTelegramRuntimeStatusSafely(deps.updateStatus, ctx, {
+                error: message,
+                category: "typing",
+                phase: "status-update",
+                recordRuntimeEvent: deps.recordRuntimeEvent,
+              });
+              deps.recordRuntimeEvent?.("typing", error, {
+                chatId: targetChatId,
+                aggregate: true,
+              });
+            }
+          }
+        : undefined,
     });
   };
 }

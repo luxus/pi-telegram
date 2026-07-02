@@ -198,6 +198,44 @@ test("Bus follower receiver handles leader-forwarded updates and target replacem
   }
 });
 
+test("Bus follower heartbeat recovery passes current binding into promotion", async () => {
+  const promoted: unknown[] = [];
+  let leaderStateCalls = 0;
+  const registrationState = createTelegramBusFollowerRegistrationState();
+  registrationState.setRegistered(true, { chatId: 42, threadId: 10 }, {
+    slot: "F",
+    threadName: "Fjord",
+  });
+  const handler = createTelegramBusFollowerHeartbeatRecoveryHandler({
+    registrationState,
+    getRegistrationRuntime: () => ({
+      registerWithLeader: async () => false,
+      setContext: () => undefined,
+      stop: () => undefined,
+    }),
+    getLeaderState: () => {
+      leaderStateCalls += 1;
+      return leaderStateCalls === 1
+        ? { kind: "active-elsewhere", lock: {} }
+        : { kind: "inactive" };
+    },
+    setLifecyclePhase: () => undefined,
+    updateStatus: () => undefined,
+    promoteToLeader: (_ctx, binding) => {
+      promoted.push(binding);
+    },
+    sleep: async () => undefined,
+    promotionGraceMs: 0,
+    recordRuntimeEvent: () => undefined,
+  });
+
+  await handler(new Error("heartbeat failed"), "ctx");
+
+  assert.deepEqual(promoted, [
+    { target: { chatId: 42, threadId: 10 }, slot: "F", threadName: "Fjord" },
+  ]);
+});
+
 test("Bus follower heartbeat recovery swallows stale-context status updates", async () => {
   const events: unknown[] = [];
   let leaderStateCalls = 0;

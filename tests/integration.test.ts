@@ -9,9 +9,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import testRoot, { mock, type TestContext } from "node:test";
 
-import * as Runtime from "../lib/runtime.ts";
-import { createTelegramThreadTarget } from "../lib/target.ts";
-
 type RuntimeTestHandler = (context: TestContext) => void | Promise<void>;
 type RuntimeTelegramExtension = (typeof import("../index.ts"))["default"];
 

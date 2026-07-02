@@ -217,21 +217,13 @@ function formatTelegramAllTabMenuChooserText(command: string): string {
 function buildTelegramUnboundRerouteChooserMarkup(
   rerouteId: string,
   records: readonly Threads.TelegramTopicTargetRecord[],
-  options: {
+  _options: {
     currentLeaderProfileKey?: string;
     currentInstanceId?: string;
   } = {},
 ): Menu.TelegramReplyMarkup {
   const activeRecords = records.filter((record) => record.status === "active");
-  const canRestoreCurrentLeader = activeRecords.some(
-    (record) =>
-      typeof record.rerouteConfirmedAtMs === "number" &&
-      isCurrentLeaderTopicRecord(
-        record,
-        options.currentLeaderProfileKey,
-        options.currentInstanceId,
-      ),
-  );
+  const canRestoreAnyLiveThread = activeRecords.length > 0;
   const rows = activeRecords.map((record) => [
     {
       text: getTelegramRouteThreadButtonLabel(record),
@@ -242,7 +234,7 @@ function buildTelegramUnboundRerouteChooserMarkup(
     },
   ]);
   return {
-    inline_keyboard: canRestoreCurrentLeader
+    inline_keyboard: canRestoreAnyLiveThread
       ? [
           ...rows,
           [
@@ -414,6 +406,7 @@ export interface TelegramInboundRouteRuntimeDeps<
   getCurrentInstanceId?: () => string | undefined;
   getMessageOwnership?: Updates.TelegramMessageOwnershipLookup;
   getTargetOwnership?: Updates.TelegramTargetOwnershipLookup;
+  recordMessageOwnership?: Updates.TelegramMessageOwnershipRecorder;
   getLiveThreadTargets?: () => Queue.TelegramQueueTarget[];
   getLocalThreadLabelForTarget?: (
     target: Queue.TelegramQueueTarget,
@@ -1861,6 +1854,7 @@ export function createTelegramInboundRouteRuntime<
     getCurrentInstanceId: deps.getCurrentInstanceId,
     getMessageOwnership: deps.getMessageOwnership,
     getTargetOwnership: deps.getTargetOwnership,
+    recordMessageOwnership: deps.recordMessageOwnership,
     handleTelegramTopicLifecycleUpdate,
     foreignOwnedUpdateForwarder: deps.foreignOwnedUpdateForwarder,
     setAllowedUserId: deps.configStore.setAllowedUserId,

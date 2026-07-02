@@ -11,7 +11,6 @@ import test from "node:test";
 
 import {
   createTelegramBusFollowerRegistry,
-  createTelegramBusLocalServer,
   sendTelegramBusLocalEnvelope,
 } from "../lib/bus.ts";
 import {
@@ -257,6 +256,93 @@ test("Bus leader follower target provisioner creates thread and announces connec
         lastReconcileAction: "follower-register",
       },
     });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Bus leader follower target provisioner recreates stale reused thread", async () => {
+  const dir = mkdtempSync(
+    join(tmpdir(), "pi-telegram-bus-follower-stale-provision-"),
+  );
+  const store = createTelegramTopicTargetStore({
+    path: join(dir, "state.json"),
+    getNowMs: () => 1000,
+  });
+  store.upsert({
+    profileKey: "manual:follower-a",
+    owner: { kind: "manual-follower", instanceId: "follower-a" },
+    target: { chatId: 7, threadId: 8 },
+    status: "active",
+    createdAtMs: 1000,
+    updatedAtMs: 1000,
+    instanceId: "follower-a",
+    slot: "A",
+    threadName: "Amber",
+  });
+  await store.persist();
+  const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+  const events: Array<{ category: string; details?: Record<string, unknown> }> = [];
+  let syncState = {};
+  const provision = createTelegramBusFollowerTargetProvisioner({
+    getAllowedUserId: () => 7,
+    topicTargetStore: store,
+    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
+      calls.push({ method, body });
+      if (method === "sendMessage" && body.message_thread_id === 8) {
+        throw new Error("Bad Request: message thread not found");
+      }
+      if (method === "createForumTopic") {
+        return { message_thread_id: 13 } as TResponse;
+      }
+      return { ok: true } as TResponse;
+    },
+    getSyncState: () => syncState,
+    setSyncState: (state) => {
+      syncState = state;
+    },
+    recordRuntimeEvent(category, _error, details) {
+      events.push({ category, details });
+    },
+    getNowMs: () => 2000,
+  });
+  try {
+    assert.deepEqual(
+      await provision({ instanceId: "follower-a", connectedAtMs: 0 }),
+      { chatId: 7, threadId: 13, slot: "A", threadName: "Amber" },
+    );
+    assert.deepEqual(calls.slice(0, 2), [
+      {
+        method: "sendMessage",
+        body: {
+          chat_id: 7,
+          message_thread_id: 8,
+          text: "📡 Instance <b>Amber</b> connected.",
+          parse_mode: "HTML",
+        },
+      },
+      { method: "createForumTopic", body: { chat_id: 7, name: "Amber" } },
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(
+      calls.some(
+        (call) =>
+          call.method === "sendMessage" &&
+          call.body.message_thread_id === 13 &&
+          call.body.text === "📡 Instance <b>Amber</b> connected.",
+      ),
+      true,
+    );
+    assert.deepEqual(store.getByProfileKey("manual:follower-a")?.target, {
+      chatId: 7,
+      threadId: 13,
+    });
+    assert.equal(
+      events.some(
+        (event) => event.details?.phase === "follower-topic-reuse-probe",
+      ),
+      true,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -574,6 +660,49 @@ test("Bus leader provisions targets before registering followers", async () => {
       profileKey: "cwd:/repo",
       threadName: "repo",
       connectedAtMs: 1000,
+    },
+  ]);
+});
+
+test("Bus leader records ownership for follower-sent messages", async () => {
+  const registry = createTelegramBusFollowerRegistry();
+  registry.register({
+    instanceId: "inst-a",
+    connectedAtMs: 1000,
+    target: { chatId: 1, threadId: 42 },
+  });
+  const ownership: unknown[] = [];
+  const handleEnvelope = createTelegramBusLeaderEnvelopeHandler({
+    followerRegistry: registry,
+    getNowMs: () => 4000,
+    callApi() {
+      return { message_id: 44 };
+    },
+    recordFollowerMessageOwnership(record) {
+      ownership.push({
+        instanceId: record.follower.instanceId,
+        chatId: record.chatId,
+        messageId: record.messageId,
+        target: record.target,
+      });
+    },
+  });
+
+  await handleEnvelope({
+    kind: "follower.callApi",
+    requestId: "inst-a:4",
+    instanceId: "inst-a",
+    method: "call",
+    args: ["sendMessage", { chat_id: 1, text: "Menu" }],
+    sentAtMs: 4000,
+  });
+
+  assert.deepEqual(ownership, [
+    {
+      instanceId: "inst-a",
+      chatId: 1,
+      messageId: 44,
+      target: { chatId: 1, threadId: 42 },
     },
   ]);
 });

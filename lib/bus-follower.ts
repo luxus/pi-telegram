@@ -203,16 +203,25 @@ export interface TelegramBusFollowerLeaderLock {
   busSecret?: string;
 }
 
+export interface TelegramBusFollowerPromotedBinding {
+  target?: TelegramTarget;
+  slot?: string;
+  threadName?: string;
+}
+
 export interface TelegramBusFollowerHeartbeatRecoveryHandlerDeps<TContext> {
   registrationState: Pick<
     TelegramBusFollowerRegistrationState,
-    "setRegistered"
+    "getTarget" | "getSlot" | "getThreadName" | "setRegistered"
   >;
   getRegistrationRuntime: () => TelegramBusFollowerRegistrationRuntime<TContext>;
   getLeaderState: () => TelegramBusFollowerLeaderState;
   setLifecyclePhase: (phase: "electing" | undefined) => void;
   updateStatus: (ctx: TContext) => void;
-  promoteToLeader: (ctx: TContext) => Promise<void> | void;
+  promoteToLeader: (
+    ctx: TContext,
+    binding: TelegramBusFollowerPromotedBinding,
+  ) => Promise<void> | void;
   sleep: (ms: number) => Promise<void>;
   promotionGraceMs: number;
   recordRuntimeEvent: (
@@ -511,7 +520,16 @@ export function createTelegramBusFollowerHeartbeatRecoveryHandler<TContext>(
       return false;
     }
   };
-  const promoteToLeader = async (reason: unknown, ctx: TContext) => {
+  const snapshotBinding = (): TelegramBusFollowerPromotedBinding => ({
+    target: deps.registrationState.getTarget(),
+    slot: deps.registrationState.getSlot(),
+    threadName: deps.registrationState.getThreadName(),
+  });
+  const promoteToLeader = async (
+    reason: unknown,
+    ctx: TContext,
+    binding = snapshotBinding(),
+  ) => {
     deps.setLifecyclePhase("electing");
     safeUpdateStatus(ctx);
     deps.recordRuntimeEvent("bus", reason, {
@@ -523,7 +541,7 @@ export function createTelegramBusFollowerHeartbeatRecoveryHandler<TContext>(
     deps.recordRuntimeEvent("bus", "Telegram follower elected for promotion", {
       phase: "follower-promotion-electing",
     });
-    await deps.promoteToLeader(ctx);
+    await deps.promoteToLeader(ctx, binding);
     deps.setLifecyclePhase(undefined);
     safeUpdateStatus(ctx);
     deps.recordRuntimeEvent("bus", "Telegram follower promotion completed", {
@@ -534,6 +552,7 @@ export function createTelegramBusFollowerHeartbeatRecoveryHandler<TContext>(
     if (promotionPending) return;
     promotionPending = true;
     try {
+      const initialBinding = snapshotBinding();
       const state = deps.getLeaderState();
       if (state.kind === "active-elsewhere") {
         clearRegisteredState(ctx);
@@ -565,16 +584,16 @@ export function createTelegramBusFollowerHeartbeatRecoveryHandler<TContext>(
           ) {
             return;
           }
-          await promoteToLeader(error, ctx);
+          await promoteToLeader(error, ctx, initialBinding);
           return;
         }
         if (graceState.kind === "stale" || graceState.kind === "inactive") {
-          await promoteToLeader(error, ctx);
+          await promoteToLeader(error, ctx, initialBinding);
         }
         return;
       }
       if (state.kind === "stale" || state.kind === "inactive") {
-        await promoteToLeader(error, ctx);
+        await promoteToLeader(error, ctx, initialBinding);
       }
     } catch (promotionError) {
       deps.setLifecyclePhase(undefined);

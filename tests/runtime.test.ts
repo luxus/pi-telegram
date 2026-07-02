@@ -4,275 +4,20 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import testRoot, { mock, type TestContext } from "node:test";
+import testRoot, { type TestContext } from "node:test";
 
 import * as Runtime from "../lib/runtime.ts";
 import { createTelegramThreadTarget } from "../lib/target.ts";
 
 type RuntimeTestHandler = (context: TestContext) => void | Promise<void>;
-type RuntimeTelegramExtension = (typeof import("../index.ts"))["default"];
-
 function test(name: string, fn: RuntimeTestHandler): void {
   void testRoot(name, { concurrency: false, timeout: 5000 }, fn);
-}
-
-let runtimeTelegramExtension: RuntimeTelegramExtension | undefined;
-let runtimeAgentDir: string | undefined;
-
-async function ensureRuntimeAgentDir(): Promise<string> {
-  if (!runtimeAgentDir) {
-    runtimeAgentDir = await mkdtemp(
-      join(tmpdir(), "pi-telegram-runtime-agent-"),
-    );
-    process.env.PI_CODING_AGENT_DIR = runtimeAgentDir;
-  }
-  return runtimeAgentDir;
-}
-
-async function getRuntimeTelegramExtension(): Promise<RuntimeTelegramExtension> {
-  if (runtimeTelegramExtension) return runtimeTelegramExtension;
-  await ensureRuntimeAgentDir();
-  runtimeTelegramExtension = (await import("../index.ts")).default;
-  return runtimeTelegramExtension;
 }
 
 async function flushMicrotasks(iterations = 10): Promise<void> {
   for (let i = 0; i < iterations; i++) {
     await Promise.resolve();
   }
-}
-
-async function waitForEventLoopCondition(
-  predicate: () => boolean,
-  iterations = 100,
-): Promise<void> {
-  for (let i = 0; i < iterations; i++) {
-    if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  throw new Error("Timed out waiting for event-loop condition");
-}
-
-function parseJsonRequestBody(
-  init: RequestInit | undefined,
-): Record<string, unknown> | undefined {
-  if (typeof init?.body !== "string") return undefined;
-  return JSON.parse(init.body) as Record<string, unknown>;
-}
-
-function getRuntimeTelegramApiMethod(input: string | URL | Request): string {
-  const url = typeof input === "string" ? input : input.toString();
-  return url.split("/").at(-1) ?? "";
-}
-
-function getRuntimeTelegramApiText(
-  body: Record<string, unknown> | undefined,
-): string {
-  const richMessage = body?.rich_message as
-    | { html?: string; markdown?: string }
-    | undefined;
-  return String(body?.text ?? richMessage?.html ?? richMessage?.markdown ?? "");
-}
-
-function setRuntimeTestFetch(fetchImpl: typeof fetch): () => void {
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = fetchImpl;
-  return () => {
-    globalThis.fetch = originalFetch;
-  };
-}
-
-async function createRuntimeTelegramConfigFixture() {
-  const agentDir = await ensureRuntimeAgentDir();
-  const configPath = join(agentDir, "telegram.json");
-  const previousConfig = await readFile(configPath, "utf8").catch(
-    () => undefined,
-  );
-  const isolated = process.env.PI_CODING_AGENT_DIR === agentDir;
-  return {
-    write: async (config: Record<string, unknown>) => {
-      await mkdir(agentDir, { recursive: true });
-      await writeFile(
-        configPath,
-        JSON.stringify(config, null, "\t") + "\n",
-        "utf8",
-      );
-    },
-    restore: async () => {
-      if (isolated) return;
-      if (previousConfig === undefined) {
-        await rm(configPath, { force: true });
-        return;
-      }
-      await writeFile(configPath, previousConfig, "utf8");
-    },
-  };
-}
-
-async function writeRuntimeTelegramLocks(
-  locks: Record<string, unknown>,
-): Promise<void> {
-  const agentDir = await ensureRuntimeAgentDir();
-  await mkdir(agentDir, { recursive: true });
-  await writeFile(
-    join(agentDir, "locks.json"),
-    JSON.stringify(locks, null, "\t") + "\n",
-    "utf8",
-  );
-}
-
-function createRuntimeDeferredResponse() {
-  let resolve: (value: Response) => void = () => {};
-  const promise = new Promise<Response>((promiseResolve) => {
-    resolve = promiseResolve;
-  });
-  return { promise, resolve };
-}
-
-function createRuntimeTelegramApiResponse(result: unknown): Response {
-  return { json: async () => ({ ok: true, result }) } as Response;
-}
-
-function createRuntimeTelegramApiErrorResponse(
-  status: number,
-  description: string,
-): Response {
-  return {
-    ok: false,
-    status,
-    headers: new Headers({ "retry-after": "0" }),
-    text: async () => JSON.stringify({ ok: false, description }),
-  } as Response;
-}
-
-function createRuntimeExtensionContext(
-  overrides: Record<string, unknown> = {},
-) {
-  return {
-    hasUI: true,
-    model: undefined,
-    signal: undefined,
-    ui: {
-      theme: {
-        fg: (_token: string, text: string) => text,
-      },
-      setStatus: () => {},
-      notify: () => {},
-    },
-    isIdle: () => true,
-    hasPendingMessages: () => false,
-    abort: () => {},
-    ...overrides,
-  };
-}
-
-type RuntimeModelFixture = {
-  provider: string;
-  id: string;
-  reasoning?: boolean;
-};
-
-function createRuntimeModel(
-  provider: string,
-  id: string,
-  reasoning?: boolean,
-): RuntimeModelFixture {
-  return reasoning === undefined
-    ? { provider, id }
-    : { provider, id, reasoning };
-}
-
-type RuntimeModelContextOptions = {
-  model?: RuntimeModelFixture;
-  availableModels: RuntimeModelFixture[];
-  isIdle?: () => boolean;
-  abort?: () => void;
-  setStatus?: (slot: string, text: string) => void;
-};
-
-function createRuntimeModelContext(options: RuntimeModelContextOptions) {
-  return createRuntimeExtensionContext({
-    cwd: process.cwd(),
-    model: options.model,
-    ui: {
-      theme: {
-        fg: (_token: string, text: string) => text,
-      },
-      setStatus: options.setStatus ?? (() => {}),
-      notify: () => {},
-    },
-    sessionManager: {
-      getEntries: () => [],
-    },
-    modelRegistry: {
-      refresh: () => {},
-      getAvailable: () => options.availableModels,
-      isUsingOAuth: () => false,
-    },
-    getContextUsage: () => undefined,
-    isIdle: options.isIdle ?? (() => true),
-    abort: options.abort ?? (() => {}),
-  });
-}
-
-type RuntimeHarnessTextBlock = { type: string; text?: string };
-type RuntimeHarnessMessage = string | RuntimeHarnessTextBlock[];
-
-function getRuntimeHarnessTextBlock(
-  content: RuntimeHarnessMessage | undefined,
-): RuntimeHarnessTextBlock {
-  assert.equal(Array.isArray(content), true);
-  if (!Array.isArray(content)) throw new Error("Expected text-block message");
-  return content[0] ?? { type: "" };
-}
-
-function getRuntimeHarnessMessageText(content: RuntimeHarnessMessage): string {
-  if (typeof content === "string") return content;
-  return getRuntimeHarnessTextBlock(content).text ?? "";
-}
-
-function recordRuntimeDispatchEvent(
-  events: string[],
-  content: RuntimeHarnessMessage,
-): void {
-  events.push(`dispatch:${getRuntimeHarnessMessageText(content)}`);
-}
-
-type RuntimeHarnessHandler = (event: unknown, ctx: unknown) => Promise<unknown>;
-type RuntimeHarnessCommand = {
-  handler: (args: string, ctx: unknown) => Promise<void>;
-};
-type RuntimePiHarnessOptions = {
-  sendUserMessage?: (content: RuntimeHarnessMessage) => void;
-  getThinkingLevel?: () => string;
-  setModel?: (model: { provider: string; id: string }) => Promise<boolean>;
-  setThinkingLevel?: (level: string) => void;
-  getCommands?: () => unknown[];
-};
-
-function createRuntimePiHarness(options: RuntimePiHarnessOptions = {}) {
-  const handlers = new Map<string, RuntimeHarnessHandler>();
-  const commands = new Map<string, RuntimeHarnessCommand>();
-  const pi = {
-    on: (event: string, handler: RuntimeHarnessHandler) => {
-      handlers.set(event, handler);
-    },
-    registerCommand: (name: string, definition: RuntimeHarnessCommand) => {
-      commands.set(name, definition);
-    },
-    registerTool: () => {},
-    sendUserMessage: options.sendUserMessage ?? (() => {}),
-    getCommands: options.getCommands ?? (() => []),
-    getThinkingLevel: options.getThinkingLevel ?? (() => "medium"),
-    ...(options.setModel ? { setModel: options.setModel } : {}),
-    ...(options.setThinkingLevel
-      ? { setThinkingLevel: options.setThinkingLevel }
-      : {}),
-  };
-  return { handlers, commands, pi: pi as never };
 }
 
 test("Runtime facade binds grouped operations to one bridge state", () => {
@@ -652,7 +397,35 @@ test("Typing loop starter uses a conservative native keepalive interval", () => 
 
   startTypingLoop({ id: "ctx" });
 
-  assert.equal(capturedIntervalMs, 1500);
+  assert.equal(capturedIntervalMs, 2500);
+});
+
+test("Typing loop starter sends one thread action and one aggregate action", async () => {
+  const state = Runtime.createTelegramBridgeRuntimeState();
+  const runtime = Runtime.createTelegramBridgeRuntime(state);
+  const actions: string[] = [];
+  const startTypingLoop = Runtime.createTelegramTypingLoopStarter<{
+    id: string;
+  }>({
+    typing: runtime.typing,
+    getDefaultChatId: () => undefined,
+    sendTypingAction: async (chatId, options) => {
+      actions.push(`thread:${chatId}:${options?.message_thread_id ?? "all"}`);
+    },
+    sendAggregateTypingAction: async (chatId) => {
+      actions.push(`aggregate:${chatId}`);
+    },
+    updateStatus: () => {},
+    intervalMs: 1000,
+  });
+
+  startTypingLoop({ id: "ctx" }, 8, {
+    target: createTelegramThreadTarget(8, 44),
+  });
+  await flushMicrotasks();
+
+  assert.deepEqual(actions, ["thread:8:44", "aggregate:8"]);
+  assert.equal(runtime.typing.stop(), true);
 });
 
 test("Typing loop starter binds default chat and reports failures", async () => {

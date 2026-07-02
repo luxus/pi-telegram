@@ -9,6 +9,7 @@ import {
   createTelegramThreadTarget,
   type TelegramTarget,
 } from "./target.ts";
+import type { TelegramMessageOwnershipStore } from "./ownership.ts";
 import {
   createTelegramUserPairingRuntime,
   getTelegramAuthorizationState,
@@ -538,6 +539,14 @@ export function buildTelegramUpdateExecutionPlanFromUpdate<
 
 // --- Runtime ---
 
+export type TelegramMessageOwnershipRecorderInput = Parameters<
+  TelegramMessageOwnershipStore["record"]
+>[0];
+
+export type TelegramMessageOwnershipRecorder = (
+  input: TelegramMessageOwnershipRecorderInput,
+) => void;
+
 export interface TelegramUpdateRuntimeDeps<
   TContext = unknown,
   TReactionUpdate extends TelegramMessageReactionUpdated =
@@ -549,6 +558,7 @@ export interface TelegramUpdateRuntimeDeps<
   getCurrentInstanceId?: () => string | undefined;
   getMessageOwnership?: TelegramMessageOwnershipLookup;
   getTargetOwnership?: TelegramTargetOwnershipLookup;
+  recordMessageOwnership?: TelegramMessageOwnershipRecorder;
   foreignOwnedUpdateForwarder?: TelegramForeignOwnedUpdateForwarder<
     TContext,
     TReactionUpdate,
@@ -612,6 +622,7 @@ export interface TelegramUpdateRuntimeControllerDeps<
   getCurrentInstanceId?: () => string | undefined;
   getMessageOwnership?: TelegramMessageOwnershipLookup;
   getTargetOwnership?: TelegramTargetOwnershipLookup;
+  recordMessageOwnership?: TelegramMessageOwnershipRecorder;
   foreignOwnedUpdateForwarder?: TelegramForeignOwnedUpdateForwarder<
     TContext,
     TelegramMessageReactionUpdated,
@@ -824,6 +835,7 @@ export function createTelegramPairedUpdateRuntime<
     getCurrentInstanceId: deps.getCurrentInstanceId,
     getMessageOwnership: deps.getMessageOwnership,
     getTargetOwnership: deps.getTargetOwnership,
+    recordMessageOwnership: deps.recordMessageOwnership,
     handleTelegramTopicLifecycleUpdate: deps.handleTelegramTopicLifecycleUpdate,
     foreignOwnedUpdateForwarder: deps.foreignOwnedUpdateForwarder,
     removePendingMediaGroupMessages: deps.removePendingMediaGroupMessages,
@@ -890,6 +902,7 @@ export function createTelegramUpdateRuntime<
         getCurrentInstanceId: deps.getCurrentInstanceId,
         getMessageOwnership: deps.getMessageOwnership,
         getTargetOwnership: deps.getTargetOwnership,
+        recordMessageOwnership: deps.recordMessageOwnership,
         foreignOwnedUpdateForwarder: deps.foreignOwnedUpdateForwarder,
         removePendingMediaGroupMessages: deps.removePendingMediaGroupMessages,
         removeQueuedTelegramTurnsByMessageIds:
@@ -1109,11 +1122,40 @@ export async function executeTelegramUpdatePlan<
       }
       return;
     }
+    const foreignMessageOwnership = getForeignTelegramMessageOwnership(
+      getTelegramMessageReplyTarget(plan.message),
+      deps,
+    );
+    if (foreignMessageOwnership) {
+      if (plan.kind === "edited-message") {
+        await deps.foreignOwnedUpdateForwarder?.forwardEditedMessage?.({
+          message: plan.message,
+          ownership: foreignMessageOwnership,
+          ctx: deps.ctx,
+        });
+      } else {
+        await deps.foreignOwnedUpdateForwarder?.forwardMessage?.({
+          message: plan.message,
+          ownership: foreignMessageOwnership,
+          ctx: deps.ctx,
+        });
+      }
+      return;
+    }
+    const messageTarget = getTelegramMessageTarget(plan.message);
     const foreignTargetOwnership = getForeignTelegramTargetOwnership(
-      getTelegramMessageTarget(plan.message),
+      messageTarget,
       deps,
     );
     if (foreignTargetOwnership) {
+      if (typeof plan.message.message_id === "number") {
+        deps.recordMessageOwnership?.({
+          chatId: messageTarget!.chatId,
+          messageId: plan.message.message_id,
+          target: messageTarget,
+          instanceId: foreignTargetOwnership.instanceId,
+        });
+      }
       if (plan.kind === "edited-message") {
         await deps.foreignOwnedUpdateForwarder?.forwardEditedMessage?.({
           message: plan.message,
@@ -1129,7 +1171,6 @@ export async function executeTelegramUpdatePlan<
       }
       return;
     }
-    const messageTarget = getTelegramMessageTarget(plan.message);
     if (
       plan.kind === "message" &&
       messageTarget?.threadId != null &&

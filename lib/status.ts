@@ -771,8 +771,6 @@ export function buildTelegramStatusBarText(
     return `${label} ${theme.fg("warning", "electing")}${queued}`;
   if (!state.pollingActive && state.busRole !== "follower")
     return `${label} ${theme.fg("muted", "disconnected")}${queued}`;
-  if (state.busRole === "follower")
-    return `${label} ${theme.fg("success", "follower")}${queued}`;
   if (state.compactionInProgress) {
     return `${label} ${theme.fg("warning", "compacting")}${queued}`;
   }
@@ -784,6 +782,8 @@ export function buildTelegramStatusBarText(
       processingStatus === "active" ? "warning" : "accent";
     return `${label} ${theme.fg(processingToken, processingStatus)}${queued}`;
   }
+  if (state.busRole === "follower")
+    return `${label} ${theme.fg("success", "follower")}${queued}`;
   if (state.busRole === "leader")
     return `${label} ${theme.fg("success", "leader")}`;
   return `${label} ${theme.fg("success", "connected")}`;

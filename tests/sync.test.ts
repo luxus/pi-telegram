@@ -352,6 +352,11 @@ test("Leader thread sync reuses same-profile topic across reload", async () => {
     const record = store.getByProfileKey("cwd:/repo");
     assert.equal(record?.target.threadId, 10);
     assert.equal(record?.instanceId, "leader-a");
+    assert.deepEqual(record?.owner, {
+      kind: "leader",
+      cwd: "/repo",
+      instanceId: "leader-a",
+    });
     assert.equal(record?.threadName, "🧭 Axial");
     assert.equal(store.listReservations().length, 0);
     assert.equal(

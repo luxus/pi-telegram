@@ -163,6 +163,17 @@ export interface TelegramBusFollowerRegistryRestoreDeps {
   getNowMs?: () => number;
 }
 
+export interface TelegramBusFollowerMessageOwnershipRecord {
+  follower: TelegramBusFollowerView;
+  chatId: number;
+  messageId: number;
+  target?: TelegramTarget;
+}
+
+export type TelegramBusFollowerMessageOwnershipRecorder = (
+  record: TelegramBusFollowerMessageOwnershipRecord,
+) => void;
+
 export interface TelegramBusLeaderRuntimeDeps<TContext> {
   socketPath: string;
   followerRegistry: TelegramBusFollowerRegistry;
@@ -175,6 +186,7 @@ export interface TelegramBusLeaderRuntimeDeps<TContext> {
     method: string;
     args: unknown[];
   }) => boolean;
+  recordFollowerMessageOwnership?: TelegramBusFollowerMessageOwnershipRecorder;
   provisionFollowerTarget?: (
     registration: TelegramBusInstanceRegistration,
   ) => Promise<TelegramTarget | undefined> | TelegramTarget | undefined;
@@ -325,30 +337,74 @@ export function createTelegramBusFollowerTargetProvisioner(
       registration.profileKey ?? `manual:${registration.instanceId}`;
     const followerOwner =
       Threads.getTelegramThreadOwnerFromProfileKey(followerProfileKey);
-    deps.onProvisioningStart?.();
-    let result: Threads.TelegramTopicTargetProvisionResult;
-    try {
-      result = await provision({
-        instanceId: registration.instanceId,
-        owner:
-          followerOwner.kind === "manual-follower"
-            ? followerOwner
-            : {
-                kind: "manual-follower",
-                instanceId: registration.instanceId,
-              },
-        profileKey: followerProfileKey,
-        threadName: registration.threadName,
-      });
-    } finally {
-      deps.onProvisioningEnd?.();
-    }
+    const provisionTarget = async () => {
+      deps.onProvisioningStart?.();
+      try {
+        return await provision({
+          instanceId: registration.instanceId,
+          owner:
+            followerOwner.kind === "manual-follower"
+              ? followerOwner
+              : {
+                  kind: "manual-follower",
+                  instanceId: registration.instanceId,
+                },
+          profileKey: followerProfileKey,
+          threadName: registration.threadName,
+        });
+      } finally {
+        deps.onProvisioningEnd?.();
+      }
+    };
+    let result = await provisionTarget();
     deps.setSyncState(
       Sync.markTelegramSyncSliceFresh(deps.getSyncState(), "target-bindings", {
         nowMs: getNowMs(),
         action: "follower-register",
       }),
     );
+    let connectedAnnouncement =
+      createTelegramBusInstanceLifecycleAnnouncement({
+        target: result.target,
+        threadName: result.record.threadName,
+        slot: result.record.slot,
+        state: "connected",
+      });
+    let connectedAnnouncementSent = false;
+    if (result.reused && connectedAnnouncement) {
+      try {
+        await deps.callApi("sendMessage", {
+          chat_id: connectedAnnouncement.target.chatId,
+          message_thread_id: connectedAnnouncement.target.threadId,
+          text: connectedAnnouncement.text,
+          parse_mode: connectedAnnouncement.parseMode,
+        });
+        connectedAnnouncementSent = true;
+      } catch (error) {
+        deps.recordRuntimeEvent("telegram", error, {
+          phase: "follower-topic-reuse-probe",
+          instanceId: registration.instanceId,
+          chatId: result.target.chatId,
+          threadId: result.target.threadId,
+        });
+        if (Threads.isTelegramTopicTargetStaleError(error)) {
+          deps.topicTargetStore.markStaleByTarget(
+            result.target,
+            "deleted",
+            "Follower registration found the reusable thread target stale.",
+          );
+          await deps.topicTargetStore.persist();
+          result = await provisionTarget();
+          connectedAnnouncement = createTelegramBusInstanceLifecycleAnnouncement({
+            target: result.target,
+            threadName: result.record.threadName,
+            slot: result.record.slot,
+            state: "connected",
+          });
+          connectedAnnouncementSent = false;
+        }
+      }
+    }
     recordSlowTelegramBusFollowerRegistrationStep(deps, {
       phase: "follower-register-critical",
       elapsedMs: Date.now() - registrationStartedAtMs,
@@ -356,16 +412,9 @@ export function createTelegramBusFollowerTargetProvisioner(
       target: result.target,
       reused: result.reused,
     });
-    const connectedAnnouncement =
-      createTelegramBusInstanceLifecycleAnnouncement({
-        target: result.target,
-        threadName: result.record.threadName,
-        slot: result.record.slot,
-        state: "connected",
-      });
     scheduleTelegramBusLeaderBackgroundTask(async () => {
       const backgroundStartedAtMs = Date.now();
-      if (connectedAnnouncement) {
+      if (connectedAnnouncement && !connectedAnnouncementSent) {
         try {
           await deps.callApi("sendMessage", {
             chat_id: connectedAnnouncement.target.chatId,
@@ -579,6 +628,7 @@ export function createTelegramBusLeaderEnvelopeHandler(deps: {
     method: string;
     args: unknown[];
   }) => boolean;
+  recordFollowerMessageOwnership?: TelegramBusFollowerMessageOwnershipRecorder;
   provisionFollowerTarget?: (
     registration: TelegramBusInstanceRegistration,
   ) => Promise<TelegramTarget | undefined> | TelegramTarget | undefined;
@@ -706,6 +756,72 @@ export function createTelegramBusLeaderEnvelopeHandler(deps: {
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function asInteger(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value)) return value;
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : undefined;
+}
+
+function getFollowerApiMethodAndBody(envelope: Extract<TelegramBusEnvelope, { kind: "follower.callApi" }>): {
+  apiMethod: string;
+  body?: Record<string, unknown>;
+} {
+  if (envelope.method === "call" || envelope.method === "callMultipart") {
+    return {
+      apiMethod:
+        typeof envelope.args[0] === "string" ? envelope.args[0] : "",
+      body: asRecord(envelope.args[1]),
+    };
+  }
+  return { apiMethod: envelope.method, body: asRecord(envelope.args[0]) };
+}
+
+function getSentMessageIds(result: unknown): number[] {
+  const values = Array.isArray(result) ? result : [result];
+  return values
+    .map((value) => asInteger(asRecord(value)?.message_id))
+    .filter((messageId): messageId is number => messageId !== undefined);
+}
+
+function recordFollowerApiMessageOwnership(input: {
+  envelope: Extract<TelegramBusEnvelope, { kind: "follower.callApi" }>;
+  follower: TelegramBusFollowerView;
+  result: unknown;
+  record?: TelegramBusFollowerMessageOwnershipRecorder;
+}): void {
+  if (!input.record) return;
+  const { apiMethod, body } = getFollowerApiMethodAndBody(input.envelope);
+  if (
+    apiMethod !== "sendMessage" &&
+    apiMethod !== "sendRichMessage" &&
+    apiMethod !== "sendPhoto" &&
+    apiMethod !== "sendDocument" &&
+    apiMethod !== "sendVoice" &&
+    apiMethod !== "sendMediaGroup"
+  ) {
+    return;
+  }
+  const chatId = asInteger(body?.chat_id) ?? input.follower.target?.chatId;
+  if (chatId === undefined) return;
+  const threadId = asInteger(body?.message_thread_id) ?? input.follower.target?.threadId;
+  const target = threadId !== undefined ? { chatId, threadId } : { chatId };
+  for (const messageId of getSentMessageIds(input.result)) {
+    input.record({
+      follower: input.follower,
+      chatId,
+      messageId,
+      target,
+    });
+  }
+}
+
 async function handleFollowerApiCall(
   envelope: Extract<TelegramBusEnvelope, { kind: "follower.callApi" }>,
   deps: {
@@ -717,6 +833,7 @@ async function handleFollowerApiCall(
       method: string;
       args: unknown[];
     }) => boolean;
+    recordFollowerMessageOwnership?: TelegramBusFollowerMessageOwnershipRecorder;
   },
 ): Promise<TelegramBusEnvelope> {
   const follower = deps.followerRegistry.get(envelope.instanceId);
@@ -753,11 +870,18 @@ async function handleFollowerApiCall(
     };
   }
   try {
+    const result = await deps.callApi(envelope.method, envelope.args);
+    recordFollowerApiMessageOwnership({
+      envelope,
+      follower,
+      result,
+      record: deps.recordFollowerMessageOwnership,
+    });
     return {
       kind: "bus.ack",
       requestId: envelope.requestId,
       ok: true,
-      result: await deps.callApi(envelope.method, envelope.args),
+      result,
     };
   } catch (error) {
     return {
@@ -882,6 +1006,7 @@ export function createTelegramBusLeaderRuntime<TContext>(
       getNowMs,
       callApi: deps.callApi,
       authorizeFollowerApiCall: deps.authorizeFollowerApiCall,
+      recordFollowerMessageOwnership: deps.recordFollowerMessageOwnership,
       provisionFollowerTarget: deps.provisionFollowerTarget,
     }),
   });

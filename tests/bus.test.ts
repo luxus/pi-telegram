@@ -417,6 +417,75 @@ test("Bus follower API allowlist permits scoped own-thread voice uploads", () =>
   );
 });
 
+test("Bus follower API allowlist permits chat message edit/delete operations", () => {
+  const follower = {
+    instanceId: "inst-a",
+    connectedAtMs: 1000,
+    lastHeartbeatMs: 1000,
+    target: { chatId: 100, threadId: 42 },
+  };
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["editMessageText", { chat_id: 100, message_id: 9, text: "Next" }],
+    }),
+    true,
+  );
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["deleteMessage", { chat_id: "100", message_id: "9" }],
+    }),
+    true,
+  );
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["deleteMessage", { chat_id: 101, message_id: 9 }],
+    }),
+    false,
+  );
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["deleteMessage", { chat_id: 100 }],
+    }),
+    false,
+  );
+});
+
+test("Bus follower API allowlist permits bot command registration", () => {
+  const follower = {
+    instanceId: "inst-a",
+    connectedAtMs: 1000,
+    lastHeartbeatMs: 1000,
+    target: { chatId: 100, threadId: 42 },
+  };
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: [
+        "setMyCommands",
+        { commands: [{ command: "start", description: "Start" }] },
+      ],
+    }),
+    true,
+  );
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["setMyCommands", { commands: [{ command: "start" }] }],
+    }),
+    false,
+  );
+});
+
 test("Bus follower API allowlist permits own-chat typing and safe identity reads", () => {
   const follower = {
     instanceId: "inst-a",
@@ -855,7 +924,33 @@ test("Bus follower registry resolves followers by target", () => {
   assert.equal(registry.getByTarget({ chatId: 1, threadId: 3 }), undefined);
 });
 
-test("Bus follower target ownership falls back to active thread records", () => {
+test("Bus follower registry replaces stale registrations by profile and target", () => {
+  const registry = createTelegramBusFollowerRegistry();
+  registry.register({
+    instanceId: "follower:old",
+    profileKey: "manual:follower",
+    target: { chatId: 1, threadId: 2 },
+    connectedAtMs: 1000,
+  });
+  registry.register({
+    instanceId: "follower:new",
+    profileKey: "manual:follower",
+    target: { chatId: 1, threadId: 2 },
+    connectedAtMs: 2000,
+  });
+
+  assert.equal(registry.get("follower:old"), undefined);
+  assert.equal(
+    registry.getByTarget({ chatId: 1, threadId: 2 })?.instanceId,
+    "follower:new",
+  );
+  assert.deepEqual(
+    registry.list().map((follower) => follower.instanceId),
+    ["follower:new"],
+  );
+});
+
+test("Bus follower target ownership falls back only to follower thread records", () => {
   assert.deepEqual(
     getTelegramFollowerTargetOwnership({
       target: { chatId: 1, threadId: 2 },
@@ -865,6 +960,8 @@ test("Bus follower target ownership falls back to active thread records", () => 
         {
           status: "active",
           instanceId: "follower-a",
+          profileKey: "manual:follower-a",
+          owner: { kind: "manual-follower" },
           target: { chatId: 1, threadId: 2 },
         },
       ],
@@ -875,11 +972,30 @@ test("Bus follower target ownership falls back to active thread records", () => 
     getTelegramFollowerTargetOwnership({
       target: { chatId: 1, threadId: 2 },
       followers: [],
+      currentInstanceId: "leader-b",
+      activeThreadRecords: [
+        {
+          status: "active",
+          instanceId: "leader-a",
+          profileKey: "cwd:/repo",
+          owner: { kind: "leader" },
+          target: { chatId: 1, threadId: 2 },
+        },
+      ],
+    }),
+    undefined,
+  );
+  assert.equal(
+    getTelegramFollowerTargetOwnership({
+      target: { chatId: 1, threadId: 2 },
+      followers: [],
       currentInstanceId: "leader",
       activeThreadRecords: [
         {
           status: "offline",
           instanceId: "follower-a",
+          profileKey: "manual:follower-a",
+          owner: { kind: "manual-follower" },
           target: { chatId: 1, threadId: 2 },
         },
       ],

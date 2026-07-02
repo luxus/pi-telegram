@@ -79,6 +79,8 @@ export function getTelegramFollowerTargetOwnership(input: {
   activeThreadRecords?: Array<{
     status?: string;
     instanceId?: string;
+    profileKey?: string;
+    owner?: { kind?: string };
     target: TelegramTarget;
   }>;
   currentInstanceId?: string;
@@ -91,7 +93,11 @@ export function getTelegramFollowerTargetOwnership(input: {
   });
   if (liveFollower) return { instanceId: liveFollower.instanceId };
   const record = input.activeThreadRecords?.find((candidate) => {
+    const isFollowerRecord = candidate.owner?.kind
+      ? candidate.owner.kind === "manual-follower"
+      : candidate.profileKey?.startsWith("manual:") === true;
     return (
+      isFollowerRecord &&
       candidate.status === "active" &&
       candidate.instanceId &&
       candidate.instanceId !== input.currentInstanceId &&
@@ -144,6 +150,28 @@ export function isTelegramFollowerApiCallAllowed(input: {
     const record = body as Record<string, unknown>;
     return matchesId(record.chat_id, target.chatId);
   };
+  const isTargetMessageScoped = (body: unknown): boolean => {
+    if (!isTargetChatScoped(body)) return false;
+    const messageId = (body as Record<string, unknown>).message_id;
+    const parsedMessageId =
+      typeof messageId === "number" ? messageId : Number(messageId);
+    return Number.isInteger(parsedMessageId) && matchesId(messageId, parsedMessageId);
+  };
+  const isBotCommandRegistration = (body: unknown): boolean => {
+    if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+    const commands = (body as Record<string, unknown>).commands;
+    return (
+      Array.isArray(commands) &&
+      commands.every(
+        (command) =>
+          command &&
+          typeof command === "object" &&
+          !Array.isArray(command) &&
+          typeof (command as Record<string, unknown>).command === "string" &&
+          typeof (command as Record<string, unknown>).description === "string",
+      )
+    );
+  };
   if (input.method === "downloadFile") return true;
   if (input.method === "call") {
     const apiMethod = input.args[0];
@@ -155,7 +183,12 @@ export function isTelegramFollowerApiCallAllowed(input: {
       return true;
     }
     if (apiMethod === "getMe") return true;
+    if (apiMethod === "setMyCommands")
+      return isBotCommandRegistration(input.args[1]);
     if (apiMethod === "sendChatAction") return isTargetChatScoped(input.args[1]);
+    if (apiMethod === "deleteMessage" || apiMethod === "editMessageText") {
+      return isTargetMessageScoped(input.args[1]);
+    }
     return allowedCallMethods.has(apiMethod) && isTargetScoped(input.args[1]);
   }
   if (input.method === "callMultipart") {
@@ -728,6 +761,17 @@ export function createTelegramBusFollowerRegistry(): TelegramBusFollowerRegistry
   return {
     register: (registration) => {
       const existing = followers.get(registration.instanceId);
+      for (const [instanceId, follower] of followers.entries()) {
+        if (instanceId === registration.instanceId) continue;
+        const sameProfile =
+          registration.profileKey !== undefined &&
+          registration.profileKey === follower.profileKey;
+        const sameTarget =
+          registration.target !== undefined &&
+          follower.target?.chatId === registration.target.chatId &&
+          follower.target.threadId === registration.target.threadId;
+        if (sameProfile || sameTarget) followers.delete(instanceId);
+      }
       const next: TelegramBusFollowerView = {
         ...registration,
         target: registration.target ? { ...registration.target } : undefined,

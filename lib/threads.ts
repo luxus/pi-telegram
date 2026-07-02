@@ -1438,7 +1438,7 @@ function getTelegramThreadNameEntropyIndex(
 
 export function getTelegramTopicThreadNameValidationError(
   threadName: string,
-  slot: string | undefined,
+  _slot: string | undefined,
 ): string | undefined {
   const identity = getTelegramTopicIdentityName(threadName);
   const reasons: string[] = [];
@@ -1499,6 +1499,60 @@ function asInteger(value: unknown): number | undefined {
   if (typeof value !== "string" || value.trim() === "") return undefined;
   const parsed = Number(value);
   return Number.isInteger(parsed) ? parsed : undefined;
+}
+
+export interface TelegramPromoteFollowerBindingToLeaderDeps {
+  store: TelegramTopicTargetStore;
+  instanceId: string;
+  cwd?: string;
+  target?: TelegramTarget;
+  slot?: string;
+  threadName?: string;
+  nowMs?: number;
+}
+
+export async function promoteTelegramFollowerBindingToLeader(
+  deps: TelegramPromoteFollowerBindingToLeaderDeps,
+): Promise<TelegramTopicTargetRecord | undefined> {
+  const target = deps.target;
+  if (typeof target?.threadId !== "number") return undefined;
+  await deps.store.load();
+  const nowMs = deps.nowMs ?? Date.now();
+  const existing = deps.store
+    .list()
+    .find(
+      (record) =>
+        record.target.chatId === target.chatId &&
+        record.target.threadId === target.threadId,
+    );
+  const owner: TelegramThreadOwner = {
+    kind: "leader",
+    cwd: deps.cwd,
+    instanceId: deps.instanceId,
+  };
+  const record = deps.store.upsert({
+    profileKey: getTelegramThreadOwnerKey(owner),
+    owner,
+    target: { chatId: target.chatId, threadId: target.threadId },
+    status: "active",
+    createdAtMs: existing?.createdAtMs ?? nowMs,
+    updatedAtMs: nowMs,
+    ...(existing?.threadName ?? deps.threadName
+      ? { threadName: existing?.threadName ?? deps.threadName }
+      : {}),
+    instanceId: deps.instanceId,
+    ...(existing?.slot ?? deps.slot ? { slot: existing?.slot ?? deps.slot } : {}),
+    ...(existing?.syncStatus ? { syncStatus: existing.syncStatus } : {}),
+    ...(existing?.lastSyncObservedAtMs !== undefined
+      ? { lastSyncObservedAtMs: existing.lastSyncObservedAtMs }
+      : {}),
+    lastReconcileAction: "follower-promoted-to-leader",
+    ...(existing?.rerouteConfirmedAtMs !== undefined
+      ? { rerouteConfirmedAtMs: existing.rerouteConfirmedAtMs }
+      : {}),
+  });
+  await deps.store.persist();
+  return record;
 }
 
 export interface TelegramOwnTopicProvisionDeps {
@@ -2077,7 +2131,7 @@ export function createTelegramTopicTargetProvisioner(
           existing.threadName ?? identityThreadName ?? bakedThreadName,
         instanceId: request.instanceId,
         slot,
-        owner: existing.owner ?? request.owner,
+        owner: request.owner ?? existing.owner,
         lastError: undefined,
       });
       return { target: record.target, reused: true, record };

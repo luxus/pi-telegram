@@ -126,6 +126,7 @@ The core product loop is mobile continuation: start or supervise work in the ter
 - Keep globally reusable rules as independent bullets in the most general applicable section of `AGENTS.md`; do not hide a cross-cutting rule inside one local feature paragraph just because that feature revealed it.
 - Local/domain bullets should state how a general rule applies there, or record domain-specific exceptions; they should not be the only source for a rule that applies to multiple tools, transports, domains, or docs surfaces.
 - Pi-facing tool results shown in compact tool rows should start with exactly one leading newline (`\nResult`) so the result is visually separated from the tool-call header by one blank line without excessive vertical spacing.
+- For non-trivial implementation, release, or architecture-audit work, run an `AGENTS.md` compliance pass: reread the durable principles and relevant project docs, map the changed behavior to the rules it touches, validate code/tests/docs against those rules, and explicitly surface any rule conflict, obsolete rule, or evidence-backed improvement. When the rules themselves drift from the product reality, update `AGENTS.md` or document a deliberate exception in the same pass instead of silently working around it.
 
 ## 6.2 Validation Hotspots
 
@@ -221,14 +222,14 @@ The canonical detailed ownership map lives in [`docs/architecture.md`](./docs/ar
 - `Section domain ownership`: `lib/sections.ts` owns the registry, token mapping, callback dispatch, and context building. `lib/menu.ts` dispatches `section:` callbacks before built-in handling. `lib/menu-status.ts` injects section rows. `lib/menu-settings.ts` injects settings rows and passes `sectionRegistry` through callback deps
 - `Callback routing order`: button actions → compact confirmations → queue menu → settings menu → section callbacks → built-in menu handling → `[callback]` fallback. Settings menu callbacks always pass `sectionRegistry` to `updateTelegramSettingsMenuMessage` and `handleTelegramSettingsMenuCallbackAction`
 
-## 9. Pre-Task Preparation Protocol
+## 10. Pre-Task Preparation Protocol
 
 - Read `README.md` for current user-facing behavior and fork positioning
 - Read `BACKLOG.md` before changing runtime behavior or documentation so open work stays truthful
 - Read `/docs/architecture.md` before restructuring queue, preview, rendering, or command-handling logic
 - Inspect the relevant `index.ts` section before editing because most bridge behavior is stateful and cross-linked
 
-## 10. Task Completion Protocol
+## 11. Task Completion Protocol
 
 - Run the smallest meaningful validation for the touched area; `npm test` is the default regression suite once rendering or queue logic changes
 - For rendering changes, ensure regressions still cover nested lists, code blocks, underscore-heavy text, and long-message chunking

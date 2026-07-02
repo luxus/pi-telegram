@@ -1,21 +1,16 @@
 # Project Backlog
 
-_Current deterministic status: Threaded Mode implementation, native typing/activity status, regression coverage, docs/context reconciliation, typecheck, full tests, pack check, audit, Domain DAG validation, context validation, core live Threaded Mode smoke, and native Windows classic↔Threaded Mode upgrade/downgrade smoke are green. This backlog intentionally tracks only release-relevant remaining work: evidence-gated Telegram client/runtime follow-ups and upstream Pi API blockers._
+_Current deterministic status: Threaded Mode implementation, native typing/activity status, regression coverage, docs/context reconciliation, typecheck, full tests, pack check, audit, Domain DAG validation, context validation, native Windows classic↔Threaded Mode upgrade/downgrade smoke, and live post-reload leader/follower prompt routing, follower Active parity, and unbound reroute/restore smoke are green. This backlog intentionally tracks only release-relevant remaining work: evidence-gated Telegram client/runtime follow-ups and upstream Pi API blockers._
 
-## P0 — Live Threaded Mode Regression Sweep
+## P0 — Promoted Follower Reload Smoke
 
-Context: live Linux testing exposed regressions around prompt dispatch readiness, visible thread rename noise during automatic leader reclaim, status thread-name fallback flicker, and follower voice/update forwarding health. These are local runtime correctness issues and must be validated before returning to Windows smoke.
+Context: deterministic coverage protects promoted follower thread preservation, and the latest live Linux smoke closed the reload routing, follower Active, and reroute/restore regressions. Keep one explicit live check for promoted-follower reload identity unless that exact path is covered in the release smoke pass.
 
 Open work:
 
-- [ ] Live smoke on Linux with one leader and one follower:
-  - [ ] dirty-state pass with old `state.json`/`logs.jsonl` present to prove live locks, bus registration, target ownership, and reconciliation override stale diagnostics;
-  - [ ] leader reload recovers without duplicate visible thread renames;
-  - [ ] prompts dispatch without a second command;
-  - [ ] status remains stable around thread name and role while active turns start/end.
-- [ ] Add/keep proactive race protections so `state.json` never becomes authoritative over live lock ownership, bus registration, or current target identity.
+- [ ] Close leader → follower promotes → `/reload` promoted leader preserves the same Telegram thread identity.
 
-Done when: local Linux live Threaded Mode smoke is stable for leader reload, follower connect, prompt dispatch, voice forwarding, and status naming without visible rename noise.
+Done when: promoted-follower reload identity has live Telegram evidence or is deliberately deferred out of the hotfix scope.
 
 ## P1 — Native Windows Threaded Mode Follow-Ups
 

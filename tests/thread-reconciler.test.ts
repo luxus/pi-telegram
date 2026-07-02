@@ -636,7 +636,7 @@ test("Thread reconciler apply keeps expired pending state when cleanup API fails
       ],
     },
     {
-      async callApi<TResponse>() {
+      async callApi() {
         throw new Error("temporary Bot API failure");
       },
       removePendingProvisionById(id) {
@@ -675,7 +675,7 @@ test("Thread reconciler apply does not mark deleted when cleanup API fails", asy
       ],
     },
     {
-      async callApi<TResponse>() {
+      async callApi() {
         throw new Error("temporary Bot API failure");
       },
       markStaleByTarget(target, syncStatus) {
@@ -726,7 +726,7 @@ test("Thread reconciler apply treats stale delete errors as confirmed cleanup", 
       ],
     },
     {
-      async callApi<TResponse>() {
+      async callApi() {
         throw new Error("Bad Request: message thread not found");
       },
       markStaleByTarget(target, syncStatus) {
