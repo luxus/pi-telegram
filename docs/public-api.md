@@ -458,7 +458,7 @@ async function synthesizeDemoOgg(_text: string): Promise<string> {
 
 ### Smoke Checklist
 
-- The extension imports only `@llblab/pi-telegram/sections`, `/updates`, `/inbound`, `/outbound`, `/voice`, or `/keyboard`.
+- The extension imports only public package membranes: `@llblab/pi-telegram`, `/commands`, `/sections`, `/status`, `/updates`, `/inbound`, `/outbound`, `/voice`, or `/keyboard`.
 - It does not import `@llblab/pi-telegram/lib/*`.
 - It registers on `session_start` and disposes on `session_shutdown`.
 - Stable high-level registrations use durable ids.
