@@ -27,6 +27,12 @@ export {
   type TelegramRenderMode,
 };
 
+export function renderTelegramMarkdownToHtmlDraft(markdown: string): string {
+  return renderTelegramMessage(markdown, { mode: "markdown" })
+    .map((chunk) => chunk.text)
+    .join("\n");
+}
+
 export const TELEGRAM_RICH_MESSAGE_MAX_CHARS = 32768;
 export const TELEGRAM_RICH_MESSAGE_MAX_BLOCKS = 500;
 

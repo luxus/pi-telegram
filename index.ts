@@ -478,7 +478,9 @@ export default function (pi: Pi.ExtensionAPI) {
       recordRuntimeEvent,
     });
   const nativeMarkdownDraftSender =
-    TelegramApi.createTelegramNativeMarkdownDraftSender({
+    TelegramApi.createTelegramAssistantDraftSender({
+      getAssistantRenderingMode: configControls.getAssistantRenderingMode,
+      renderMarkdownToHtmlDraft: Replies.renderTelegramMarkdownToHtmlDraft,
       sendMessageDraft,
       sendRichMessageDraft,
     });

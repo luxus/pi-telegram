@@ -1112,6 +1112,24 @@ export function createTelegramNativeMarkdownDraftSender(deps: {
   };
 }
 
+export function createTelegramAssistantDraftSender(deps: {
+  getAssistantRenderingMode: () => "rich" | "html";
+  renderMarkdownToHtmlDraft: (markdown: string) => string;
+  sendMessageDraft: TelegramBridgeApiRuntime["sendMessageDraft"];
+  sendRichMessageDraft: TelegramBridgeApiRuntime["sendRichMessageDraft"];
+}): TelegramBridgeApiRuntime["sendMessageDraft"] {
+  const sendNativeDraft = createTelegramNativeMarkdownDraftSender(deps);
+  return (chatId, draftId, text, options) => {
+    if (text === undefined || deps.getAssistantRenderingMode() === "rich") {
+      return sendNativeDraft(chatId, draftId, text, options);
+    }
+    return deps.sendMessageDraft(chatId, draftId, deps.renderMarkdownToHtmlDraft(text), {
+      ...options,
+      parse_mode: "HTML",
+    });
+  };
+}
+
 export function createDefaultTelegramBridgeApiRuntime(deps: {
   getBotToken: () => string | undefined;
   recordRuntimeEvent: TelegramBridgeApiRuntimeDeps["recordRuntimeEvent"];

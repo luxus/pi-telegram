@@ -2,7 +2,8 @@
 
 ## 0.19.2: Draft And Rendering Isolation Hotfix
 
-- `[Preview]` Hard-gated preview state creation behind the Draft previews setting. Impact: when Draft previews are off, `message_start` / `message_update` cannot create or flush Rich Draft frames; Telegram should show only native active status until the final answer.
+- `[Preview]` Hard-gated preview state creation behind the Draft previews setting. Impact: when Draft previews are off, `message_start` / `message_update` cannot create or flush draft frames; Telegram should show only native active status until the final answer.
+- `[Preview]` Aligned enabled draft previews with the selected final renderer: `assistantRendering: "rich"` uses `sendRichMessageDraft`, while `assistantRendering: "html"` uses legacy `sendMessageDraft` with HTML. Impact: the visible draft no longer morphs from Native Rich Markdown into legacy HTML at finalization.
 - `[Rendering]` Removed the thread-reply special case that forced anchored thread assistant replies through legacy Markdown-to-HTML. Impact: `assistantRendering: "rich"` now uses native Rich Markdown for final assistant replies in Threaded Mode too, while `assistantRendering: "html"` remains the only path that selects legacy HTML rendering.
 - `[Tests]` Updated reply regressions to assert native Rich Markdown delivery for anchored thread replies.
 

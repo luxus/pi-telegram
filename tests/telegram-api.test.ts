@@ -24,6 +24,7 @@ import {
   cleanupTelegramTempFiles,
   createDefaultTelegramBridgeApiRuntime,
   createTelegramApiClient,
+  createTelegramAssistantDraftSender,
   createTelegramBridgeApiRuntime,
   createTelegramChatActionSender,
   createTelegramNativeMarkdownDraftSender,
@@ -237,6 +238,30 @@ test("Telegram native Markdown draft sender disables automatic entity detection"
     },
   ]);
   assert.equal(legacyCalls.length, 1);
+});
+
+test("Telegram assistant draft sender follows final rendering mode", async () => {
+  const richBodies: Record<string, unknown>[] = [];
+  const legacyCalls: unknown[] = [];
+  const sendDraft = createTelegramAssistantDraftSender({
+    getAssistantRenderingMode: () => "html",
+    renderMarkdownToHtmlDraft: (markdown) => `<b>${markdown}</b>`,
+    sendMessageDraft: async (...args) => {
+      legacyCalls.push(args);
+      return true;
+    },
+    sendRichMessageDraft: async (body) => {
+      richBodies.push(body);
+      return true;
+    },
+  });
+  await sendDraft(7, 9, "**draft**", { message_thread_id: 42 });
+  await sendDraft(7, 10, undefined, { message_thread_id: 42 });
+  assert.deepEqual(richBodies, []);
+  assert.deepEqual(legacyCalls, [
+    [7, 9, "<b>**draft**</b>", { message_thread_id: 42, parse_mode: "HTML" }],
+    [7, 10, undefined, { message_thread_id: 42 }],
+  ]);
 });
 
 test("Telegram API helper fetches bot identity through getMe", async () => {
