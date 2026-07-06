@@ -61,6 +61,19 @@ test("Prompt-template helpers expose valid Telegram command templates", () => {
   ]);
 });
 
+test("Prompt-template helpers skip commands without source paths", () => {
+  const commandWithoutSourcePath = {
+    name: "review",
+    description: "Review changes",
+    source: "prompt",
+  } as PiSlashCommandInfo;
+  const commands = getTelegramPromptTemplateCommands(
+    [commandWithoutSourcePath],
+    new Set(TELEGRAM_RESERVED_COMMAND_NAMES),
+  );
+  assert.deepEqual(commands, []);
+});
+
 test("Prompt-template helpers map pi template names to Telegram commands", () => {
   assert.equal(
     mapPiPromptTemplateNameToTelegramCommandName("fix-tests"),
