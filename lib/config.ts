@@ -69,8 +69,6 @@ export interface TelegramConfig {
   time?: TelegramTimeConfig;
   /** Named bot/session profiles (e.g. "work", "omp"). */
   profiles?: Record<string, TelegramBotProfile>;
-  /** Currently active profile name (set by /telegram-connect <name>). */
-  activeProfile?: string;
 }
 
 /**
@@ -146,8 +144,11 @@ export function getTelegramProfileNames(
 
 export interface TelegramConfigStore {
   get: () => TelegramConfig;
+  getStoredConfig: () => TelegramConfig;
   set: (config: TelegramConfig) => void;
   update: (mutate: (config: TelegramConfig) => void) => void;
+  activateProfile: (profileName: string | undefined) => boolean;
+  getActiveProfileName: () => string | undefined;
   getBotToken: () => string | undefined;
   hasBotToken: () => boolean;
   getAllowedUserId: () => number | undefined;
@@ -278,23 +279,85 @@ export async function writeTelegramConfig(
   await chmod(configPath, 0o600);
 }
 
+function getTelegramProfileFields(config: TelegramConfig): TelegramBotProfile | undefined {
+  const token = config.botToken?.trim();
+  if (!token) return undefined;
+  return {
+    botToken: token,
+    botUsername: config.botUsername,
+    botId: config.botId,
+    allowedUserId: config.allowedUserId,
+    lastUpdateId: config.lastUpdateId,
+  };
+}
+
+function applyTelegramProfile(
+  config: TelegramConfig,
+  profileName: string | undefined,
+): TelegramConfig {
+  if (!profileName) return config;
+  const profile = config.profiles?.[profileName];
+  if (!profile) return config;
+  return {
+    ...config,
+    botToken: profile.botToken,
+    botUsername: profile.botUsername,
+    botId: profile.botId,
+    allowedUserId: profile.allowedUserId,
+    lastUpdateId: profile.lastUpdateId,
+  };
+}
+
+function storeTelegramEffectiveConfig(
+  baseConfig: TelegramConfig,
+  nextConfig: TelegramConfig,
+  profileName: string | undefined,
+): TelegramConfig {
+  if (!profileName) return nextConfig;
+  const profile = getTelegramProfileFields(nextConfig);
+  const profiles = { ...(baseConfig.profiles ?? {}) };
+  if (profile) profiles[profileName] = profile;
+  else delete profiles[profileName];
+  return {
+    ...nextConfig,
+    botToken: baseConfig.botToken,
+    botUsername: baseConfig.botUsername,
+    botId: baseConfig.botId,
+    allowedUserId: baseConfig.allowedUserId,
+    lastUpdateId: baseConfig.lastUpdateId,
+    profiles: Object.keys(profiles).length > 0 ? profiles : undefined,
+  };
+}
+
 export function createTelegramConfigStore(
   options: TelegramConfigStoreOptions = {},
 ): TelegramConfigStore {
   let config: TelegramConfig = options.initialConfig ?? {};
+  let activeProfileName: string | undefined;
   const agentDir = options.agentDir ?? resolveAgentDir();
   const configPath = options.configPath ?? getConfigPath();
+  const getEffectiveConfig = () => applyTelegramProfile(config, activeProfileName);
+  const setEffectiveConfig = (nextConfig: TelegramConfig) => {
+    config = storeTelegramEffectiveConfig(config, nextConfig, activeProfileName);
+  };
   return {
-    get: () => config,
-    set: (nextConfig) => {
-      config = nextConfig;
-    },
+    get: getEffectiveConfig,
+    getStoredConfig: () => config,
+    set: setEffectiveConfig,
     update: (mutate) => {
-      mutate(config);
+      const nextConfig = getEffectiveConfig();
+      mutate(nextConfig);
+      setEffectiveConfig(nextConfig);
     },
-    getBotToken: () => config.botToken,
-    hasBotToken: () => !!config.botToken,
-    getAllowedUserId: () => config.allowedUserId,
+    activateProfile: (profileName) => {
+      if (profileName && !config.profiles?.[profileName]) return false;
+      activeProfileName = profileName;
+      return true;
+    },
+    getActiveProfileName: () => activeProfileName,
+    getBotToken: () => getEffectiveConfig().botToken,
+    hasBotToken: () => !!getEffectiveConfig().botToken,
+    getAllowedUserId: () => getEffectiveConfig().allowedUserId,
     getInboundHandlers: () => [
       ...(config.inboundHandlers ?? []),
       ...(config.attachmentHandlers ?? []),
@@ -302,7 +365,9 @@ export function createTelegramConfigStore(
     getAttachmentHandlers: () => config.attachmentHandlers,
     getOutboundHandlers: () => config.outboundHandlers,
     setAllowedUserId: (userId) => {
-      config.allowedUserId = userId;
+      const nextConfig = getEffectiveConfig();
+      nextConfig.allowedUserId = userId;
+      setEffectiveConfig(nextConfig);
     },
     load: async () => {
       config = await readTelegramConfig(configPath, {
@@ -314,9 +379,18 @@ export function createTelegramConfigStore(
           });
         },
       });
+      if (activeProfileName && !config.profiles?.[activeProfileName]) {
+        activeProfileName = undefined;
+      }
     },
-    persist: async (nextConfig = config) => {
-      await writeTelegramConfig(agentDir, configPath, nextConfig);
+    persist: async (nextConfig = getEffectiveConfig()) => {
+      const storedConfig = storeTelegramEffectiveConfig(
+        config,
+        nextConfig,
+        activeProfileName,
+      );
+      config = storedConfig;
+      await writeTelegramConfig(agentDir, configPath, storedConfig);
     },
   };
 }

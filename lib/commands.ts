@@ -308,7 +308,11 @@ export interface TelegramBridgeCommandRegistrationDeps {
     | TelegramBridgeCommandStartPollingResult;
   stopPolling: () => Promise<void | string>;
   updateStatus: (ctx: ExtensionCommandContext) => void;
-  activateProfileConfig?: (ctx: ExtensionCommandContext, profileName: string) => Promise<boolean>;
+  getProfileNames?: () => string[];
+  activateProfileConfig?: (
+    ctx: ExtensionCommandContext,
+    profileName: string,
+  ) => Promise<boolean>;
 }
 
 function parseTelegramProfileArg(args: string): string | undefined {
@@ -369,6 +373,15 @@ export function registerTelegramBridgeCommands(
         await deps.reloadConfig();
       }
       if (!deps.hasBotToken()) {
+        const profileNames = deps.getProfileNames?.() ?? [];
+        if (!profileName && profileNames.length > 0) {
+          ctx.ui.notify(
+            `No default Telegram profile configured. Available profiles: ${profileNames.join(", ")}. Use /telegram-connect <profileName> or /telegram-setup to create a default profile.`,
+            "info",
+          );
+          deps.updateStatus(ctx);
+          return;
+        }
         await deps.promptForConfig(ctx, profileName);
         return;
       }

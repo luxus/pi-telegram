@@ -99,6 +99,7 @@ export function registerTelegramCommandsAndTools({
   Prompts.registerTelegramHelpTool(pi);
   Commands.registerTelegramBridgeCommands(pi, {
     promptForConfig: (ctx, profileName) => {
+      const previousProfileName = configStore.getActiveProfileName();
       const runSetup = Setup.createTelegramSetupPromptRuntime({
         getConfig: configStore.get,
         setConfig: configStore.set,
@@ -109,37 +110,30 @@ export function registerTelegramCommandsAndTools({
         updateStatus,
         recordRuntimeEvent,
       });
-      if (!profileName) return runSetup(ctx);
-      // Profile-aware: save top-level before setup, restore after
-      const savedTopLevel = {
-        botToken: configStore.get().botToken,
-        botUsername: configStore.get().botUsername,
-        botId: configStore.get().botId,
-        allowedUserId: configStore.get().allowedUserId,
-        lastUpdateId: configStore.get().lastUpdateId,
-      };
-      return runSetup(ctx).then(async () => {
-        const config = configStore.get();
-        const profile = {
-          botToken: config.botToken!,
-          botUsername: config.botUsername,
-          botId: config.botId,
-          allowedUserId: config.allowedUserId,
-          lastUpdateId: config.lastUpdateId,
-        };
-        // Restore original top-level, save new bot to profile
-        const next = {
-          ...config,
-          botToken: savedTopLevel.botToken,
-          botUsername: savedTopLevel.botUsername,
-          botId: savedTopLevel.botId,
-          allowedUserId: savedTopLevel.allowedUserId,
-          lastUpdateId: savedTopLevel.lastUpdateId,
-          profiles: { ...(config.profiles ?? {}), [profileName]: profile },
-        };
-        configStore.set(next);
-        await configStore.persist(next);
-        ctx.ui.notify(`Profile "${profileName}" saved. Run /telegram-connect ${profileName} to connect.`);
+      if (!profileName) {
+        configStore.activateProfile(undefined);
+        return runSetup(ctx).finally(() => {
+          configStore.activateProfile(previousProfileName);
+        });
+      }
+      if (!Config.isValidTelegramProfileName(profileName)) {
+        ctx.ui.notify(`Invalid Telegram profile name: ${profileName}`, "error");
+        return Promise.resolve();
+      }
+      const storedConfig = configStore.getStoredConfig();
+      if (!storedConfig.profiles?.[profileName]) {
+        configStore.set({
+          ...storedConfig,
+          profiles: {
+            ...(storedConfig.profiles ?? {}),
+            [profileName]: { botToken: "" },
+          },
+        });
+      }
+      configStore.activateProfile(profileName);
+      return runSetup(ctx).finally(() => {
+        configStore.activateProfile(previousProfileName);
+        ctx.ui.notify(`Profile "${profileName}" saved. Run /telegram-connect ${profileName} to connect.`, "info");
       });
     },
     getStatusLines,
@@ -148,21 +142,11 @@ export function registerTelegramCommandsAndTools({
     startPolling: lockedPollingRuntime.start,
     stopPolling: stopPolling ?? lockedPollingRuntime.stop,
     updateStatus,
+    getProfileNames: () => Config.getTelegramProfileNames(configStore.getStoredConfig()),
     activateProfileConfig: async (_ctx, profileName) => {
       await configStore.load();
-      const config = configStore.get();
-      const profile = config.profiles?.[profileName];
-      if (!profile) return false;
-      // Activate profile in-memory only — do NOT persist to the shared
-      // telegram.json file which other OMP sessions also read.
-      configStore.set({
-        ...config,
-        botToken: profile.botToken,
-        botUsername: profile.botUsername,
-        botId: profile.botId,
-        allowedUserId: profile.allowedUserId,
-        lastUpdateId: profile.lastUpdateId,
-      });
+      if (!Config.isValidTelegramProfileName(profileName)) return false;
+      if (!configStore.activateProfile(profileName)) return false;
       if (activeProfileRef) activeProfileRef.current = profileName;
       return true;
     },
