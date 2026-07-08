@@ -59,7 +59,16 @@ export default function (pi: Pi.ExtensionAPI) {
   const bridgeRuntime = Runtime.createTelegramBridgeRuntime();
   const telegramInstanceId = `${process.pid}:${Date.now()}`;
   const telegramManualFollowerOwnerId = String(process.pid);
-  const telegramManualFollowerProfileKey = `manual:${telegramManualFollowerOwnerId}`;
+  const getActiveTelegramThreadProfile = function (): string | undefined {
+    return configStore.getActiveProfileName();
+  };
+  const getTelegramManualFollowerProfileKey = function (): string {
+    return Threads.getTelegramThreadOwnerKey({
+      kind: "manual-follower",
+      instanceId: telegramManualFollowerOwnerId,
+      telegramProfile: getActiveTelegramThreadProfile(),
+    });
+  };
   const telegramBusAuthSecret = Bus.createTelegramBusAuthSecret();
   let telegramActiveBusAuthSecret: string | undefined;
   let telegramBusLifecycleOverridePhase:
@@ -219,6 +228,7 @@ export default function (pi: Pi.ExtensionAPI) {
     Queue.TelegramQueueItem<Pi.ExtensionContext>
   >({
     getConfig: configStore.get,
+    getActiveProfileName: configStore.getActiveProfileName,
     isPollingActive: Polling.createTelegramPollingActivityReader(
       pollingControllerState,
     ),
@@ -801,7 +811,7 @@ export default function (pi: Pi.ExtensionAPI) {
           topicTargetStore: threadStore,
           registrationState: telegramBusFollowerRegistrationState,
           instanceId: telegramInstanceId,
-          manualFollowerProfileKey: telegramManualFollowerProfileKey,
+          manualFollowerProfileKey: getTelegramManualFollowerProfileKey(),
           manualFollowerOwnerId: telegramManualFollowerOwnerId,
           getSyncState() {
             return telegramSyncState;
@@ -835,6 +845,7 @@ export default function (pi: Pi.ExtensionAPI) {
               store: threadStore,
               instanceId: telegramInstanceId,
               cwd: ctx.cwd,
+              telegramProfile: getActiveTelegramThreadProfile(),
               target: binding.target,
               slot: binding.slot,
               threadName: binding.threadName,
@@ -886,7 +897,7 @@ export default function (pi: Pi.ExtensionAPI) {
           return undefined;
         },
         getProfileKey() {
-          return telegramManualFollowerProfileKey;
+          return getTelegramManualFollowerProfileKey();
         },
         onHeartbeatFailure: telegramFollowerHeartbeatRecovery,
         recordRuntimeEvent,
@@ -943,6 +954,7 @@ export default function (pi: Pi.ExtensionAPI) {
         getCwd(ctx) {
           return typeof ctx.cwd === "string" ? ctx.cwd : undefined;
         },
+        getTelegramProfile: getActiveTelegramThreadProfile,
         shouldForceFreshUnnamed() {
           return forceFreshLeaderThreadOnNextStart;
         },

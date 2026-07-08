@@ -17,6 +17,8 @@ import {
   createTelegramTopicTargetRenamer,
   createTelegramTopicTargetStore,
   findCurrentTelegramInstanceThreadRecord,
+  getTelegramThreadOwnerFromProfileKey,
+  getTelegramThreadOwnerKey,
   getTelegramStatePath,
   getTelegramTopicTargetsPath,
   provisionOwnBusTopic,
@@ -32,6 +34,26 @@ import {
   isTelegramTopicModeUnavailableError,
   isTelegramTopicTargetStaleError,
 } from "../lib/threads.ts";
+
+test("Thread owner keys isolate named Telegram profiles without changing default keys", () => {
+  assert.equal(
+    getTelegramThreadOwnerKey({ kind: "leader", cwd: "/repo", instanceId: "a" }),
+    "cwd:/repo",
+  );
+  assert.equal(
+    getTelegramThreadOwnerKey({
+      kind: "leader",
+      cwd: "/repo",
+      instanceId: "a",
+      telegramProfile: "omp",
+    }),
+    "profile:omp:cwd:/repo",
+  );
+  assert.deepEqual(
+    getTelegramThreadOwnerFromProfileKey("profile:omp:manual:worker-a"),
+    { kind: "manual-follower", instanceId: "worker-a", telegramProfile: "omp" },
+  );
+});
 
 test("Thread names are deterministic for the same seed", () => {
   const input = {

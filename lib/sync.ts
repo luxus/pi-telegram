@@ -24,6 +24,7 @@ export interface TelegramLeaderThreadSyncDeps {
   getAllowedUserId: () => number | undefined;
   instanceId: string;
   cwd?: string;
+  telegramProfile?: string;
   forceFreshUnnamed?: boolean;
   getNowMs?: () => number;
   getRandom?: () => number;
@@ -360,6 +361,7 @@ export async function ensureTelegramLeaderThreadBinding(
     getAllowedUserId: deps.getAllowedUserId,
     instanceId: deps.instanceId,
     cwd: deps.cwd,
+    telegramProfile: deps.telegramProfile,
     getCurrentLeaderEpoch: deps.getCurrentLeaderEpoch,
     getThreadReconciliationMachineState:
       deps.getThreadReconciliationMachineState,

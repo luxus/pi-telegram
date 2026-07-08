@@ -54,6 +54,7 @@ export interface TelegramBusLeaderTargetProvisionerDeps<TContext> {
   getAllowedUserId: () => number | undefined;
   instanceId: string;
   getCwd?: (ctx: TContext) => string | undefined;
+  getTelegramProfile?: () => string | undefined;
   shouldForceFreshUnnamed?: () => boolean;
   topicTargetStore: Threads.TelegramTopicTargetStore;
   callApi: <TResponse>(
@@ -516,6 +517,7 @@ export function createTelegramBusLeaderTargetProvisioner<TContext>(
         getAllowedUserId: deps.getAllowedUserId,
         instanceId: deps.instanceId,
         cwd: deps.getCwd?.(ctx),
+        telegramProfile: deps.getTelegramProfile?.(),
         forceFreshUnnamed: deps.shouldForceFreshUnnamed?.(),
         getNowMs,
         getCurrentLeaderEpoch: deps.getCurrentLeaderEpoch,

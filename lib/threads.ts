@@ -27,8 +27,8 @@ export type TelegramTopicTargetStatus =
 export type TelegramTopicSyncStatus = "open" | "closed" | "deleted" | "unknown";
 
 export type TelegramThreadOwner =
-  | { kind: "leader"; cwd?: string; instanceId?: string }
-  | { kind: "manual-follower"; instanceId: string }
+  | { kind: "leader"; cwd?: string; instanceId?: string; telegramProfile?: string }
+  | { kind: "manual-follower"; instanceId: string; telegramProfile?: string }
   | { kind: "pending-topic"; chatId: number; threadId: number }
   | { kind: "legacy"; key: string };
 
@@ -340,12 +340,16 @@ export function getTelegramTopicTargetsPath(
 
 export function getTelegramThreadOwnerKey(owner: TelegramThreadOwner): string {
   switch (owner.kind) {
-    case "leader":
-      return owner.cwd
+    case "leader": {
+      const base = owner.cwd
         ? `cwd:${owner.cwd}`
         : `leader:${owner.instanceId ?? "default"}`;
+      return owner.telegramProfile ? `profile:${owner.telegramProfile}:${base}` : base;
+    }
     case "manual-follower":
-      return `manual:${owner.instanceId}`;
+      return owner.telegramProfile
+        ? `profile:${owner.telegramProfile}:manual:${owner.instanceId}`
+        : `manual:${owner.instanceId}`;
     case "pending-topic":
       return `topic:${owner.chatId}:${owner.threadId}`;
     case "legacy":
@@ -356,6 +360,13 @@ export function getTelegramThreadOwnerKey(owner: TelegramThreadOwner): string {
 export function getTelegramThreadOwnerFromProfileKey(
   profileKey: string,
 ): TelegramThreadOwner {
+  if (profileKey.startsWith("profile:")) {
+    const [, telegramProfile, ownerKind, ...rest] = profileKey.split(":");
+    const value = rest.join(":");
+    if (ownerKind === "cwd") return { kind: "leader", cwd: value, telegramProfile };
+    if (ownerKind === "leader") return { kind: "leader", instanceId: value, telegramProfile };
+    if (ownerKind === "manual") return { kind: "manual-follower", instanceId: value, telegramProfile };
+  }
   if (profileKey.startsWith("cwd:"))
     return { kind: "leader", cwd: profileKey.slice(4) };
   if (profileKey.startsWith("manual:")) {
@@ -1498,6 +1509,7 @@ export interface TelegramPromoteFollowerBindingToLeaderDeps {
   store: TelegramTopicTargetStore;
   instanceId: string;
   cwd?: string;
+  telegramProfile?: string;
   target?: TelegramTarget;
   slot?: string;
   threadName?: string;
@@ -1522,6 +1534,7 @@ export async function promoteTelegramFollowerBindingToLeader(
     kind: "leader",
     cwd: deps.cwd,
     instanceId: deps.instanceId,
+    ...(deps.telegramProfile ? { telegramProfile: deps.telegramProfile } : {}),
   };
   const record = deps.store.upsert({
     profileKey: getTelegramThreadOwnerKey(owner),
@@ -1554,6 +1567,7 @@ export interface TelegramOwnTopicProvisionDeps {
   getAllowedUserId: () => number | undefined;
   instanceId: string;
   cwd?: string;
+  telegramProfile?: string;
   getNowMs?: () => number;
   getRandom?: () => number;
   getCurrentLeaderEpoch?: () => number | string | undefined;
@@ -1590,7 +1604,12 @@ export async function provisionOwnBusTopic(
   deps: TelegramOwnTopicProvisionDeps,
 ): Promise<TelegramOwnTopicProvisionResult | undefined> {
   const chatId = deps.getAllowedUserId();
-  let profileKey = deps.cwd ? `cwd:${deps.cwd}` : `leader:${deps.instanceId}`;
+  let profileKey = getTelegramThreadOwnerKey({
+    kind: "leader",
+    cwd: deps.cwd,
+    instanceId: deps.instanceId,
+    telegramProfile: deps.telegramProfile,
+  });
   if (typeof chatId !== "number") return undefined;
   await deps.store.load();
   const reservationCleanupPorts = {
@@ -1672,11 +1691,12 @@ export async function provisionOwnBusTopic(
     },
   );
   const nowMs = Date.now();
-  const currentLeaderOwner: TelegramThreadOwner = profileKey.startsWith(
-    "leader:",
-  )
-    ? { kind: "leader", instanceId: deps.instanceId }
-    : { kind: "leader", cwd: deps.cwd, instanceId: deps.instanceId };
+  const currentLeaderOwner: TelegramThreadOwner = {
+    kind: "leader",
+    cwd: deps.cwd,
+    instanceId: deps.instanceId,
+    ...(deps.telegramProfile ? { telegramProfile: deps.telegramProfile } : {}),
+  };
   const recordsBeforePreviousLeaderCleanup = deps.store.list();
   const previousLeaderCleanupPlan = ThreadReconciler.planThreadReconciliation({
     nowMs,
