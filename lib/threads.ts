@@ -7,11 +7,11 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { TelegramTarget } from "./target.ts";
 import * as ThreadReconciler from "./thread-reconciler.ts";
+import { resolveAgentDir } from "./paths.ts";
 
 export interface TelegramThreadNameInput {
   seed: string;
@@ -22,12 +22,7 @@ export interface TelegramThreadNameInput {
 }
 
 export type TelegramTopicTargetStatus =
-  | "active"
-  | "offline"
-  | "stale"
-  | "pending"
-  | "starting"
-  | "failed";
+  "active" | "offline" | "stale" | "pending" | "starting" | "failed";
 
 export type TelegramTopicSyncStatus = "open" | "closed" | "deleted" | "unknown";
 
@@ -288,12 +283,6 @@ interface TelegramTopicResult {
   message_thread_id?: number;
 }
 
-function getAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-}
-
 function hashString(value: string): number {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) {
@@ -339,11 +328,13 @@ export function createTelegramThreadName(
   );
 }
 
-export function getTelegramStatePath(agentDir = getAgentDir()): string {
+export function getTelegramStatePath(agentDir = resolveAgentDir()): string {
   return join(agentDir, "tmp", "telegram", "state.json");
 }
 
-export function getTelegramTopicTargetsPath(agentDir = getAgentDir()): string {
+export function getTelegramTopicTargetsPath(
+  agentDir = resolveAgentDir(),
+): string {
   return getTelegramStatePath(agentDir);
 }
 
@@ -444,7 +435,9 @@ function cloneRecord(
   };
 }
 
-function getPersistedThreadName(record: Record<string, unknown>): string | undefined {
+function getPersistedThreadName(
+  record: Record<string, unknown>,
+): string | undefined {
   const value =
     typeof record.threadName === "string"
       ? record.threadName
@@ -561,9 +554,8 @@ function normalizeIdentityRecord(
   };
   const persistedThreadName = getPersistedThreadName(record);
   if (persistedThreadName) {
-    const threadName = normalizeTelegramTopicTargetThreadName(
-      persistedThreadName,
-    );
+    const threadName =
+      normalizeTelegramTopicTargetThreadName(persistedThreadName);
     if (threadName) identity.threadName = threadName;
   }
   if (typeof record.slot === "string" && /^[A-Z]$/.test(record.slot)) {
@@ -1316,9 +1308,7 @@ function getGraphemeSegments(value: string): string[] {
 }
 
 export function getTelegramTopicIdentityName(threadName: string): string {
-  return getGraphemeSegments(
-    normalizeTelegramTopicTargetThreadName(threadName),
-  )
+  return getGraphemeSegments(normalizeTelegramTopicTargetThreadName(threadName))
     .join("")
     .trim();
 }
@@ -1363,7 +1353,10 @@ export function chooseTelegramThreadName(input: {
   const index = input.getRandom
     ? Math.max(
         0,
-        Math.min(names.length - 1, Math.floor(input.getRandom() * names.length)),
+        Math.min(
+          names.length - 1,
+          Math.floor(input.getRandom() * names.length),
+        ),
       )
     : getTelegramThreadNameEntropyIndex(input.entropy, names.length);
   return names[index];
@@ -1537,11 +1530,13 @@ export async function promoteTelegramFollowerBindingToLeader(
     status: "active",
     createdAtMs: existing?.createdAtMs ?? nowMs,
     updatedAtMs: nowMs,
-    ...(existing?.threadName ?? deps.threadName
+    ...((existing?.threadName ?? deps.threadName)
       ? { threadName: existing?.threadName ?? deps.threadName }
       : {}),
     instanceId: deps.instanceId,
-    ...(existing?.slot ?? deps.slot ? { slot: existing?.slot ?? deps.slot } : {}),
+    ...((existing?.slot ?? deps.slot)
+      ? { slot: existing?.slot ?? deps.slot }
+      : {}),
     ...(existing?.syncStatus ? { syncStatus: existing.syncStatus } : {}),
     ...(existing?.lastSyncObservedAtMs !== undefined
       ? { lastSyncObservedAtMs: existing.lastSyncObservedAtMs }
@@ -1563,8 +1558,7 @@ export interface TelegramOwnTopicProvisionDeps {
   getRandom?: () => number;
   getCurrentLeaderEpoch?: () => number | string | undefined;
   getThreadReconciliationMachineState?: () =>
-    | ThreadReconciler.ThreadReconciliationMachineState
-    | undefined;
+    ThreadReconciler.ThreadReconciliationMachineState | undefined;
   recordThreadReconciliationPlan?: (
     plan: ThreadReconciler.ThreadReconciliationPlan,
   ) => void;
@@ -2197,9 +2191,7 @@ export function createTelegramTopicTargetProvisioner(
           name: getTelegramTopicName(
             {
               ...request,
-              ...(requestThreadName
-                ? { threadName: requestThreadName }
-                : {}),
+              ...(requestThreadName ? { threadName: requestThreadName } : {}),
             },
             deps.topicNameTemplate ??
               (requestThreadName ? "{threadName}" : "{slot}"),

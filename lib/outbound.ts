@@ -6,8 +6,9 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+
+import { resolveTelegramTempDir } from "./paths.ts";
 
 import {
   planTelegramButtonReply,
@@ -66,8 +67,7 @@ export function recordTelegramRuntimeEvent(
 }
 
 export type TelegramOutboundCommandTemplateConfig =
-  | string
-  | CommandTemplateObjectConfig;
+  string | CommandTemplateObjectConfig;
 export interface TelegramOutboundHandlerConfig extends CommandTemplateObjectConfig {
   type?: string;
   match?: string | string[];
@@ -448,10 +448,7 @@ function getVoiceReplyTemplateValues(
 }
 
 function getDefaultTelegramVoiceTempDir(): string {
-  const agentDir = process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-  return join(agentDir, "tmp", "telegram");
+  return resolveTelegramTempDir();
 }
 
 async function generateTelegramVoiceReplyFileWithHandler(
