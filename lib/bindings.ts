@@ -142,10 +142,15 @@ export function registerTelegramCommandsAndTools({
     startPolling: lockedPollingRuntime.start,
     stopPolling: stopPolling ?? lockedPollingRuntime.stop,
     updateStatus,
-    getProfileNames: () => Config.getTelegramProfileNames(configStore.getStoredConfig()),
+    getProfileNames: () =>
+      Config.getTelegramProfileNames(configStore.getStoredConfig()),
     activateProfileConfig: async (_ctx, profileName) => {
       await configStore.load();
       if (!Config.isValidTelegramProfileName(profileName)) return false;
+      const previousProfileName = activeProfileRef?.current;
+      if (previousProfileName !== profileName) {
+        await (stopPolling ?? lockedPollingRuntime.stop)();
+      }
       if (!configStore.activateProfile(profileName)) return false;
       if (activeProfileRef) activeProfileRef.current = profileName;
       return true;

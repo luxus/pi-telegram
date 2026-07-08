@@ -121,9 +121,7 @@ export default function (pi: Pi.ExtensionAPI) {
     path: Threads.getTelegramTopicTargetsPath(),
   });
   const lockRuntime = Locks.createTelegramLockRuntime<Pi.ExtensionContext>({
-    key: () => {
-      return Locks.resolveTelegramLockKey(activeProfileRef.current);
-    },
+    key: Locks.createTelegramLockKeyResolver(activeProfileRef),
     instanceId: telegramInstanceId,
     busSecret: telegramBusAuthSecret,
     staleHeartbeatMs: Locks.TELEGRAM_BUS_LEADER_STALE_HEARTBEAT_MS,

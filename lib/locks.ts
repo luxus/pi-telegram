@@ -32,6 +32,18 @@ export function resolveTelegramLockKey(activeProfile?: string): string {
   return TELEGRAM_LOCK_KEY;
 }
 
+export interface TelegramActiveProfileRef {
+  current: string | undefined;
+}
+
+export function createTelegramLockKeyResolver(
+  activeProfileRef: TelegramActiveProfileRef,
+): () => string {
+  return function getTelegramLockKey() {
+    return resolveTelegramLockKey(activeProfileRef.current);
+  };
+}
+
 export interface TelegramLockEntry {
   pid: number;
   cwd?: string;
