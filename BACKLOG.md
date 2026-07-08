@@ -2,6 +2,18 @@
 
 _Current deterministic status: Threaded Mode implementation, native typing/activity status, regression coverage, docs/context reconciliation, typecheck, full tests, pack check, audit, Domain DAG validation, context validation, native Windows classic↔Threaded Mode upgrade/downgrade smoke, and live post-reload leader/follower prompt routing, follower Active parity, and unbound reroute/restore smoke are green. This backlog intentionally tracks only release-relevant remaining work: 0.19.0 release preparation, evidence-gated Telegram client/runtime follow-ups, and upstream Pi API blockers._
 
+## P0 — Profile Reality Isolation Audit
+
+Context: 0.20.0 profiles are parallel bot/runtime realities, not just alternate credentials. Any persistent or observable runtime surface that cannot safely mix bot identities must be explicitly global or profile-scoped. Logs and Threaded Mode state are now profile-aware; the remaining audit lens should check bus endpoints, temp artifacts, in-memory registries, queues, ownership caches, status diagnostics, and setup/connect failure state for accidental cross-profile leakage.
+
+Open work:
+
+- [ ] Audit all filesystem/runtime observability surfaces and classify each as global shared config, session-local memory, or profile-scoped reality.
+- [ ] Profile-scope bus leader/follower IPC endpoints if parallel named profiles can run in the same agent dir concurrently.
+- [ ] Add regression coverage for any newly profile-scoped surface, preserving default-profile legacy paths where applicable.
+
+Done when: profile switching and parallel named-profile runtimes have no shared logs/state/IPC/diagnostic surfaces except intentionally top-level shared bridge configuration.
+
 ## P0 — Promoted Follower Reload Smoke
 
 Context: deterministic coverage protects promoted follower thread preservation, and the latest live Linux smoke closed the reload routing, follower Active, and reroute/restore regressions. Keep one explicit live check for promoted-follower reload identity unless that exact path is covered in the release smoke pass.
