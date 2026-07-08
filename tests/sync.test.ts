@@ -12,6 +12,7 @@ import test from "node:test";
 import {
   TELEGRAM_SYNC_SLICES,
   createTelegramLeaderHealthRuntime,
+  createTelegramManualThreadDisconnectHandler,
   createTelegramTopicLifecycleSyncHandler,
   createUnknownTelegramSyncState,
   ensureTelegramLeaderThreadBinding,
@@ -941,4 +942,46 @@ test("Topic lifecycle sync does not delete unknown created topics during provisi
   assert.deepEqual(calls, []);
   assert.equal(store.persisted, false);
   assert.equal(events[0]?.phase, "topic-lifecycle-provisioning-skip");
+});
+
+test("Manual follower disconnect preserves its Telegram thread binding", async () => {
+  const calls: unknown[] = [];
+  let offlineCalls = 0;
+  let persisted = 0;
+  let syncState = createUnknownTelegramSyncState();
+  const disconnect = createTelegramManualThreadDisconnectHandler({
+    instanceId: "follower-runtime:1",
+    getCurrentThreadRecord: () => ({
+      owner: { kind: "manual-follower" },
+      instanceId: "follower-runtime:1",
+      target: { chatId: 7, threadId: 42 },
+    }),
+    topicTargetStore: {
+      markOfflineByInstanceId: () => {
+        offlineCalls += 1;
+        return 1;
+      },
+      persist: async () => {
+        persisted += 1;
+      },
+    },
+    callApi: async <TResponse>(method: string, body: Record<string, unknown>) => {
+      calls.push({ method, body });
+      return { ok: true } as TResponse;
+    },
+    getLeaderTarget: () => undefined,
+    clearLeaderTarget: () => undefined,
+    getSyncState: () => syncState,
+    setSyncState: (state) => {
+      syncState = state;
+    },
+    stopPolling: async () => "stopped",
+    recordRuntimeEvent: () => undefined,
+    getNowMs: () => 2000,
+  });
+
+  assert.equal(await disconnect(), "stopped");
+  assert.deepEqual(calls, []);
+  assert.equal(offlineCalls, 0);
+  assert.equal(persisted, 0);
 });

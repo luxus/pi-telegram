@@ -224,6 +224,111 @@ test("Turn runtime builder injects Telegram reply context into prompt turns", as
   );
 });
 
+test("Turn runtime builder identifies forwarded messages from non-owner users", async () => {
+  const buildTurn = createTelegramPromptTurnRuntimeBuilder({
+    allocateQueueOrder: () => 1,
+    downloadFile: async (_fileId, fileName) => `/tmp/${fileName}`,
+    getAllowedUserId: () => 100,
+  });
+  const turn = await buildTurn([
+    {
+      message_id: 12,
+      chat: { id: 5 },
+      from: { id: 100, first_name: "Owner" },
+      forward_origin: {
+        type: "user",
+        sender_user: { id: 200, first_name: "Alice", username: "alice" },
+      },
+      text: "forwarded text",
+    },
+  ]);
+  assert.equal(
+    (turn.content[0] as { type: "text"; text: string }).text,
+    "[telegram]\n\n[forward|from:alice] forwarded text",
+  );
+});
+
+test("Turn runtime builder places replied-message attachments in source attachment context", async () => {
+  const buildTurn = createTelegramPromptTurnRuntimeBuilder({
+    allocateQueueOrder: () => 1,
+    downloadFile: async (_fileId, fileName) => `/tmp/${fileName}`,
+  });
+  const turn = await buildTurn([
+    {
+      message_id: 12,
+      chat: { id: 5 },
+      text: "look at this",
+      reply_to_message: {
+        message_id: 11,
+        from: { id: 200, first_name: "Alice" },
+        caption: "source image",
+        photo: [{ file_id: "photo-1", file_size: 100 }],
+      },
+    },
+  ]);
+  assert.equal(
+    (turn.content[0] as { type: "text"; text: string }).text,
+    "[telegram] look at this\n\n[reply|from:200] source image\n\n[attachments|from:200] /tmp\n- /photo-11.jpg",
+  );
+});
+
+test("Turn runtime builder keeps current attachments before source reply context", async () => {
+  const buildTurn = createTelegramPromptTurnRuntimeBuilder({
+    allocateQueueOrder: () => 1,
+    downloadFile: async (_fileId, fileName) => `/tmp/${fileName}`,
+  });
+  const turn = await buildTurn([
+    {
+      message_id: 12,
+      chat: { id: 5 },
+      text: "current",
+      document: { file_id: "doc-1", file_name: "mine.txt" },
+      reply_to_message: {
+        message_id: 11,
+        from: { id: 200, username: "alice" },
+        photo: [{ file_id: "photo-1", file_size: 100 }],
+      },
+    },
+  ]);
+  assert.equal(
+    (turn.content[0] as { type: "text"; text: string }).text,
+    [
+      "[telegram] current",
+      "",
+      "[attachments] /tmp",
+      "- /mine.txt",
+      "",
+      "[reply|from:alice]",
+      "",
+      "[attachments|from:alice] /tmp",
+      "- /photo-11.jpg",
+    ].join("\n"),
+  );
+});
+
+test("Turn runtime builder includes reply block for attachment-only replied messages", async () => {
+  const buildTurn = createTelegramPromptTurnRuntimeBuilder({
+    allocateQueueOrder: () => 1,
+    downloadFile: async (_fileId, fileName) => `/tmp/${fileName}`,
+  });
+  const turn = await buildTurn([
+    {
+      message_id: 12,
+      chat: { id: 5 },
+      text: "what is this?",
+      reply_to_message: {
+        message_id: 11,
+        from: { id: 200, username: "alice" },
+        photo: [{ file_id: "photo-1", file_size: 100 }],
+      },
+    },
+  ]);
+  assert.equal(
+    (turn.content[0] as { type: "text"; text: string }).text,
+    "[telegram] what is this?\n\n[reply|from:alice]\n\n[attachments|from:alice] /tmp\n- /photo-11.jpg",
+  );
+});
+
 test("Turn runtime builder routes inbound handler output into prompt text", async () => {
   const buildTurn = createTelegramPromptTurnRuntimeBuilder<
     {

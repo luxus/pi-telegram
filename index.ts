@@ -58,7 +58,10 @@ export default function (pi: Pi.ExtensionAPI) {
   } = piRuntime;
   const bridgeRuntime = Runtime.createTelegramBridgeRuntime();
   const telegramInstanceId = `${process.pid}:${Date.now()}`;
-  const telegramManualFollowerOwnerId = String(process.pid);
+  // Manual follower identity must survive a Pi process reload in the same
+  // terminal. The process id changes on reload, but the parent shell/terminal id
+  // is stable enough to keep the follower bound to its existing Telegram thread.
+  const telegramManualFollowerOwnerId = String(process.ppid || process.pid);
   const getActiveTelegramThreadProfile = function (): string | undefined {
     return configStore.getActiveProfileName();
   };
@@ -233,7 +236,7 @@ export default function (pi: Pi.ExtensionAPI) {
     await configStore.persist();
     markTelegramConfigSyncChange("config-persist");
   };
-  const getCurrentThreadRecord = function ():
+  const findCurrentThreadRecord = function ():
     | Threads.TelegramTopicTargetRecord
     | undefined {
     return Threads.findCurrentTelegramInstanceThreadRecord({
@@ -244,6 +247,18 @@ export default function (pi: Pi.ExtensionAPI) {
         telegramBusFollowerRegistrationState.getTarget() ??
         telegramBusLeaderTarget,
     });
+  };
+  const getCurrentThreadRecord = function ():
+    | Threads.TelegramTopicTargetRecord
+    | undefined {
+    const record = findCurrentThreadRecord();
+    if (
+      record?.owner?.kind === "manual-follower" &&
+      !telegramBusFollowerRegistrationState.isRegistered()
+    ) {
+      return undefined;
+    }
+    return record;
   };
   const statusRuntime = Status.createTelegramBridgeStatusRuntime<
     Pi.ExtensionContext,
@@ -1206,7 +1221,7 @@ export default function (pi: Pi.ExtensionAPI) {
   const disconnectTelegramAndDeleteCurrentThread =
     Sync.createTelegramManualThreadDisconnectHandler({
       instanceId: telegramInstanceId,
-      getCurrentThreadRecord,
+      getCurrentThreadRecord: findCurrentThreadRecord,
       topicTargetStore: threadStore,
       callApi: callTelegramApi,
       getLeaderTarget() {
@@ -1231,6 +1246,14 @@ export default function (pi: Pi.ExtensionAPI) {
       registrationState: telegramBusFollowerRegistrationState,
       instanceId: telegramInstanceId,
       suspendPolling: lockedPollingRuntime.suspend,
+      onFollowerSessionDisconnect() {
+        const target = telegramBusFollowerRegistrationState.getTarget();
+        if (!target) return undefined;
+        return BusFollower.markTelegramFollowerThreadStaleForSessionDisconnect({
+          topicTargetStore: threadStore,
+          target,
+        });
+      },
       recordRuntimeEvent,
     });
   const queueSessionLifecycle = Queue.createTelegramSessionLifecycleRuntime({

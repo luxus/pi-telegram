@@ -773,7 +773,7 @@ export function buildTelegramStatusBarText(
   if (state.busLifecyclePhase === "electing")
     return `${label} ${theme.fg("warning", "electing")}${queued}`;
   if (!state.pollingActive && state.busRole !== "follower")
-    return `${label} ${theme.fg("muted", "disconnected")}${queued}`;
+    return `${theme.fg("accent", "telegram")} ${theme.fg("muted", "disconnected")}${queued}`;
   if (state.compactionInProgress) {
     return `${label} ${theme.fg("warning", "compacting")}${queued}`;
   }

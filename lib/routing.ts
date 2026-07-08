@@ -5,6 +5,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { basename, dirname } from "node:path";
 import * as Commands from "./commands.ts";
 import type { TelegramConfigStore } from "./config.ts";
 import type { TelegramSectionRegistry } from "./sections.ts";
@@ -19,6 +20,31 @@ import type { TelegramBridgeRuntime } from "./runtime.ts";
 import * as TextGroups from "./text-groups.ts";
 import * as ThreadReconciler from "./thread-reconciler.ts";
 import * as Turns from "./turns.ts";
+
+function formatTelegramPromptPeer(user: { id?: unknown; username?: unknown } | undefined): string | undefined {
+  if (!user) return undefined;
+  if (typeof user.username === "string" && user.username.length > 0) return user.username;
+  return typeof user.id === "number" ? String(user.id) : undefined;
+}
+
+function appendTelegramSourceAttachmentSection(
+  text: string,
+  from: string | undefined,
+  files: Pick<Media.DownloadedTelegramFile, "path">[],
+): string {
+  if (files.length === 0) return text;
+  const dirs = [...new Set(files.map((file) => dirname(file.path)))];
+  const sameDir = dirs.length === 1;
+  const source = from ? `|from:${from}` : "";
+  const header = sameDir
+    ? `[attachments${source}] ${dirs[0]}`
+    : `[attachments${source}]`;
+  const items = sameDir
+    ? files.map((file) => `/${basename(file.path)}`)
+    : files.map((file) => file.path);
+  const prefix = text.length > 0 ? `${text}\n\n` : "";
+  return `${prefix}${header}\n${items.map((item) => `- ${item}`).join("\n")}`;
+}
 
 function getContextCwd(ctx: unknown): string | undefined {
   if (!ctx || typeof ctx !== "object") return undefined;
@@ -1372,6 +1398,7 @@ export function createTelegramInboundRouteRuntime<
     downloadFile: deps.downloadFile,
     processAttachments: deps.inboundHandlerRuntime.process,
     resolveTimeLine: deps.resolveTimeLine,
+    getAllowedUserId: deps.configStore.getAllowedUserId,
 
     // Voice policy for the current turn. Missing config still behaves as manual,
     // but only explicit telegram.json voice.replyMode is shown in prompt context.
@@ -1784,30 +1811,37 @@ export function createTelegramInboundRouteRuntime<
     const text = guestMessage.text ?? "";
     const gm = guestMessage as unknown as Record<string, unknown>;
     // Build telegram prefix with guest context
-    const fromRaw = gm.from as Record<string, unknown> | undefined;
-    const fromName =
-      (fromRaw?.username as string) || (fromRaw?.first_name as string) || "";
     const chatRaw = gm.chat as Record<string, unknown>;
     const chatTitle = chatRaw?.title as string | undefined;
     const chatType = chatRaw?.type as string;
+    const fromRaw = gm.from as Record<string, unknown> | undefined;
+    const replyMsg = gm.reply_to_message as Record<string, unknown> | undefined;
+    const replyFromRaw = replyMsg?.from as Record<string, unknown> | undefined;
+    const fromPeer = formatTelegramPromptPeer(fromRaw);
+    const replyPeer = formatTelegramPromptPeer(replyFromRaw);
+    const fromIsOwner = fromRaw?.id === deps.configStore.getAllowedUserId();
+    const guestPeer = chatType === "private" && fromIsOwner && replyPeer
+      ? replyPeer
+      : fromPeer;
     const prefixParts = ["telegram"];
-    if (fromName) prefixParts.push(`from:${fromName}`);
     if (chatType !== "private" && chatTitle) {
       prefixParts.push(`guest:${chatTitle}`);
+    } else if (chatType === "private" && guestPeer) {
+      prefixParts.push(`guest:${guestPeer}`);
     }
     const telegramPrefix = `[${prefixParts.join("|")}]`;
     // Extract reply context
-    const replyMsg = gm.reply_to_message as Record<string, unknown> | undefined;
     const replyText = replyMsg
       ? ((replyMsg.text as string) || (replyMsg.caption as string) || "").trim()
       : "";
-    const replyFrom = replyMsg
-      ? ((replyMsg.from as Record<string, unknown> | undefined)?.username as
-          | string
-          | undefined)
-      : undefined;
     // Download files, run inbound handlers
     const guestMsg = guestMessage as unknown as Media.TelegramMediaMessage;
+    const replyFiles = guestMsg.reply_to_message
+      ? await Media.downloadTelegramMessageFiles(
+          [guestMsg.reply_to_message as Media.TelegramMediaMessage],
+          { downloadFile: deps.downloadFile },
+        )
+      : [];
     const files = await Media.downloadTelegramMessageFiles([guestMsg], {
       downloadFile: deps.downloadFile,
     });
@@ -1816,13 +1850,16 @@ export function createTelegramInboundRouteRuntime<
       text,
       ctx,
     );
-    let rawText = processed.rawText || text;
-    // Append reply context after handler processing
-    if (replyText) {
-      const replyBlock = replyFrom
-        ? `[reply|from:${replyFrom}] ${replyText}`
-        : `[reply] ${replyText}`;
-      rawText = `${rawText}\n\n${replyBlock}`;
+    const rawText = processed.rawText || text;
+    let sourceContext = "";
+    if (replyMsg) {
+      const replyHeader = replyPeer ? `[reply|from:${replyPeer}]` : "[reply]";
+      const replyBlock = replyText ? `${replyHeader} ${replyText}` : replyHeader;
+      sourceContext = appendTelegramSourceAttachmentSection(
+        replyBlock,
+        replyPeer,
+        replyFiles,
+      );
     }
     const promptText = Turns.buildTelegramTurnPrompt({
       telegramPrefix,
@@ -1830,6 +1867,7 @@ export function createTelegramInboundRouteRuntime<
       files,
       promptFiles: processed.promptFiles,
       handlerOutputs: processed.handlerOutputs,
+      sourceContext,
     });
     const order = deps.bridgeRuntime.queue.allocateItemOrder();
     const content: Queue.TelegramPromptContent[] = [

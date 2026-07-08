@@ -316,6 +316,10 @@ export function createTelegramBusFollowerTargetProvisioner(
   (TelegramTarget & { slot?: string; threadName?: string }) | undefined
 > {
   const getNowMs = deps.getNowMs ?? Date.now;
+  const pendingRegistrations = new Map<
+    string,
+    Promise<(TelegramTarget & { slot?: string; threadName?: string }) | undefined>
+  >();
   return async (registration) => {
     const registrationStartedAtMs = Date.now();
     const chatId = deps.getAllowedUserId();
@@ -338,6 +342,9 @@ export function createTelegramBusFollowerTargetProvisioner(
       registration.profileKey ?? `manual:${registration.instanceId}`;
     const followerOwner =
       Threads.getTelegramThreadOwnerFromProfileKey(followerProfileKey);
+    const registrationKey = followerProfileKey || registration.instanceId;
+    const pendingRegistration = pendingRegistrations.get(registrationKey);
+    if (pendingRegistration) return pendingRegistration;
     const provisionTarget = async () => {
       deps.onProvisioningStart?.();
       try {
@@ -357,6 +364,9 @@ export function createTelegramBusFollowerTargetProvisioner(
         deps.onProvisioningEnd?.();
       }
     };
+    const runRegistration = async (): Promise<
+      (TelegramTarget & { slot?: string; threadName?: string }) | undefined
+    > => {
     let result = await provisionTarget();
     deps.setSyncState(
       Sync.markTelegramSyncSliceFresh(deps.getSyncState(), "target-bindings", {
@@ -364,48 +374,14 @@ export function createTelegramBusFollowerTargetProvisioner(
         action: "follower-register",
       }),
     );
-    let connectedAnnouncement =
-      createTelegramBusInstanceLifecycleAnnouncement({
-        target: result.target,
-        threadName: result.record.threadName,
-        slot: result.record.slot,
-        state: "connected",
-      });
-    let connectedAnnouncementSent = false;
-    if (result.reused && connectedAnnouncement) {
-      try {
-        await deps.callApi("sendMessage", {
-          chat_id: connectedAnnouncement.target.chatId,
-          message_thread_id: connectedAnnouncement.target.threadId,
-          text: connectedAnnouncement.text,
-          parse_mode: connectedAnnouncement.parseMode,
+    const connectedAnnouncement = result.reused
+      ? undefined
+      : createTelegramBusInstanceLifecycleAnnouncement({
+          target: result.target,
+          threadName: result.record.threadName,
+          slot: result.record.slot,
+          state: "connected",
         });
-        connectedAnnouncementSent = true;
-      } catch (error) {
-        deps.recordRuntimeEvent("telegram", error, {
-          phase: "follower-topic-reuse-probe",
-          instanceId: registration.instanceId,
-          chatId: result.target.chatId,
-          threadId: result.target.threadId,
-        });
-        if (Threads.isTelegramTopicTargetStaleError(error)) {
-          deps.topicTargetStore.markStaleByTarget(
-            result.target,
-            "deleted",
-            "Follower registration found the reusable thread target stale.",
-          );
-          await deps.topicTargetStore.persist();
-          result = await provisionTarget();
-          connectedAnnouncement = createTelegramBusInstanceLifecycleAnnouncement({
-            target: result.target,
-            threadName: result.record.threadName,
-            slot: result.record.slot,
-            state: "connected",
-          });
-          connectedAnnouncementSent = false;
-        }
-      }
-    }
     recordSlowTelegramBusFollowerRegistrationStep(deps, {
       phase: "follower-register-critical",
       elapsedMs: Date.now() - registrationStartedAtMs,
@@ -415,7 +391,7 @@ export function createTelegramBusFollowerTargetProvisioner(
     });
     scheduleTelegramBusLeaderBackgroundTask(async () => {
       const backgroundStartedAtMs = Date.now();
-      if (connectedAnnouncement && !connectedAnnouncementSent) {
+      if (connectedAnnouncement) {
         try {
           await deps.callApi("sendMessage", {
             chat_id: connectedAnnouncement.target.chatId,
@@ -487,6 +463,12 @@ export function createTelegramBusFollowerTargetProvisioner(
       slot: result.record.slot,
       threadName: result.record.threadName,
     };
+    };
+    const registrationPromise = runRegistration().finally(() => {
+      pendingRegistrations.delete(registrationKey);
+    });
+    pendingRegistrations.set(registrationKey, registrationPromise);
+    return registrationPromise;
   };
 }
 

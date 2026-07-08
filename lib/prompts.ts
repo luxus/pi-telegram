@@ -15,7 +15,7 @@ Telegram bridge available. Do not use it from local/TUI prompts unless explicitl
 
 const TELEGRAM_TURN_SYSTEM_PROMPT_SUFFIX = `
 
-Telegram turn note: If context was compacted or you need the pi-telegram bridge contract, call tool \`telegram_help\`.`;
+Telegram turn note: If context was compacted or you need the pi-telegram bridge contract, call tool \`telegram_help\`; hidden comments are valid only for explicit \`telegram_voice\` or \`telegram_button\` actions with payload.`;
 
 const TELEGRAM_HELP_TEXT = `--- TELEGRAM BRIDGE HELP ---
 

@@ -33,11 +33,36 @@ export interface TelegramRichMessage {
   blocks?: unknown[];
 }
 
+export interface TelegramMessageUser {
+  id?: number;
+  is_bot?: boolean;
+  first_name?: string;
+  last_name?: string;
+  username?: string;
+}
+
+export interface TelegramMessageForwardOrigin {
+  type?: string;
+  sender_user?: TelegramMessageUser;
+  sender_user_name?: string;
+  sender_chat?: { title?: string; username?: string; id?: number };
+  chat?: { title?: string; username?: string; id?: number };
+  author_signature?: string;
+}
+
 export interface TelegramReplyToMessage {
   message_id?: number;
+  from?: TelegramMessageUser;
   text?: string;
   caption?: string;
   rich_message?: TelegramRichMessage;
+  photo?: TelegramPhotoSize[];
+  document?: TelegramDocument;
+  video?: TelegramVideo;
+  audio?: TelegramAudio;
+  voice?: TelegramVoice;
+  animation?: TelegramAnimation;
+  sticker?: TelegramSticker;
 }
 
 export interface TelegramSticker {
@@ -46,6 +71,10 @@ export interface TelegramSticker {
 
 export interface TelegramMediaMessage {
   message_id: number;
+  from?: TelegramMessageUser;
+  forward_origin?: TelegramMessageForwardOrigin;
+  forward_from?: TelegramMessageUser;
+  forward_sender_name?: string;
   text?: string;
   caption?: string;
   rich_message?: TelegramRichMessage;
@@ -277,6 +306,39 @@ function truncateTelegramReplyContextText(text: string): string {
   return `${text.slice(0, TELEGRAM_REPLY_CONTEXT_MAX_LENGTH).trimEnd()}…`;
 }
 
+function formatTelegramUser(user: TelegramMessageUser | undefined): string | undefined {
+  if (!user) return undefined;
+  if (user.username) return user.username;
+  if (typeof user.id === "number") return String(user.id);
+  const name = [user.first_name, user.last_name].filter(Boolean).join(" ").trim();
+  return name || undefined;
+}
+
+function formatTelegramForwardOriginIdentifier(
+  message: TelegramMediaMessage,
+): string | undefined {
+  const origin = message.forward_origin;
+  const user = origin?.sender_user ?? message.forward_from;
+  if (user?.username) return user.username;
+  if (typeof user?.id === "number") return String(user.id);
+  const chat = origin?.sender_chat ?? origin?.chat;
+  if (chat?.username) return chat.username;
+  if (typeof chat?.id === "number") return String(chat.id);
+  return origin?.sender_user_name ?? message.forward_sender_name;
+}
+
+export function extractTelegramForwardContextText(
+  message: TelegramMediaMessage,
+  allowedUserId?: number,
+): string {
+  const originUser = message.forward_origin?.sender_user ?? message.forward_from;
+  const isOwnerOrigin =
+    typeof allowedUserId === "number" && originUser?.id === allowedUserId;
+  const origin = formatTelegramForwardOriginIdentifier(message);
+  if (!origin || isOwnerOrigin) return "";
+  return `from: ${origin}`;
+}
+
 export function extractTelegramReplyContextText(
   message: TelegramMediaMessage,
 ): string {
@@ -289,13 +351,44 @@ export function extractTelegramReplyContextText(
   return quoted ? truncateTelegramReplyContextText(quoted) : "";
 }
 
+export function buildTelegramReplyContextBlock(
+  message: TelegramMediaMessage,
+  replyFiles: Pick<DownloadedTelegramFile, "path">[] = [],
+): string {
+  const from = formatTelegramUser(message.reply_to_message?.from);
+  const header = from ? `[reply|from:${from}]` : "[reply]";
+  const text = extractTelegramReplyContextText(message);
+  const dirs = [...new Set(replyFiles.map((file) => dirname(file.path)))];
+  const sameDir = dirs.length === 1;
+  const attachmentHeader = sameDir
+    ? `[attachments${from ? `|from:${from}` : ""}] ${dirs[0]}`
+    : `[attachments${from ? `|from:${from}` : ""}]`;
+  const fileLines = sameDir
+    ? replyFiles.map((file) => `- /${basename(file.path)}`)
+    : replyFiles.map((file) => `- ${file.path}`);
+  const replyBlock = text ? `${header} ${text}` : header;
+  if (fileLines.length > 0) {
+    return `${replyBlock}\n\n${attachmentHeader}\n${fileLines.join("\n")}`;
+  }
+  if (text) return replyBlock;
+  return "";
+}
+
 export function appendTelegramReplyContext(
   text: string,
   replyContext: string,
 ): string {
   if (!replyContext) return text;
-  const replyBlock = `[reply] ${replyContext}`;
-  return text ? `${text}\n\n${replyBlock}` : `_\n\n${replyBlock}`;
+  return text ? `${text}\n\n${replyContext}` : `_\n\n${replyContext}`;
+}
+
+export function appendTelegramForwardContext(
+  text: string,
+  forwardContext: string,
+): string {
+  if (!forwardContext) return text;
+  const forwardBlock = `[forward|${forwardContext.replace(/:\s+/g, ":")}]`;
+  return text ? `\n\n${forwardBlock} ${text}` : `\n\n${forwardBlock}`;
 }
 
 export function extractTelegramMessagePromptText(
@@ -303,7 +396,7 @@ export function extractTelegramMessagePromptText(
 ): string {
   return appendTelegramReplyContext(
     extractTelegramMessageText(message),
-    extractTelegramReplyContextText(message),
+    buildTelegramReplyContextBlock(message),
   );
 }
 
@@ -321,7 +414,7 @@ export function extractTelegramMessagesPromptText(
   if (!firstMessage) return text;
   return appendTelegramReplyContext(
     text,
-    extractTelegramReplyContextText(firstMessage),
+    buildTelegramReplyContextBlock(firstMessage),
   );
 }
 

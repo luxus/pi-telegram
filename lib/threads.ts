@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
+import type { TelegramApiCallOptions } from "./telegram-api.ts";
 import type { TelegramTarget } from "./target.ts";
 import * as ThreadReconciler from "./thread-reconciler.ts";
 import {
@@ -30,7 +31,12 @@ export type TelegramTopicTargetStatus =
 export type TelegramTopicSyncStatus = "open" | "closed" | "deleted" | "unknown";
 
 export type TelegramThreadOwner =
-  | { kind: "leader"; cwd?: string; instanceId?: string; telegramProfile?: string }
+  | {
+      kind: "leader";
+      cwd?: string;
+      instanceId?: string;
+      telegramProfile?: string;
+    }
   | { kind: "manual-follower"; instanceId: string; telegramProfile?: string }
   | { kind: "pending-topic"; chatId: number; threadId: number }
   | { kind: "legacy"; key: string };
@@ -198,6 +204,7 @@ export interface TelegramTopicTargetStore {
   getIdentityByProfileKey: (
     profileKey: string,
   ) => TelegramThreadIdentityRecord | undefined;
+  forgetIdentityByProfileKey: (profileKey: string) => boolean;
   upsert: (record: TelegramTopicTargetRecord) => TelegramTopicTargetRecord;
   markOfflineByInstanceId: (instanceId: string) => number;
   markStaleByTarget: (
@@ -234,7 +241,9 @@ export interface TelegramTopicTargetProvisionerDeps {
     | "getByProfileKey"
     | "getActiveByInstanceId"
     | "getIdentityByProfileKey"
+    | "forgetIdentityByProfileKey"
     | "upsert"
+    | "markStaleByTarget"
     | "allocateSlot"
     | "claimReusableTarget"
     | "upsertPendingProvision"
@@ -244,6 +253,7 @@ export interface TelegramTopicTargetProvisionerDeps {
   callApi: <TResponse>(
     method: string,
     body: Record<string, unknown>,
+    options?: TelegramApiCallOptions,
   ) => Promise<TResponse>;
   topicNameTemplate?: string;
   getNowMs?: () => number;
@@ -356,7 +366,9 @@ export function getTelegramThreadOwnerKey(owner: TelegramThreadOwner): string {
       const base = owner.cwd
         ? `cwd:${owner.cwd}`
         : `leader:${owner.instanceId ?? "default"}`;
-      return owner.telegramProfile ? `profile:${owner.telegramProfile}:${base}` : base;
+      return owner.telegramProfile
+        ? `profile:${owner.telegramProfile}:${base}`
+        : base;
     }
     case "manual-follower":
       return owner.telegramProfile
@@ -375,9 +387,12 @@ export function getTelegramThreadOwnerFromProfileKey(
   if (profileKey.startsWith("profile:")) {
     const [, telegramProfile, ownerKind, ...rest] = profileKey.split(":");
     const value = rest.join(":");
-    if (ownerKind === "cwd") return { kind: "leader", cwd: value, telegramProfile };
-    if (ownerKind === "leader") return { kind: "leader", instanceId: value, telegramProfile };
-    if (ownerKind === "manual") return { kind: "manual-follower", instanceId: value, telegramProfile };
+    if (ownerKind === "cwd")
+      return { kind: "leader", cwd: value, telegramProfile };
+    if (ownerKind === "leader")
+      return { kind: "leader", instanceId: value, telegramProfile };
+    if (ownerKind === "manual")
+      return { kind: "manual-follower", instanceId: value, telegramProfile };
   }
   if (profileKey.startsWith("cwd:"))
     return { kind: "leader", cwd: profileKey.slice(4) };
@@ -1122,6 +1137,17 @@ export function createTelegramTopicTargetStore(
       const identity = identities.get(ownerKey) ?? identities.get(profileKey);
       return identity ? cloneIdentityRecord(identity) : undefined;
     },
+    forgetIdentityByProfileKey(profileKey) {
+      const ownerKey = getTelegramThreadOwnerKey(
+        getTelegramThreadOwnerFromProfileKey(profileKey),
+      );
+      const removedOwner = identities.delete(ownerKey);
+      const removedProfile = identities.delete(profileKey);
+      if (!removedOwner && !removedProfile) return false;
+      loaded = true;
+      dirty = true;
+      return true;
+    },
     upsert(record) {
       const next = cloneRecord(record);
       const nextOwnerKey = getRecordOwnerKey(next);
@@ -1367,7 +1393,7 @@ const TELEGRAM_THREAD_NAME_PALETTE: Record<string, readonly string[]> = {
   F: ["Falcon", "Fjord", "Flint", "Forest", "Fable"],
   G: ["Grove", "Glade", "Glyph", "Garnet", "Gale"],
   H: ["Harbor", "Hawk", "Hazel", "Helix", "Haven"],
-  I: ["Iris", "Ivory", "Iron", "Isle", "Ibis"],
+  I: ["Iris", "Ivory", "Iron", "Isle", "Idea"],
   J: ["Jade", "Juno", "Jolt", "Jewel", "Jasper"],
   K: ["Kite", "Karma", "Kernel", "Kodiak", "Kelp"],
   L: ["Lumen", "Laurel", "Lynx", "Lotus", "Lagoon"],
@@ -2156,8 +2182,20 @@ export function createTelegramTopicTargetProvisioner(
   const getRandom = deps.getRandom;
   return async (request) => {
     normalizeCurrentThreadNameSlots(deps.store);
-    const existing = deps.store.getByProfileKey(request.profileKey);
-    const identity = deps.store.getIdentityByProfileKey(request.profileKey);
+    let existing = deps.store.getByProfileKey(request.profileKey);
+    const isManualFollowerRequest = request.owner?.kind === "manual-follower";
+    if (isManualFollowerRequest && existing && isCurrentThreadRecord(existing)) {
+      deps.store.markStaleByTarget(
+        existing.target,
+        "unknown",
+        "Manual follower runtime was replaced before reconnect.",
+      );
+      deps.store.forgetIdentityByProfileKey(request.profileKey);
+      existing = undefined;
+    }
+    const identity = isManualFollowerRequest && !existing
+      ? undefined
+      : deps.store.getIdentityByProfileKey(request.profileKey);
     const nowMs = getNowMs();
     if (existing && isCurrentThreadRecord(existing)) {
       const slot = existing.slot ?? deps.store.allocateSlot(request.profileKey);
@@ -2214,7 +2252,9 @@ export function createTelegramTopicTargetProvisioner(
       (candidateThreadName ? undefined : identity?.slot) ??
       deps.store.allocateSlot(
         request.profileKey,
-        request.preferredSlot ?? preferredNameSlot,
+        isManualFollowerRequest
+          ? request.preferredSlot
+          : request.preferredSlot ?? preferredNameSlot,
       );
     const requestThreadName =
       candidateThreadName &&
@@ -2252,6 +2292,7 @@ export function createTelegramTopicTargetProvisioner(
             slot,
           ),
         },
+        { maxAttempts: 1 },
       );
       threadId = topic.message_thread_id;
       if (typeof threadId !== "number" || !Number.isInteger(threadId)) {

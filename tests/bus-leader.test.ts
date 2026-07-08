@@ -261,7 +261,7 @@ test("Bus leader follower target provisioner creates thread and announces connec
   }
 });
 
-test("Bus leader follower target provisioner recreates stale reused thread", async () => {
+test("Bus leader follower target provisioner replaces existing manual follower thread on new connect", async () => {
   const dir = mkdtempSync(
     join(tmpdir(), "pi-telegram-bus-follower-stale-provision-"),
   );
@@ -289,9 +289,6 @@ test("Bus leader follower target provisioner recreates stale reused thread", asy
     topicTargetStore: store,
     async callApi<TResponse>(method: string, body: Record<string, unknown>) {
       calls.push({ method, body });
-      if (method === "sendMessage" && body.message_thread_id === 8) {
-        throw new Error("Bad Request: message thread not found");
-      }
       if (method === "createForumTopic") {
         return { message_thread_id: 13 } as TResponse;
       }
@@ -309,40 +306,70 @@ test("Bus leader follower target provisioner recreates stale reused thread", asy
   try {
     assert.deepEqual(
       await provision({ instanceId: "follower-a", connectedAtMs: 0 }),
-      { chatId: 7, threadId: 13, slot: "A", threadName: "Amber" },
+      { chatId: 7, threadId: 13, slot: "B", threadName: "Beacon" },
     );
-    assert.deepEqual(calls.slice(0, 2), [
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(calls, [
+      { method: "createForumTopic", body: { chat_id: 7, name: "Beacon" } },
       {
         method: "sendMessage",
         body: {
           chat_id: 7,
-          message_thread_id: 8,
-          text: "📡 Instance <b>Amber</b> connected.",
+          message_thread_id: 13,
+          text: "📡 Instance <b>Beacon</b> connected.",
           parse_mode: "HTML",
         },
       },
-      { method: "createForumTopic", body: { chat_id: 7, name: "Amber" } },
+      { method: "closeForumTopic", body: { chat_id: 7, message_thread_id: 8 } },
     ]);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(
-      calls.some(
-        (call) =>
-          call.method === "sendMessage" &&
-          call.body.message_thread_id === 13 &&
-          call.body.text === "📡 Instance <b>Amber</b> connected.",
-      ),
-      true,
-    );
     assert.deepEqual(store.getByProfileKey("manual:follower-a")?.target, {
       chatId: 7,
       threadId: 13,
     });
+    assert.equal(events.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Bus leader follower target provisioner coalesces concurrent follower registrations", async () => {
+  const dir = mkdtempSync(
+    join(tmpdir(), "pi-telegram-bus-follower-concurrent-provision-"),
+  );
+  const store = createTelegramTopicTargetStore({
+    path: join(dir, "state.json"),
+    getNowMs: () => 1000,
+  });
+  const calls: Array<{ method: string; body: Record<string, unknown> }> = [];
+  let createTopicResolve: ((value: { message_thread_id: number }) => void) | undefined;
+  const provision = createTelegramBusFollowerTargetProvisioner({
+    getAllowedUserId: () => 7,
+    topicTargetStore: store,
+    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
+      calls.push({ method, body });
+      if (method === "createForumTopic") {
+        return (await new Promise<{ message_thread_id: number }>((resolve) => {
+          createTopicResolve = resolve;
+        })) as TResponse;
+      }
+      return { ok: true } as TResponse;
+    },
+    getSyncState: () => ({}),
+    setSyncState: () => undefined,
+    recordRuntimeEvent() {},
+    getNowMs: () => 2000,
+  });
+  try {
+    const first = provision({ instanceId: "follower-a", connectedAtMs: 0 });
+    const second = provision({ instanceId: "follower-a", connectedAtMs: 1 });
+    await waitForCondition(() => createTopicResolve !== undefined);
     assert.equal(
-      events.some(
-        (event) => event.details?.phase === "follower-topic-reuse-probe",
-      ),
-      true,
+      calls.filter((call) => call.method === "createForumTopic").length,
+      1,
     );
+    createTopicResolve?.({ message_thread_id: 13 });
+    assert.deepEqual(await first, { chatId: 7, threadId: 13, slot: "A", threadName: "Atlas" });
+    assert.deepEqual(await second, { chatId: 7, threadId: 13, slot: "A", threadName: "Atlas" });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
