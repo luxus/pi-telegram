@@ -6,27 +6,19 @@
 
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolveAgentDir, resolveTelegramConfigPath } from "./paths.ts";
 
 import type { TelegramInboundHandlerConfig } from "./inbound.ts";
 import type { CommandTemplateObjectConfig } from "./command-templates.ts";
 
 const CONFIG_RUNTIME_KEY = "__piTelegramConfigRuntime__";
 
-function getAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-}
-
 function getConfigPath(): string {
-  return join(getAgentDir(), "telegram.json");
+  return resolveTelegramConfigPath();
 }
 
 export type TelegramOutboundCommandTemplateConfig =
-  | string
-  | CommandTemplateObjectConfig;
+  string | CommandTemplateObjectConfig;
 export interface TelegramOutboundHandlerConfig extends CommandTemplateObjectConfig {
   type?: string;
   match?: string | string[];
@@ -215,7 +207,7 @@ export function createTelegramConfigStore(
   options: TelegramConfigStoreOptions = {},
 ): TelegramConfigStore {
   let config: TelegramConfig = options.initialConfig ?? {};
-  const agentDir = options.agentDir ?? getAgentDir();
+  const agentDir = options.agentDir ?? resolveAgentDir();
   const configPath = options.configPath ?? getConfigPath();
   return {
     get: () => config,
@@ -481,9 +473,7 @@ export function createTelegramConfigControls(
 }
 
 export type TelegramAuthorizationState =
-  | { kind: "pair"; userId: number }
-  | { kind: "allow" }
-  | { kind: "deny" };
+  { kind: "pair"; userId: number } | { kind: "allow" } | { kind: "deny" };
 
 export interface TelegramUserPairingDeps<TContext> {
   allowedUserId?: number;

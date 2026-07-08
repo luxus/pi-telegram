@@ -10,8 +10,8 @@ import { randomUUID } from "node:crypto";
 import { createWriteStream, openAsBlob } from "node:fs";
 import { mkdir, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import { request as requestHttps } from "node:https";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { resolveTelegramTempDir } from "./paths.ts";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -34,10 +34,7 @@ export function getTelegramInboundFileByteLimitFromEnv(
 }
 
 function getTelegramApiTempDir(): string {
-  const agentDir = process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-  return join(agentDir, "tmp", "telegram");
+  return resolveTelegramTempDir();
 }
 const TELEGRAM_TEMP_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const TELEGRAM_INBOUND_FILE_MAX_BYTES = getTelegramInboundFileByteLimitFromEnv(
@@ -47,10 +44,7 @@ const TELEGRAM_INBOUND_FILE_MAX_BYTES = getTelegramInboundFileByteLimitFromEnv(
 );
 
 export type TelegramNetworkFamilyPolicy =
-  | "auto"
-  | "ipv4"
-  | "ipv6"
-  | "ipv4-fallback";
+  "auto" | "ipv4" | "ipv6" | "ipv4-fallback";
 
 const TELEGRAM_NETWORK_FAMILY_ENV = "PI_TELEGRAM_NETWORK_FAMILY";
 const TELEGRAM_NETWORK_FAMILY_VALUES = new Set<TelegramNetworkFamilyPolicy>([
@@ -1123,10 +1117,15 @@ export function createTelegramAssistantDraftSender(deps: {
     if (text === undefined || deps.getAssistantRenderingMode() === "rich") {
       return sendNativeDraft(chatId, draftId, text, options);
     }
-    return deps.sendMessageDraft(chatId, draftId, deps.renderMarkdownToHtmlDraft(text), {
-      ...options,
-      parse_mode: "HTML",
-    });
+    return deps.sendMessageDraft(
+      chatId,
+      draftId,
+      deps.renderMarkdownToHtmlDraft(text),
+      {
+        ...options,
+        parse_mode: "HTML",
+      },
+    );
   };
 }
 

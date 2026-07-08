@@ -10,6 +10,12 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+export interface TelegramAgentDirResolutionInput {
+  env?: Partial<Pick<NodeJS.ProcessEnv, "PI_CODING_AGENT_DIR">>;
+  execPath?: string;
+  argv?: readonly string[];
+}
+
 /**
  * Resolve the agent data directory for the current Pi-compatible runtime.
  *
@@ -19,14 +25,15 @@ import { join, resolve } from "node:path";
  *    (e.g. OMP vs standard Pi agent).
  * 3. Fallback: `~/.pi/agent`.
  */
-export function resolveAgentDir(): string {
-  if (process.env.PI_CODING_AGENT_DIR) {
-    return resolve(process.env.PI_CODING_AGENT_DIR);
-  }
-  const execBasename =
-    (process.execPath || "").toLowerCase().split("/").pop() ?? "";
-  const argv1Last =
-    (process.argv[1] ?? "").toLowerCase().split("/").pop() ?? "";
+export function resolveAgentDir(
+  input: TelegramAgentDirResolutionInput = {},
+): string {
+  const env = input.env ?? process.env;
+  if (env.PI_CODING_AGENT_DIR) return resolve(env.PI_CODING_AGENT_DIR);
+  const execPath = input.execPath ?? process.execPath;
+  const argv = input.argv ?? process.argv;
+  const execBasename = execPath.toLowerCase().split(/[\\/]/u).pop() ?? "";
+  const argv1Last = (argv[1] ?? "").toLowerCase().split(/[\\/]/u).pop() ?? "";
   if (execBasename.startsWith("omp") || argv1Last.startsWith("omp")) {
     return join(homedir(), ".omp", "agent");
   }
@@ -46,11 +53,6 @@ export function resolveTelegramLocksPath(): string {
 /** Telegram bridge temporary directory (<agentDir>/tmp/telegram). */
 export function resolveTelegramTempDir(): string {
   return join(resolveAgentDir(), "tmp", "telegram");
-}
-
-/** Telegram bus leader socket path (<agentDir>/tmp/telegram/bus.sock). */
-export function resolveTelegramBusSocketPath(): string {
-  return join(resolveAgentDir(), "tmp", "telegram", "bus.sock");
 }
 
 /** Runtime event log (<agentDir>/tmp/telegram/logs.jsonl). */

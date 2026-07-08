@@ -12,20 +12,14 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname } from "node:path";
+import { resolveTelegramLocksPath } from "./paths.ts";
 
 export const TELEGRAM_LOCK_KEY = "@llblab/pi-telegram";
 export const TELEGRAM_BUS_LEADER_STALE_HEARTBEAT_MS = 5_000;
 
-function getAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-}
-
 function getLocksPath(): string {
-  return join(getAgentDir(), "locks.json");
+  return resolveTelegramLocksPath();
 }
 
 export interface TelegramLockEntry {

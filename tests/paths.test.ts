@@ -13,40 +13,45 @@ import {
   resolveTelegramConfigPath,
   resolveTelegramLocksPath,
   resolveTelegramTempDir,
-  resolveTelegramBusSocketPath,
   resolveTelegramRuntimeLogPath,
 } from "../lib/paths.ts";
 
 await test("resolveAgentDir", async (t) => {
   await t.test("returns PI_CODING_AGENT_DIR when env is set", () => {
-    const saved = process.env.PI_CODING_AGENT_DIR;
-    try {
-      process.env.PI_CODING_AGENT_DIR = "/custom/agent/dir";
-      assert.equal(resolveAgentDir(), resolve("/custom/agent/dir"));
-    } finally {
-      if (saved !== undefined) process.env.PI_CODING_AGENT_DIR = saved;
-      else delete process.env.PI_CODING_AGENT_DIR;
-    }
+    assert.equal(
+      resolveAgentDir({
+        env: { PI_CODING_AGENT_DIR: "/custom/agent/dir" },
+        execPath: "/usr/bin/omp",
+        argv: ["omp"],
+      }),
+      resolve("/custom/agent/dir"),
+    );
   });
 
-  await t.test("returns ~/.pi/agent as fallback when no env and no OMP runtime", () => {
-    // Save and unset
-    const saved = process.env.PI_CODING_AGENT_DIR;
-    const savedExecPath = process.execPath;
-    const savedArgv1 = process.argv[1];
-    try {
-      delete process.env.PI_CODING_AGENT_DIR;
-      if (process.execPath) {
-        // Simulate standard Pi: executable doesn't start with "omp"
-        // and argv[1] doesn't start with "omp"
-        // (the real test runner is "node", which is not "omp")
-      }
-      const result = resolveAgentDir();
-      assert.equal(result, join(homedir(), ".pi", "agent"));
-    } finally {
-      if (saved !== undefined) process.env.PI_CODING_AGENT_DIR = saved;
-    }
+  await t.test("returns ~/.omp/agent for OMP-compatible runtimes", () => {
+    assert.equal(
+      resolveAgentDir({ env: {}, execPath: "/home/user/.local/bin/omp" }),
+      join(homedir(), ".omp", "agent"),
+    );
+    assert.equal(
+      resolveAgentDir({
+        env: {},
+        execPath: "/usr/bin/node",
+        argv: ["node", "omp"],
+      }),
+      join(homedir(), ".omp", "agent"),
+    );
   });
+
+  await t.test(
+    "returns ~/.pi/agent as fallback when no env and no OMP runtime",
+    () => {
+      assert.equal(
+        resolveAgentDir({ env: {}, execPath: "/usr/bin/node", argv: ["node"] }),
+        join(homedir(), ".pi", "agent"),
+      );
+    },
+  );
 });
 
 await test("resolveTelegramConfigPath", () => {
@@ -67,13 +72,6 @@ await test("resolveTelegramTempDir", () => {
   assert.ok(
     resolveTelegramTempDir().endsWith("/tmp/telegram"),
     "temp dir ends with /tmp/telegram",
-  );
-});
-
-await test("resolveTelegramBusSocketPath", () => {
-  assert.ok(
-    resolveTelegramBusSocketPath().endsWith("/tmp/telegram/bus.sock"),
-    "bus socket path ends with bus.sock",
   );
 });
 

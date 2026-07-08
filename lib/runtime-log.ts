@@ -12,8 +12,7 @@ import {
   writeFileSync,
   appendFile,
 } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { resolveAgentDir } from "./paths.ts";
 
 export interface TelegramRuntimeJsonlEvent {
@@ -43,8 +42,9 @@ export interface TelegramRuntimeJsonlLog {
 
 const DEFAULT_MAX_LOG_BYTES = 5 * 1024 * 1024;
 
-
-export function getTelegramRuntimeLogPath(agentDir = resolveAgentDir()): string {
+export function getTelegramRuntimeLogPath(
+  agentDir = resolveAgentDir(),
+): string {
   return join(agentDir, "tmp", "telegram", "logs.jsonl");
 }
 
@@ -52,7 +52,8 @@ function safeJsonLine(value: unknown): string {
   return JSON.stringify(value, (_key, item) => {
     if (item instanceof Error) return item.message;
     if (typeof item === "bigint") return item.toString();
-    if (typeof item === "function" || typeof item === "symbol") return undefined;
+    if (typeof item === "function" || typeof item === "symbol")
+      return undefined;
     return item;
   });
 }
