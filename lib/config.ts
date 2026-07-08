@@ -6,8 +6,6 @@
 
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
 import { resolveAgentDir, resolveTelegramConfigPath } from "./paths.ts";
 
 import type { TelegramInboundHandlerConfig } from "./inbound.ts";
@@ -20,8 +18,7 @@ function getConfigPath(): string {
 }
 
 export type TelegramOutboundCommandTemplateConfig =
-  | string
-  | CommandTemplateObjectConfig;
+  string | CommandTemplateObjectConfig;
 export interface TelegramOutboundHandlerConfig extends CommandTemplateObjectConfig {
   type?: string;
   match?: string | string[];
@@ -551,9 +548,7 @@ export function createTelegramConfigControls(
 }
 
 export type TelegramAuthorizationState =
-  | { kind: "pair"; userId: number }
-  | { kind: "allow" }
-  | { kind: "deny" };
+  { kind: "pair"; userId: number } | { kind: "allow" } | { kind: "deny" };
 
 export interface TelegramUserPairingDeps<TContext> {
   allowedUserId?: number;
