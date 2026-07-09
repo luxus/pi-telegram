@@ -54,7 +54,7 @@ function runNodeScript(
           `Child process did not exit. stdout=${stdout} stderr=${stderr}`,
         ),
       );
-    }, options.timeoutMs ?? 2000);
+    }, options.timeoutMs ?? 5000);
     timeout.unref?.();
     child.on("error", (error) => {
       clearTimeout(timeout);

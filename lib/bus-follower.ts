@@ -40,6 +40,9 @@ export interface TelegramFollowerSessionHandoff {
   pid: number;
   instanceId: string;
   createdAtMs: number;
+  target: TelegramTarget;
+  slot?: string;
+  threadName?: string;
 }
 
 export function getTelegramFollowerSessionHandoff():
@@ -53,7 +56,10 @@ export function getTelegramFollowerSessionHandoff():
   if (
     typeof handoff.pid !== "number" ||
     typeof handoff.instanceId !== "string" ||
-    typeof handoff.createdAtMs !== "number"
+    typeof handoff.createdAtMs !== "number" ||
+    !handoff.target ||
+    typeof handoff.target !== "object" ||
+    typeof handoff.target.chatId !== "number"
   ) {
     return undefined;
   }
@@ -83,16 +89,19 @@ export interface TelegramBusFollowerRegistrationRuntime<TContext> {
   registerWithLeader: (
     ctx: TContext,
     leader: { busSocketPath?: string; busSecret?: string },
+    options?: { target?: TelegramTarget },
   ) => Promise<boolean>;
   setContext: (ctx: TContext) => void;
   stop: () => void;
 }
 
 export interface TelegramBusFollowerSessionReplacementSuspenderDeps {
-  registrationState: Pick<TelegramBusFollowerRegistrationState, "isRegistered">;
+  registrationState: Pick<
+    TelegramBusFollowerRegistrationState,
+    "isRegistered" | "getTarget" | "getSlot" | "getThreadName"
+  >;
   instanceId: string;
   suspendPolling: () => Promise<void>;
-  onFollowerSessionDisconnect?: () => Promise<void> | void;
   recordRuntimeEvent: (
     category: string,
     error: unknown,
@@ -514,40 +523,30 @@ function isTelegramStaleContextError(error: unknown): boolean {
   );
 }
 
-export async function markTelegramFollowerThreadStaleForSessionDisconnect(input: {
-  topicTargetStore: Threads.TelegramTopicTargetStore;
-  target: TelegramTarget;
-}): Promise<void> {
-  await input.topicTargetStore.load();
-  const record = input.topicTargetStore.list().find(
-    (candidate) =>
-      candidate.target.chatId === input.target.chatId &&
-      candidate.target.threadId === input.target.threadId,
-  );
-  const marked = input.topicTargetStore.markStaleByTarget(
-    input.target,
-    "unknown",
-    "Follower session reloaded before reconnect.",
-  );
-  const forgotIdentity = record?.profileKey
-    ? input.topicTargetStore.forgetIdentityByProfileKey(record.profileKey)
-    : false;
-  if (marked || forgotIdentity) await input.topicTargetStore.persist();
-}
-
 export function createTelegramBusFollowerSessionReplacementSuspender(
   deps: TelegramBusFollowerSessionReplacementSuspenderDeps,
 ): () => Promise<void> {
+  const getNowMs = deps.getNowMs ?? Date.now;
+  const getPid = deps.getPid ?? (() => process.pid);
   return async () => {
-    if (deps.registrationState.isRegistered()) {
-      setTelegramFollowerSessionHandoff(undefined);
-      await deps.onFollowerSessionDisconnect?.();
+    const target = deps.registrationState.getTarget();
+    if (deps.registrationState.isRegistered() && target) {
+      setTelegramFollowerSessionHandoff({
+        pid: getPid(),
+        instanceId: deps.instanceId,
+        createdAtMs: getNowMs(),
+        target,
+        slot: deps.registrationState.getSlot(),
+        threadName: deps.registrationState.getThreadName(),
+      });
       deps.recordRuntimeEvent(
         "bus",
-        "Telegram follower registration stopped for session replacement",
+        "Telegram follower registration suspended for session replacement",
         {
-          phase: "follower-session-disconnect",
+          phase: "follower-session-handoff",
           instanceId: deps.instanceId,
+          chatId: target.chatId,
+          threadId: target.threadId,
         },
       );
     }
@@ -568,6 +567,7 @@ export function createTelegramBusFollowerSessionRefreshHook<TContext>(
           const restored = await deps.registrationRuntime.registerWithLeader(
             ctx,
             lockState.lock,
+            { target: handoff.target },
           );
           if (restored) {
             setTelegramFollowerSessionHandoff(undefined);
@@ -828,7 +828,7 @@ export function createTelegramBusFollowerRegistrationRuntime<
     heartbeatInterval.unref?.();
   };
   return {
-    registerWithLeader: async (ctx, leader) => {
+    registerWithLeader: async (ctx, leader, options) => {
       const leaderSocketPath =
         leader.busSocketPath ??
         deps.getLeaderSocketPath?.() ??
@@ -853,7 +853,10 @@ export function createTelegramBusFollowerRegistrationRuntime<
             (ctx.cwd ? basename(ctx.cwd) : undefined),
           cwd: ctx.cwd,
           pid: getPid(),
-          target: deps.registrationState?.getTarget() ?? lastKnownTarget,
+          target:
+            options?.target ??
+            deps.registrationState?.getTarget() ??
+            lastKnownTarget,
           busSocketPath:
             deps.getFollowerBusSocketPath?.() ?? deps.followerBusSocketPath,
           connectedAtMs: getNowMs(),

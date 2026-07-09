@@ -94,7 +94,7 @@ The first Telegram user to message the bot becomes the allowed owner. Other user
 | Prompt templates | Run Pi prompt templates as Telegram-safe commands such as `/fix_tests`. | Reusable local workflows become phone-accessible without exposing arbitrary terminal commands. |
 | Model and thinking | Switch model or reasoning level from Telegram through safe continuation flows. | Mobile control can adjust execution strategy without tearing down the current session. |
 | Compaction | Confirm `/compact`, show native active status during compaction, and preserve Telegram-owned turn semantics. | Context maintenance is visible and safe from the phone. |
-| Draft previews | Show native active status by default, or enable Telegram Rich Draft previews while the agent is still working. | The operator can hide/show in-progress text independently from final rendering. |
+| Draft previews | Show Telegram's native `…typing` indicator whenever the connected instance is doing agent work, or enable Rich Draft previews for streamed answer text. | Local prompts, Telegram turns, and autonomous continuations remain visibly active while draft visibility stays independent from final rendering. |
 | Assistant rendering | Choose Native Rich Markdown or legacy Markdown-to-HTML for final assistant replies. | Renderer compatibility is explicit instead of being conflated with draft previews. |
 | Bridge UI rendering | Render tool rows, reasoning/technical steps, menus, queue controls, status, settings, diagnostics, and sections through explicit Telegram HTML/plain UI. | Harness-owned surfaces remain operationally predictable and visually distinct from model-authored answers. |
 | Inbound files | Download inbound files to the Pi agent temp directory with size limits. | Screenshots, PDFs, datasets, and artifacts enter Pi as inspectable local files. |
@@ -184,6 +184,7 @@ Classic private DM mode is the base product mode. When Telegram private-chat Thr
 - One live leader owns `getUpdates`.
 - Followers are visible Pi processes started by the operator.
 - Each connected instance gets a Telegram thread target.
+- Follower session replacement automatically reconnects the new session context to the same thread instead of requiring another manual connect.
 - Unknown threads are preserved and offered explicit reroute/restore choices.
 - Telegram never launches hidden Pi processes.
 

@@ -268,6 +268,7 @@ interface TelegramLifecycleBindingDeps {
   proactivePushTargetGetter: () => Queue.TelegramQueueTarget | undefined;
   isProactivePushEnabled: () => boolean;
   canSendProactivePush: (ctx: Pi.ExtensionContext) => boolean;
+  canSendAgentActivity: (ctx: Pi.ExtensionContext) => boolean;
   updateStatus: TelegramBridgeStatusUpdater;
   recordRuntimeEvent: TelegramRuntimeEventRecorder;
 }
@@ -300,6 +301,7 @@ export function registerTelegramLifecycleRuntimeHooks({
   proactivePushTargetGetter,
   isProactivePushEnabled,
   canSendProactivePush,
+  canSendAgentActivity,
   updateStatus,
   recordRuntimeEvent,
 }: TelegramLifecycleBindingDeps): void {
@@ -396,6 +398,16 @@ export function registerTelegramLifecycleRuntimeHooks({
   const agentStartWithDedupReset = Lifecycle.createAgentStartDedupHook(
     agentLifecycleHooks.onAgentStart,
   );
+  const startAgentActivityTypingLoop = (ctx: Pi.ExtensionContext): void => {
+    if (!canSendAgentActivity(ctx)) return;
+    const turn = activeTurnRuntime.get();
+    const target = turn?.target ?? proactivePushTargetGetter();
+    promptDispatchRuntime.startTypingLoop(
+      ctx,
+      turn?.chatId ?? target?.chatId ?? proactivePushChatIdGetter(),
+      { target },
+    );
+  };
   const startActiveTurnTypingLoop = (ctx: Pi.ExtensionContext): void => {
     const turn = activeTurnRuntime.get();
     promptDispatchRuntime.startTypingLoop(ctx, turn?.chatId, {
@@ -431,7 +443,10 @@ export function registerTelegramLifecycleRuntimeHooks({
     },
     onSessionBeforeCompact: compactionObserver.onSessionBeforeCompact,
     onSessionCompact: compactionObserver.onSessionCompact,
-    onAgentStart: agentStartWithDedupReset,
+    async onAgentStart(event, ctx) {
+      await agentStartWithDedupReset(event, ctx);
+      startAgentActivityTypingLoop(ctx);
+    },
     async onToolExecutionStart(_event, _ctx) {
       agentLifecycleHooks.onToolExecutionStart();
     },

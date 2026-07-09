@@ -1176,14 +1176,6 @@ export default function (pi: Pi.ExtensionAPI) {
       registrationState: telegramBusFollowerRegistrationState,
       instanceId: telegramInstanceId,
       suspendPolling: lockedPollingRuntime.suspend,
-      onFollowerSessionDisconnect() {
-        const target = telegramBusFollowerRegistrationState.getTarget();
-        if (!target) return undefined;
-        return BusFollower.markTelegramFollowerThreadStaleForSessionDisconnect({
-          topicTargetStore: threadStore,
-          target,
-        });
-      },
       recordRuntimeEvent,
     });
   const queueSessionLifecycle = Queue.createTelegramSessionLifecycleRuntime({
@@ -1303,6 +1295,12 @@ export default function (pi: Pi.ExtensionAPI) {
     proactivePushTargetGetter,
     isProactivePushEnabled: configControls.isProactivePushEnabled,
     canSendProactivePush(ctx) {
+      return (
+        lockOwnershipGuard.ownsContext(ctx) ||
+        telegramBusFollowerRegistrationState.isRegistered()
+      );
+    },
+    canSendAgentActivity(ctx) {
       return (
         lockOwnershipGuard.ownsContext(ctx) ||
         telegramBusFollowerRegistrationState.isRegistered()

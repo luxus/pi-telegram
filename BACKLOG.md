@@ -30,7 +30,7 @@ Context: The release should avoid speculative live-test matrices. Future Telegra
 
 Open work:
 
-- [ ] Capture any new Telegram client or Bot API behavior that contradicts the documented Threaded Mode contract.
+- [ ] Capture any new Telegram client or Bot API behavior that contradicts the documented Threaded Mode contract, including a live local/autonomous `…typing` observation when convenient.
 - [ ] Add a focused regression or documented client caveat only for confirmed behavior.
 - [ ] Keep one-off live environment names, thread names, and operator-specific observations out of repository context unless they demonstrate a general product issue.
 

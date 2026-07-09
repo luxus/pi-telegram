@@ -92,6 +92,65 @@ test("Bus leader binding reality removes dead followers without Telegram cleanup
   }
 });
 
+test("Bus leader compaction preserves a recent binding through follower reload handoff", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-telegram-follower-gap-"));
+  const store = createTelegramTopicTargetStore({
+    path: join(dir, "state.json"),
+    getNowMs: () => 1000,
+  });
+  store.upsert({
+    profileKey: "manual:owner-a",
+    owner: { kind: "manual-follower", instanceId: "owner-a" },
+    target: { chatId: 7, threadId: 42 },
+    status: "active",
+    createdAtMs: 900,
+    updatedAtMs: 950,
+    instanceId: "follower-old",
+    slot: "C",
+    threadName: "Cedar",
+  });
+  const followerRegistry = createTelegramBusFollowerRegistry();
+  const reconcile = createTelegramBusFollowerBindingRealityReconciler({
+    topicTargetStore: store,
+    followerRegistry,
+    getNowMs: () => 1000,
+    recentBindingGraceMs: 100,
+    recordRuntimeEvent: () => undefined,
+  });
+  const calls: unknown[] = [];
+  let syncState = {};
+  const provision = createTelegramBusFollowerTargetProvisioner({
+    getAllowedUserId: () => 7,
+    topicTargetStore: store,
+    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
+      calls.push({ method, body });
+      return { ok: true } as TResponse;
+    },
+    getNowMs: () => 1001,
+    getSyncState: () => syncState,
+    setSyncState: (state) => {
+      syncState = state;
+    },
+    recordRuntimeEvent() {},
+  });
+  try {
+    assert.equal(await reconcile(), 0);
+    assert.deepEqual(
+      await provision({
+        instanceId: "follower-new",
+        profileKey: "manual:owner-a",
+        target: { chatId: 7, threadId: 42 },
+        connectedAtMs: 1001,
+      }),
+      { chatId: 7, threadId: 42, slot: "C", threadName: "Cedar" },
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(store.list()[0]?.instanceId, "follower-new");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Bus leader API proxy forwards supported methods and recovers stale targets", async () => {
   const calls: unknown[] = [];
   const recovered: unknown[] = [];
@@ -327,7 +386,7 @@ test("Bus leader follower target provisioner creates thread and announces connec
   }
 });
 
-test("Bus leader follower target provisioner reuses a live reload target", async () => {
+test("Bus leader follower target provisioner transfers a live session-reload target", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-telegram-follower-reload-"));
   const store = createTelegramTopicTargetStore({
     path: join(dir, "state.json"),
@@ -362,6 +421,59 @@ test("Bus leader follower target provisioner reuses a live reload target", async
   try {
     assert.deepEqual(
       await provision({
+        instanceId: "follower-reloaded",
+        profileKey: "manual:owner-a",
+        target: { chatId: 7, threadId: 12 },
+        connectedAtMs: 1000,
+      }),
+      { chatId: 7, threadId: 12, slot: "E", threadName: "Ember" },
+    );
+    assert.deepEqual(calls, []);
+    assert.equal(store.list()[0]?.instanceId, "follower-reloaded");
+    assert.equal(
+      store.list()[0]?.lastReconcileAction,
+      "follower-session-handoff",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Reloaded bus leader reuses a surviving follower's persisted target", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-telegram-leader-reload-follower-"));
+  const path = join(dir, "state.json");
+  const previousStore = createTelegramTopicTargetStore({ path });
+  previousStore.upsert({
+    profileKey: "manual:owner-a",
+    owner: { kind: "manual-follower", instanceId: "owner-a" },
+    target: { chatId: 7, threadId: 12 },
+    status: "active",
+    createdAtMs: 500,
+    updatedAtMs: 500,
+    instanceId: "follower-a",
+    slot: "E",
+    threadName: "Ember",
+  });
+  await previousStore.persist();
+  const reloadedStore = createTelegramTopicTargetStore({ path });
+  const calls: unknown[] = [];
+  let syncState = {};
+  const provision = createTelegramBusFollowerTargetProvisioner({
+    getAllowedUserId: () => 7,
+    topicTargetStore: reloadedStore,
+    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
+      calls.push({ method, body });
+      return { ok: true } as TResponse;
+    },
+    getSyncState: () => syncState,
+    setSyncState: (state) => {
+      syncState = state;
+    },
+    recordRuntimeEvent() {},
+  });
+  try {
+    assert.deepEqual(
+      await provision({
         instanceId: "follower-a",
         profileKey: "manual:owner-a",
         target: { chatId: 7, threadId: 12 },
@@ -370,6 +482,7 @@ test("Bus leader follower target provisioner reuses a live reload target", async
       { chatId: 7, threadId: 12, slot: "E", threadName: "Ember" },
     );
     assert.deepEqual(calls, []);
+    assert.equal(reloadedStore.list().length, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
