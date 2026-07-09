@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.3: Persistent Threads And Activity
+
+- `[Follower Sessions]` Registered followers now snapshot their target, slot, and thread name before same-process Pi session replacement, stop the old receiver/heartbeat context, and automatically re-register the new session through the live leader. Impact: `/new` and `/reload` no longer intentionally leave a healthy follower disconnected or require another manual `/telegram-connect`.
+- `[Thread Identity]` Follower re-registration transfers an exact requested target from the previous runtime instance through the stable manual-follower identity, and every reuse refreshes the binding's recovery timestamp. Post-leader-reload compaction preserves recently refreshed bindings across a brief follower registry gap, while still removing genuinely historical records. Impact: follower or leader reload does not rotate baked names or create duplicate same-slot Telegram tabs merely because runtime instance ids changed or the follower reload overlaps the leader's compaction deadline.
+- `[Native Activity]` Telegram's native `…typing` indicator now starts for every connected instance agent run, including local/TUI prompts and autonomous continuations such as Grow Loop, using the active Telegram turn target when present and otherwise the instance's assigned target. Impact: Telegram shows that an instance is working even when a new Telegram prompt is queued behind local work, while terminal `Active` remains scoped to Telegram-owned turns.
+- `[Live Linux]` Leader reload triggered bounded follower election/re-registration without replacing follower threads; subsequent Boreal follower `/reload` and `/new` both automatically restored follower role on the same slot `B` and thread `524509`. Impact: leader reload and both Pi session-replacement paths have direct evidence for exact follower thread preservation without manual reconnect or duplicate tabs.
+- `[Validation]` Relaxed the process-shutdown child harness timeout from 2 to 5 seconds after full-suite concurrency exceeded the old wall-clock bound while the isolated shutdown suite remained green. Impact: process ownership regressions still fail on leaked handles but no longer flake solely from parallel test-runner load.
+
 ## 0.20.2: Live Thread Reality
 
 - `[Profiles]` Named `/telegram-connect <profile>` now verifies the persisted profile before stopping polling or changing session-local profile activation. Impact: a mistyped or missing profile leaves the current bot, transport ownership, and polling runtime untouched instead of disconnecting a healthy session.

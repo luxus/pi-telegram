@@ -16,6 +16,7 @@ import {
   createTelegramBusFollowerPromotionHandler,
   createTelegramBusFollowerRegistrationState,
   createTelegramBusFollowerRuntimeAssembly,
+  createTelegramBusFollowerSessionRefreshHook,
   createTelegramBusFollowerSessionReplacementSuspender,
   createTelegramBusFollowerTargetReplacementHandler,
   createTelegramBusForwardedUpdateReceiverRuntime,
@@ -1079,46 +1080,117 @@ test("Bus follower API caller sends method calls and returns leader results", as
   }
 });
 
-test("Bus follower session replacement disconnects instead of preserving stale registration", async () => {
+test("Bus follower session replacement preserves a same-process handoff", async () => {
   const registrationState = createTelegramBusFollowerRegistrationState();
-  registrationState.setRegistered(true, { chatId: 1, threadId: 2 });
-  setTelegramFollowerSessionHandoff({
-    pid: 10,
-    instanceId: "old-inst",
-    createdAtMs: Date.now(),
-  });
+  registrationState.setRegistered(
+    true,
+    { chatId: 1, threadId: 2 },
+    { slot: "B", threadName: "Beryl" },
+  );
   const events: unknown[] = [];
   let suspended = false;
-  let disconnected = false;
   const suspend = createTelegramBusFollowerSessionReplacementSuspender({
     registrationState,
-    instanceId: "new-inst",
+    instanceId: "old-inst",
     async suspendPolling() {
       suspended = true;
       registrationState.setRegistered(false);
     },
-    onFollowerSessionDisconnect() {
-      disconnected = true;
+    recordRuntimeEvent(category, message, details) {
+      events.push({ category, message, details });
     },
+    getPid: () => 10,
+    getNowMs: () => 500,
+  });
+
+  await suspend();
+
+  assert.equal(suspended, true);
+  assert.equal(registrationState.isRegistered(), false);
+  assert.deepEqual(getTelegramFollowerSessionHandoff(), {
+    pid: 10,
+    instanceId: "old-inst",
+    createdAtMs: 500,
+    target: { chatId: 1, threadId: 2 },
+    slot: "B",
+    threadName: "Beryl",
+  });
+  assert.deepEqual(events, [
+    {
+      category: "bus",
+      message: "Telegram follower registration suspended for session replacement",
+      details: {
+        phase: "follower-session-handoff",
+        instanceId: "old-inst",
+        chatId: 1,
+        threadId: 2,
+      },
+    },
+  ]);
+  setTelegramFollowerSessionHandoff(undefined);
+});
+
+test("Bus follower session refresh re-registers with the handed-off target", async () => {
+  const registrationState = createTelegramBusFollowerRegistrationState();
+  const registrations: unknown[] = [];
+  const events: unknown[] = [];
+  setTelegramFollowerSessionHandoff({
+    pid: process.pid,
+    instanceId: "old-inst",
+    createdAtMs: Date.now(),
+    target: { chatId: 1, threadId: 2 },
+    slot: "B",
+    threadName: "Beryl",
+  });
+  const refresh = createTelegramBusFollowerSessionRefreshHook({
+    registrationState,
+    registrationRuntime: {
+      async registerWithLeader(ctx, leader, options) {
+        registrations.push({ ctx, leader, options });
+        registrationState.setRegistered(
+          true,
+          options?.target,
+          { slot: "B", threadName: "Beryl" },
+        );
+        return true;
+      },
+      setContext: () => undefined,
+    },
+    getLeaderState: () => ({
+      kind: "active-elsewhere",
+      lock: { pid: 20, busSocketPath: "/tmp/leader.sock" },
+    }),
+    updateStatus: () => undefined,
     recordRuntimeEvent(category, message, details) {
       events.push({ category, message, details });
     },
   });
 
-  await suspend();
+  await refresh({}, { cwd: "/repo" });
 
-  assert.equal(disconnected, true);
-  assert.equal(suspended, true);
-  assert.equal(registrationState.isRegistered(), false);
+  assert.deepEqual(registrations, [
+    {
+      ctx: { cwd: "/repo" },
+      leader: { pid: 20, busSocketPath: "/tmp/leader.sock" },
+      options: { target: { chatId: 1, threadId: 2 } },
+    },
+  ]);
+  assert.equal(registrationState.isRegistered(), true);
+  assert.deepEqual(registrationState.getTarget(), { chatId: 1, threadId: 2 });
   assert.equal(getTelegramFollowerSessionHandoff(), undefined);
   assert.deepEqual(events, [
     {
       category: "bus",
-      message: "Telegram follower registration stopped for session replacement",
+      message: "Telegram follower registration restored after session replacement",
       details: {
-        phase: "follower-session-disconnect",
-        instanceId: "new-inst",
+        phase: "follower-session-restore",
+        previousInstanceId: "old-inst",
       },
+    },
+    {
+      category: "bus",
+      message: "Telegram follower session context refreshed",
+      details: { phase: "follower-session-refresh" },
     },
   ]);
 });

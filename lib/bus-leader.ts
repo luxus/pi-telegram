@@ -236,6 +236,8 @@ export function createTelegramBusLeaderRuntimeAssembly<TContext>(
   });
 }
 
+export const TELEGRAM_BUS_RECENT_FOLLOWER_BINDING_GRACE_MS = 10_000;
+
 export interface TelegramBusFollowerBindingRealityDeps {
   topicTargetStore: Pick<
     Threads.TelegramTopicTargetStore,
@@ -248,6 +250,8 @@ export interface TelegramBusFollowerBindingRealityDeps {
     | "setBotState"
   >;
   followerRegistry: Pick<TelegramBusFollowerRegistry, "list">;
+  getNowMs?: () => number;
+  recentBindingGraceMs?: number;
   recordRuntimeEvent: (
     category: string,
     error: unknown,
@@ -301,8 +305,13 @@ export interface TelegramBusLeaderRuntimeDeps<TContext> {
 export function createTelegramBusFollowerBindingRealityReconciler(
   deps: TelegramBusFollowerBindingRealityDeps,
 ): () => Promise<number> {
+  const getNowMs = deps.getNowMs ?? Date.now;
+  const recentBindingGraceMs =
+    deps.recentBindingGraceMs ??
+    TELEGRAM_BUS_RECENT_FOLLOWER_BINDING_GRACE_MS;
   return async () => {
     await deps.topicTargetStore.load();
+    const nowMs = getNowMs();
     const liveInstanceIds = new Set(
       deps.followerRegistry.list().map((follower) => follower.instanceId),
     );
@@ -310,7 +319,8 @@ export function createTelegramBusFollowerBindingRealityReconciler(
       return (
         record.owner?.kind === "manual-follower" &&
         !!record.instanceId &&
-        !liveInstanceIds.has(record.instanceId)
+        !liveInstanceIds.has(record.instanceId) &&
+        nowMs - record.updatedAtMs > recentBindingGraceMs
       );
     });
     const staleInstanceIds = new Set(
@@ -452,18 +462,19 @@ export function createTelegramBusFollowerTargetProvisioner(
       claimPendingTargets: false,
     });
     const recordsBeforeProvision = deps.topicTargetStore.list();
+    const followerProfileKey =
+      registration.profileKey ?? `manual:${registration.instanceId}`;
     const reconnectRecord = registration.target
       ? recordsBeforeProvision.find((record) => {
           return (
             record.owner?.kind === "manual-follower" &&
-            record.instanceId === registration.instanceId &&
+            (record.instanceId === registration.instanceId ||
+              record.profileKey === followerProfileKey) &&
             record.target.chatId === registration.target?.chatId &&
             record.target.threadId === registration.target.threadId
           );
         })
       : undefined;
-    const followerProfileKey =
-      registration.profileKey ?? `manual:${registration.instanceId}`;
     const followerOwner =
       Threads.getTelegramThreadOwnerFromProfileKey(followerProfileKey);
     const registrationKey = followerProfileKey || registration.instanceId;
@@ -494,6 +505,25 @@ export function createTelegramBusFollowerTargetProvisioner(
     let result = reconnectRecord
       ? { target: reconnectRecord.target, reused: true, record: reconnectRecord }
       : await provisionTarget();
+    if (reconnectRecord) {
+      const nowMs = getNowMs();
+      const transferredRecord = deps.topicTargetStore.upsert({
+        ...reconnectRecord,
+        instanceId: registration.instanceId,
+        updatedAtMs: nowMs,
+        lastSyncObservedAtMs: nowMs,
+        lastReconcileAction:
+          reconnectRecord.instanceId === registration.instanceId
+            ? "follower-register-reuse"
+            : "follower-session-handoff",
+      });
+      await deps.topicTargetStore.persist();
+      result = {
+        target: transferredRecord.target,
+        reused: true,
+        record: transferredRecord,
+      };
+    }
     deps.setSyncState(
       Sync.markTelegramSyncSliceFresh(deps.getSyncState(), "target-bindings", {
         nowMs: getNowMs(),

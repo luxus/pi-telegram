@@ -323,6 +323,7 @@ test("Lifecycle binding uses native typing and assistant previews without activi
   const events: string[] = [];
   const harness = createBindingApiHarness();
   const runtime = Runtime.createTelegramBridgeRuntime();
+  let activeTurn = false;
   const deps = {
     pi: harness.api,
     sessionLifecycleRuntime: {
@@ -340,9 +341,12 @@ test("Lifecycle binding uses native typing and assistant previews without activi
     lifecycle: runtime.lifecycle,
     activeTurnRuntime: {
       clear: () => {},
-      has: () => true,
+      has: () => activeTurn,
       set: () => {},
-      get: () => ({ chatId: 42, target: { chatId: 42, threadId: 9 } }),
+      get: () =>
+        activeTurn
+          ? { chatId: 42, target: { chatId: 42, threadId: 9 } }
+          : undefined,
     },
     telegramQueueStore: { getQueuedItems: () => [], setQueuedItems: () => {} },
     modelSwitchController: {
@@ -387,13 +391,20 @@ test("Lifecycle binding uses native typing and assistant previews without activi
     answerGuestQuery: async () => ({ ok: true }),
     sendGuestReply: async () => ({ ok: true }),
     finalizeMarkdownPreview: async () => undefined,
-    proactivePushChatIdGetter: () => undefined,
+    proactivePushChatIdGetter: () => 42,
+    proactivePushTargetGetter: () => ({ chatId: 42, threadId: 8 }),
     isProactivePushEnabled: () => false,
+    canSendAgentActivity: () => true,
     updateStatus: () => {},
     recordRuntimeEvent: () => {},
   } as unknown as Parameters<typeof registerTelegramLifecycleRuntimeHooks>[0];
   registerTelegramLifecycleRuntimeHooks(deps);
 
+  await getRequiredBindingHandler(harness.handlers, "agent_start")(
+    { type: "agent_start" },
+    { abort: () => undefined } as ExtensionContext,
+  );
+  activeTurn = true;
   await getRequiredBindingHandler(harness.handlers, "message_start")(
     { message: {} },
     {} as ExtensionContext,
@@ -423,6 +434,7 @@ test("Lifecycle binding uses native typing and assistant previews without activi
   );
 
   assert.deepEqual(events, [
+    "typing:42:8",
     "typing:42:9",
     "preview:start",
     "typing:42:9",
