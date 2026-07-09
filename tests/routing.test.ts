@@ -306,9 +306,14 @@ test("Routing runtime forwards authorized text messages into prompt queueing", a
       { cwd: "/repo" },
     );
   }
-  assert.equal(
-    events.includes("user:[callback] vividfish:approve:123:followUp"),
-    true,
+  const callbackTurn = telegramQueueStore
+    .getQueuedItems()
+    .find((item) => item.statusSummary === "vividfish:approve:123");
+  assert.equal(callbackTurn?.kind, "prompt");
+  assert.equal(callbackTurn?.queueLane, "priority");
+  assert.deepEqual(
+    callbackTurn?.kind === "prompt" ? callbackTurn.content : undefined,
+    [{ type: "text", text: "[callback] vividfish:approve:123" }],
   );
   assert.equal(events.includes("answer:cb-custom"), true);
   for (const data of ownedCallbackData) {
@@ -960,7 +965,7 @@ test("Routing runtime assigns guest-mode prompts to the current transport leader
     {
       guest_message: {
         guest_query_id: "guest-1",
-        chat: { type: "supergroup" },
+        chat: { type: "supergroup", title: "Guest Room" } as never,
         from: { id: 7, is_bot: false, username: "guest" } as TestUser & {
           username: string;
         },
@@ -985,7 +990,74 @@ test("Routing runtime assigns guest-mode prompts to the current transport leader
     queued?.kind === "prompt" && queued.content[0]?.type === "text"
       ? queued.content[0].text
       : "",
-    /^\[telegram\|from:/,
+    /^\[telegram\|guest:Guest Room\] guest question$/,
+  );
+});
+
+test("Routing runtime labels private guest-mode prompts with dm metadata", async () => {
+  const { routeRuntime, telegramQueueStore } = createRouteHarness({});
+
+  await routeRuntime.handleUpdate(
+    {
+      guest_message: {
+        guest_query_id: "guest-dm-1",
+        chat: { type: "private" },
+        from: { id: 7, is_bot: false, username: "guest" } as TestUser & {
+          username: string;
+        },
+        text: "private guest question",
+      },
+    },
+    { cwd: "/repo" },
+  );
+
+  const queued = telegramQueueStore.getQueuedItems()[0];
+  assert.equal(
+    queued?.kind === "prompt" && queued.content[0]?.type === "text"
+      ? queued.content[0].text
+      : "",
+    "[telegram|guest:guest] private guest question",
+  );
+});
+
+test("Routing runtime labels owner replies in private guest-mode with replied guest metadata", async () => {
+  const { routeRuntime, telegramQueueStore } = createRouteHarness({});
+
+  await routeRuntime.handleUpdate(
+    {
+      guest_message: {
+        guest_query_id: "guest-dm-reply-1",
+        chat: { type: "private" },
+        from: { id: 7, is_bot: false, username: "llblab" } as TestUser & {
+          username: string;
+        },
+        text: "@k1awbot test",
+        reply_to_message: {
+          message_id: 22,
+          chat: { id: 7, type: "private" },
+          from: { id: 99, is_bot: false, username: "marshab" } as TestUser & {
+            username: string;
+          },
+          photo: [{ file_id: "photo", file_unique_id: "photo-u", width: 1, height: 1 }],
+        } as TestMessage,
+      },
+    },
+    { cwd: "/repo" },
+  );
+
+  const queued = telegramQueueStore.getQueuedItems()[0];
+  assert.equal(
+    queued?.kind === "prompt" && queued.content[0]?.type === "text"
+      ? queued.content[0].text
+      : "",
+    [
+      "[telegram|guest:marshab] @k1awbot test",
+      "",
+      "[reply|from:marshab]",
+      "",
+      "[attachments|from:marshab] /tmp",
+      "- /photo-22.jpg",
+    ].join("\n"),
   );
 });
 

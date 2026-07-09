@@ -177,6 +177,7 @@ test("Status bar text renders bridge connection and queue states", () => {
       hasBotToken: true,
       pollingActive: false,
       paired: true,
+      instanceThreadName: "Aurora",
       compactionInProgress: false,
       processing: true,
       processingStatus: "queued",

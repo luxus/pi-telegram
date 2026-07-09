@@ -11,6 +11,7 @@ import {
   createTelegramOutboundReplyPlanner,
 } from "../lib/outbound.ts";
 import {
+  appendTelegramPromptTurnOnce,
   appendTelegramQueueItem,
   assertTelegramQueueItemAdmissionValid,
   buildPendingTelegramControlItem,
@@ -66,6 +67,7 @@ import {
   TELEGRAM_QUEUE_LANE_CONTRACTS,
   type PendingTelegramControlItem,
   type PendingTelegramTurn,
+  type TelegramDispatchRuntimeDeps,
   type TelegramQueueItem,
 } from "../lib/queue.ts";
 
@@ -287,6 +289,33 @@ test("Queue planning rejects invalid queue admission", () => {
         "Invalid Telegram queue admission: control item cannot use default lane",
     },
   );
+});
+
+test("Queue prompt append-once deduplicates repeated callback prompts", () => {
+  const callbackTurn = createQueueTestPromptTurn({
+    queueLane: "priority",
+    laneOrder: 0,
+    content: [{ type: "text", text: "[callback] approve" }],
+    historyText: "approve",
+  });
+  const first = appendTelegramPromptTurnOnce([], callbackTurn);
+  assert.equal(first.appended, true);
+
+  const duplicate = appendTelegramPromptTurnOnce(first.items, {
+    ...callbackTurn,
+    queueOrder: 99,
+    laneOrder: 99,
+  });
+  assert.equal(duplicate.appended, false);
+  assert.equal(duplicate.items.length, 1);
+
+  const distinct = appendTelegramPromptTurnOnce(first.items, {
+    ...callbackTurn,
+    content: [{ type: "text", text: "[callback] reject" }],
+    historyText: "reject",
+  });
+  assert.equal(distinct.appended, true);
+  assert.equal(distinct.items.length, 2);
 });
 
 test("Control-lane items sort before priority and default prompt items", () => {
@@ -2920,7 +2949,7 @@ test("Dispatch runtime idles on none and executes control items directly", () =>
   assert.deepEqual(events, ["idle", "control"]);
 });
 
-test("Dispatch runtime sends prompt turns as Pi follow-up messages", () => {
+test("Dispatch runtime sends prompt turns as normal user messages", () => {
   const events: string[] = [];
   executeTelegramQueueDispatchPlan(
     {
@@ -2958,7 +2987,7 @@ test("Dispatch runtime sends prompt turns as Pi follow-up messages", () => {
       },
     },
   );
-  assert.deepEqual(events, ["start:2", "send:followUp"]);
+  assert.deepEqual(events, ["start:2", "send:default"]);
 });
 
 test("Dispatch runtime reports prompt dispatch failures after starting", () => {
@@ -3517,4 +3546,105 @@ test("Session lifecycle hooks bind start and shutdown runtime ports", async () =
     "turn",
     "abort",
   ]);
+});
+
+// --- Dispatch ready-item contract ---
+// When executeTelegramQueueDispatchPlan dispatches a prompt, it must call
+// sendUserMessage as a normal turn (no followUp delivery option) because
+// the caller already confirmed the agent is ready via canDispatch.
+// Regression: followUp can queue idle prompts on some Pi-compatible runtimes.
+
+await test("executeTelegramQueueDispatchPlan sends ready prompts as normal user turns", async (t) => {
+  await t.test(
+    "sendUserMessage is called without followUp delivery option for prompt plan",
+    () => {
+      let sendUserMessageArgs: { content: unknown; options: unknown } | undefined;
+      let onPromptDispatchChatId: number | undefined;
+
+      const deps: TelegramDispatchRuntimeDeps = {
+        executeControlItem: () => {},
+        onPromptDispatchStart: (chatId) => {
+          onPromptDispatchChatId = chatId;
+        },
+        sendUserMessage: (content, options) => {
+          sendUserMessageArgs = { content, options };
+        },
+        onPromptDispatchFailure: () => {},
+        onIdle: () => {},
+      };
+
+      const item: PendingTelegramTurn = {
+        kind: "prompt",
+        chatId: 123456,
+        sourceMessageIds: [1],
+        replyToMessageId: 0,
+        queueOrder: 0,
+        queueLane: "default",
+        laneOrder: 0,
+        statusSummary: "test",
+        content: [{ type: "text", text: "hello" }],
+        historyText: "hello",
+        queuedAttachments: [],
+      };
+
+      const plan = {
+        kind: "prompt" as const,
+        item,
+        remainingItems: [] as TelegramQueueItem[],
+      };
+
+      executeTelegramQueueDispatchPlan(plan, deps);
+
+      assert.equal(onPromptDispatchChatId, 123456);
+      assert.ok(sendUserMessageArgs, "sendUserMessage was called");
+      assert.deepStrictEqual(sendUserMessageArgs.content, item.content);
+      assert.equal(
+        sendUserMessageArgs.options,
+        undefined,
+        "sendUserMessage must be called WITHOUT followUp delivery option",
+      );
+    },
+  );
+
+  await t.test(
+    "sendUserMessage receives no second argument (no followUp)",
+    () => {
+      let sendUserMessageArgCount = 0;
+
+      const deps: TelegramDispatchRuntimeDeps = {
+        executeControlItem: () => {},
+        onPromptDispatchStart: () => {},
+        sendUserMessage: (...args: unknown[]) => {
+          sendUserMessageArgCount = args.length;
+        },
+        onPromptDispatchFailure: () => {},
+        onIdle: () => {},
+      };
+
+      const item: PendingTelegramTurn = {
+        kind: "prompt",
+        chatId: 789,
+        sourceMessageIds: [2],
+        replyToMessageId: 0,
+        queueOrder: 1,
+        queueLane: "default",
+        laneOrder: 1,
+        statusSummary: "test",
+        content: [{ type: "text", text: "arg count test" }],
+        historyText: "arg count test",
+        queuedAttachments: [],
+      };
+
+      executeTelegramQueueDispatchPlan(
+        { kind: "prompt", item, remainingItems: [] },
+        deps,
+      );
+
+      assert.equal(
+        sendUserMessageArgCount,
+        1,
+        "sendUserMessage must receive exactly 1 argument (content only)",
+      );
+    },
+  );
 });

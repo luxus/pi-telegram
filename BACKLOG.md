@@ -1,6 +1,18 @@
 # Project Backlog
 
-_Current deterministic status: Threaded Mode implementation, native typing/activity status, regression coverage, docs/context reconciliation, typecheck, full tests, pack check, audit, Domain DAG validation, context validation, native Windows classic↔Threaded Mode upgrade/downgrade smoke, and live post-reload leader/follower prompt routing, follower Active parity, and unbound reroute/restore smoke are green. This backlog intentionally tracks only release-relevant remaining work: 0.19.0 release preparation, evidence-gated Telegram client/runtime follow-ups, and upstream Pi API blockers._
+_This backlog tracks only open release-relevant work: 0.20.0 profile isolation, evidence-gated Telegram client/runtime follow-ups, and upstream Pi API blockers. Completed validation evidence belongs in `CHANGELOG.md`, not in this queue._
+
+## P0 — Profile Reality Isolation Audit
+
+Context: 0.20.0 profiles are parallel bot/runtime realities, not just alternate credentials. Any persistent or observable runtime surface that cannot safely mix bot identities must be explicitly global or profile-scoped. Logs and Threaded Mode state are now profile-aware; the remaining audit lens should check surfaces beyond the validated setup/connect smoke path: bus endpoints, temp artifacts, in-memory registries, queues, ownership caches, and status diagnostics.
+
+Open work:
+
+- [ ] Audit remaining non-setup filesystem/runtime observability surfaces and classify each as global shared config, session-local memory, or profile-scoped reality.
+- [ ] Profile-scope bus leader/follower IPC endpoints if parallel named profiles can run in the same agent dir concurrently.
+- [ ] Add regression coverage for any newly profile-scoped surface, preserving default-profile legacy paths where applicable.
+
+Done when: parallel named-profile runtimes have no shared logs/state/IPC/diagnostic surfaces except intentionally top-level shared bridge configuration.
 
 ## P0 — Promoted Follower Reload Smoke
 
@@ -20,12 +32,13 @@ Open work:
 
 - [ ] Capture text diagnostics if Windows classic restore/status convergence repeatedly exceeds the intended 5–15 second fallback window.
 - [ ] Add a focused regression or transport/status adjustment only if new Windows evidence shows a repeatable named-pipe, lock, heartbeat, queue, or status-convergence issue.
+- [ ] For every Windows connect/runtime crash report, classify the failing boundary (`locks.json` atomic write, named pipe, heartbeat, polling, queue, or status), ensure `logs.jsonl` captures enough redacted evidence before shutdown, and add a minimized regression when the failure can be simulated deterministically.
 
 Done when: new Windows-specific runtime issues are either fixed with targeted coverage or left out of the backlog because the native smoke remains green.
 
 ## P1 — Evidence-Backed Telegram Client Follow-Ups
 
-Context: The release should avoid speculative live-test matrices. Deterministic coverage already protects target propagation, native typing/activity scoping, hot Threaded Mode upgrade/downgrade, delivery routing, and core leader/follower behavior. Future Telegram-client quirks should be handled only when there is concrete evidence or a minimized fixture.
+Context: The release should avoid speculative live-test matrices. Future Telegram-client quirks should be handled only when there is concrete evidence or a minimized fixture.
 
 Open work:
 

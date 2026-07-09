@@ -32,7 +32,7 @@ import * as Queue from "./lib/queue.ts";
 import * as Replies from "./lib/replies.ts";
 import * as Routing from "./lib/routing.ts";
 import * as Runtime from "./lib/runtime.ts";
-import * as RuntimeLog from "./lib/runtime-log.ts";
+import * as Logs from "./lib/logs.ts";
 import * as Sections from "./lib/sections.ts";
 import * as Status from "./lib/status.ts";
 import * as Sync from "./lib/sync.ts";
@@ -58,8 +58,20 @@ export default function (pi: Pi.ExtensionAPI) {
   } = piRuntime;
   const bridgeRuntime = Runtime.createTelegramBridgeRuntime();
   const telegramInstanceId = `${process.pid}:${Date.now()}`;
-  const telegramManualFollowerOwnerId = String(process.pid);
-  const telegramManualFollowerProfileKey = `manual:${telegramManualFollowerOwnerId}`;
+  // Manual follower identity must survive a Pi process reload in the same
+  // terminal. The process id changes on reload, but the parent shell/terminal id
+  // is stable enough to keep the follower bound to its existing Telegram thread.
+  const telegramManualFollowerOwnerId = String(process.ppid || process.pid);
+  const getActiveTelegramThreadProfile = function (): string | undefined {
+    return configStore.getActiveProfileName();
+  };
+  const getTelegramManualFollowerProfileKey = function (): string {
+    return Threads.getTelegramThreadOwnerKey({
+      kind: "manual-follower",
+      instanceId: telegramManualFollowerOwnerId,
+      telegramProfile: getActiveTelegramThreadProfile(),
+    });
+  };
   const telegramBusAuthSecret = Bus.createTelegramBusAuthSecret();
   let telegramActiveBusAuthSecret: string | undefined;
   let telegramBusLifecycleOverridePhase:
@@ -85,7 +97,23 @@ export default function (pi: Pi.ExtensionAPI) {
       return configStoreForRedaction?.getBotToken();
     },
   });
-  const runtimeJsonlLog = RuntimeLog.createTelegramRuntimeJsonlLog();
+  let getRuntimeLogProfileName = function (): string | undefined {
+    return undefined;
+  };
+  const runtimeJsonlLog = Logs.createTelegramRuntimeJsonlLog({
+    path: function () {
+      return Logs.getTelegramRuntimeLogPath(
+        undefined,
+        getRuntimeLogProfileName(),
+      );
+    },
+    previousPath: function () {
+      return Logs.getTelegramPreviousRuntimeLogPath(
+        undefined,
+        getRuntimeLogProfileName(),
+      );
+    },
+  });
   runtimeJsonlLog.reset("extension-start", {
     instanceId: telegramInstanceId,
     pid: process.pid,
@@ -103,6 +131,7 @@ export default function (pi: Pi.ExtensionAPI) {
   };
   const configStore = Config.createTelegramConfigStore({ recordRuntimeEvent });
   configStoreForRedaction = configStore;
+  getRuntimeLogProfileName = configStore.getActiveProfileName;
   const isTelegramBusConfigured = function (): boolean {
     return true;
   };
@@ -112,9 +141,15 @@ export default function (pi: Pi.ExtensionAPI) {
   Config.bindGlobalTelegramConfigRuntime(configStore);
   const configControls = Config.createTelegramConfigControls(configStore);
   const threadStore = Threads.createTelegramTopicTargetStore({
-    path: Threads.getTelegramTopicTargetsPath(),
+    path: function () {
+      return Threads.getTelegramTopicTargetsPath(
+        undefined,
+        configStore.getActiveProfileName(),
+      );
+    },
   });
   const lockRuntime = Locks.createTelegramLockRuntime<Pi.ExtensionContext>({
+    key: Locks.createTelegramLockKeyResolver(configStore),
     instanceId: telegramInstanceId,
     busSecret: telegramBusAuthSecret,
     staleHeartbeatMs: Locks.TELEGRAM_BUS_LEADER_STALE_HEARTBEAT_MS,
@@ -201,7 +236,7 @@ export default function (pi: Pi.ExtensionAPI) {
     await configStore.persist();
     markTelegramConfigSyncChange("config-persist");
   };
-  const getCurrentThreadRecord = function ():
+  const findCurrentThreadRecord = function ():
     | Threads.TelegramTopicTargetRecord
     | undefined {
     return Threads.findCurrentTelegramInstanceThreadRecord({
@@ -213,11 +248,24 @@ export default function (pi: Pi.ExtensionAPI) {
         telegramBusLeaderTarget,
     });
   };
+  const getCurrentThreadRecord = function ():
+    | Threads.TelegramTopicTargetRecord
+    | undefined {
+    const record = findCurrentThreadRecord();
+    if (
+      record?.owner?.kind === "manual-follower" &&
+      !telegramBusFollowerRegistrationState.isRegistered()
+    ) {
+      return undefined;
+    }
+    return record;
+  };
   const statusRuntime = Status.createTelegramBridgeStatusRuntime<
     Pi.ExtensionContext,
     Queue.TelegramQueueItem<Pi.ExtensionContext>
   >({
     getConfig: configStore.get,
+    getActiveProfileName: configStore.getActiveProfileName,
     isPollingActive: Polling.createTelegramPollingActivityReader(
       pollingControllerState,
     ),
@@ -302,15 +350,12 @@ export default function (pi: Pi.ExtensionAPI) {
     },
   });
   const { updateStatus: updateStatusLine } = statusRuntime;
-  let lastRuntimeLogScopeKey: string | undefined;
   const updateRuntimeLogScope = function (reason: string) {
     const scope = Status.createTelegramRuntimeLogScope({
       state: statusRuntime.getStatusState(),
       instanceId: telegramInstanceId,
     });
     const scopeKey = JSON.stringify(scope);
-    if (scopeKey === lastRuntimeLogScopeKey) return;
-    lastRuntimeLogScopeKey = scopeKey;
     runtimeJsonlLog.resetIfScopeChanged(scopeKey, reason, scope);
   };
   const updateStatus = function (ctx: Pi.ExtensionContext) {
@@ -800,7 +845,7 @@ export default function (pi: Pi.ExtensionAPI) {
           topicTargetStore: threadStore,
           registrationState: telegramBusFollowerRegistrationState,
           instanceId: telegramInstanceId,
-          manualFollowerProfileKey: telegramManualFollowerProfileKey,
+          manualFollowerProfileKey: getTelegramManualFollowerProfileKey(),
           manualFollowerOwnerId: telegramManualFollowerOwnerId,
           getSyncState() {
             return telegramSyncState;
@@ -834,6 +879,7 @@ export default function (pi: Pi.ExtensionAPI) {
               store: threadStore,
               instanceId: telegramInstanceId,
               cwd: ctx.cwd,
+              telegramProfile: getActiveTelegramThreadProfile(),
               target: binding.target,
               slot: binding.slot,
               threadName: binding.threadName,
@@ -885,7 +931,7 @@ export default function (pi: Pi.ExtensionAPI) {
           return undefined;
         },
         getProfileKey() {
-          return telegramManualFollowerProfileKey;
+          return getTelegramManualFollowerProfileKey();
         },
         onHeartbeatFailure: telegramFollowerHeartbeatRecovery,
         recordRuntimeEvent,
@@ -942,6 +988,7 @@ export default function (pi: Pi.ExtensionAPI) {
         getCwd(ctx) {
           return typeof ctx.cwd === "string" ? ctx.cwd : undefined;
         },
+        getTelegramProfile: getActiveTelegramThreadProfile,
         shouldForceFreshUnnamed() {
           return forceFreshLeaderThreadOnNextStart;
         },
@@ -1174,7 +1221,7 @@ export default function (pi: Pi.ExtensionAPI) {
   const disconnectTelegramAndDeleteCurrentThread =
     Sync.createTelegramManualThreadDisconnectHandler({
       instanceId: telegramInstanceId,
-      getCurrentThreadRecord,
+      getCurrentThreadRecord: findCurrentThreadRecord,
       topicTargetStore: threadStore,
       callApi: callTelegramApi,
       getLeaderTarget() {
@@ -1199,6 +1246,14 @@ export default function (pi: Pi.ExtensionAPI) {
       registrationState: telegramBusFollowerRegistrationState,
       instanceId: telegramInstanceId,
       suspendPolling: lockedPollingRuntime.suspend,
+      onFollowerSessionDisconnect() {
+        const target = telegramBusFollowerRegistrationState.getTarget();
+        if (!target) return undefined;
+        return BusFollower.markTelegramFollowerThreadStaleForSessionDisconnect({
+          topicTargetStore: threadStore,
+          target,
+        });
+      },
       recordRuntimeEvent,
     });
   const queueSessionLifecycle = Queue.createTelegramSessionLifecycleRuntime({

@@ -13,8 +13,8 @@ import {
   type Server,
   type Socket,
 } from "node:net";
-import { homedir, platform as getPlatform } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { platform as getPlatform } from "node:os";
+import { dirname } from "node:path";
 
 import {
   classifyTelegramBusTransportError,
@@ -30,21 +30,16 @@ import {
   type TelegramBusTransportRetryPolicy,
 } from "./bus-transport.ts";
 import type { TelegramTarget } from "./target.ts";
+import { resolveAgentDir } from "./paths.ts";
 
 export type TelegramBusRole = "leader" | "follower";
-
-function getAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-}
 
 export function createTelegramBusAuthSecret(): string {
   return randomBytes(32).toString("base64url");
 }
 
 export function getTelegramBusSocketPath(
-  agentDir = getAgentDir(),
+  agentDir = resolveAgentDir(),
   platform = getPlatform(),
 ): string {
   return getTelegramBusLeaderEndpoint({ agentDir, platform });
@@ -52,7 +47,7 @@ export function getTelegramBusSocketPath(
 
 export function getTelegramBusFollowerSocketPath(
   instanceId: string,
-  agentDir = getAgentDir(),
+  agentDir = resolveAgentDir(),
   platform = getPlatform(),
 ): string {
   return getTelegramBusFollowerEndpoint({ agentDir, platform, instanceId });
@@ -155,7 +150,9 @@ export function isTelegramFollowerApiCallAllowed(input: {
     const messageId = (body as Record<string, unknown>).message_id;
     const parsedMessageId =
       typeof messageId === "number" ? messageId : Number(messageId);
-    return Number.isInteger(parsedMessageId) && matchesId(messageId, parsedMessageId);
+    return (
+      Number.isInteger(parsedMessageId) && matchesId(messageId, parsedMessageId)
+    );
   };
   const isBotCommandRegistration = (body: unknown): boolean => {
     if (!body || typeof body !== "object" || Array.isArray(body)) return false;
@@ -185,7 +182,8 @@ export function isTelegramFollowerApiCallAllowed(input: {
     if (apiMethod === "getMe") return true;
     if (apiMethod === "setMyCommands")
       return isBotCommandRegistration(input.args[1]);
-    if (apiMethod === "sendChatAction") return isTargetChatScoped(input.args[1]);
+    if (apiMethod === "sendChatAction")
+      return isTargetChatScoped(input.args[1]);
     if (apiMethod === "deleteMessage" || apiMethod === "editMessageText") {
       return isTargetMessageScoped(input.args[1]);
     }
@@ -351,9 +349,7 @@ export interface TelegramBusLocalServerDeps {
   handleEnvelope: (
     envelope: TelegramBusEnvelope,
   ) =>
-    | Promise<TelegramBusEnvelope | undefined>
-    | TelegramBusEnvelope
-    | undefined;
+    Promise<TelegramBusEnvelope | undefined> | TelegramBusEnvelope | undefined;
   recordTransportEvent?: TelegramBusTransportEventRecorder;
 }
 
@@ -454,7 +450,9 @@ export function createTelegramBusForeignOwnedUpdateForwarder<
 
 export interface TelegramBusFollowerThreadRestoreHandlerDeps {
   followerRegistry: Pick<TelegramBusFollowerRegistry, "get" | "register">;
-  followerTargetController: ReturnType<typeof createTelegramBusFollowerTargetController>;
+  followerTargetController: ReturnType<
+    typeof createTelegramBusFollowerTargetController
+  >;
   onRestored?: () => void;
 }
 
@@ -517,11 +515,7 @@ export function createTelegramBusFollowerThreadRestoreHandler(
   target: TelegramTarget & { threadId: number };
   oldTarget?: TelegramTarget & { threadId: number };
 }) => Promise<boolean> {
-  return async ({
-    record,
-    target,
-    oldTarget,
-  }) => {
+  return async ({ record, target, oldTarget }) => {
     if (!record.instanceId) return false;
     const follower = deps.followerRegistry.get(record.instanceId);
     if (!follower) return false;
@@ -637,7 +631,10 @@ export function createTelegramBusLocalServer(
           activeServer.close(() => resolve()),
         );
       }
-      if (!isTelegramBusPipePath(deps.socketPath) && existsSync(deps.socketPath)) {
+      if (
+        !isTelegramBusPipePath(deps.socketPath) &&
+        existsSync(deps.socketPath)
+      ) {
         unlinkSync(deps.socketPath);
       }
       deps.recordTransportEvent?.(

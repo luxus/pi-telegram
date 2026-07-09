@@ -116,11 +116,13 @@ export function getTelegramPromptTemplateCommands(
     if (!telegramCommand) continue;
     if (reservedNames.has(telegramCommand)) continue;
     if (seen.has(telegramCommand)) continue;
+    const sourcePath = command.sourceInfo?.path;
+    if (!sourcePath) continue;
     seen.add(telegramCommand);
     promptCommands.push({
       command: telegramCommand,
       description: command.description,
-      path: command.sourceInfo.path,
+      path: sourcePath,
     });
   }
   return promptCommands.sort((a, b) => a.command.localeCompare(b.command));

@@ -24,6 +24,7 @@ export interface TelegramLeaderThreadSyncDeps {
   getAllowedUserId: () => number | undefined;
   instanceId: string;
   cwd?: string;
+  telegramProfile?: string;
   forceFreshUnnamed?: boolean;
   getNowMs?: () => number;
   getRandom?: () => number;
@@ -110,7 +111,7 @@ export interface TelegramLeaderHealthRuntime {
 export interface TelegramManualThreadDisconnectDeps<TSyncState> {
   instanceId: string;
   getCurrentThreadRecord: () =>
-    | { target: TelegramTarget; instanceId?: string }
+    | { target: TelegramTarget; instanceId?: string; owner?: { kind?: string } }
     | undefined;
   topicTargetStore: Pick<
     TelegramTopicTargetStore,
@@ -160,23 +161,26 @@ export function createTelegramManualThreadDisconnectHandler<
   return async () => {
     const currentRecord = deps.getCurrentThreadRecord();
     if (currentRecord?.target.threadId) {
-      await ThreadReconciler.applyThreadReconciliationPlan(
-        ThreadReconciler.planDisconnectedInstanceThreadCleanup({
-          target: currentRecord.target as TelegramTarget & { threadId: number },
-          instanceId: deps.instanceId,
-        }),
-        {
-          callApi(method, body) {
-            return deps.callApi(method, body);
+      const isManualFollower = currentRecord.owner?.kind === "manual-follower";
+      if (!isManualFollower) {
+        await ThreadReconciler.applyThreadReconciliationPlan(
+          ThreadReconciler.planDisconnectedInstanceThreadCleanup({
+            target: currentRecord.target as TelegramTarget & { threadId: number },
+            instanceId: deps.instanceId,
+          }),
+          {
+            callApi(method, body) {
+              return deps.callApi(method, body);
+            },
+            persist() {
+              return deps.topicTargetStore.persist();
+            },
+            recordRuntimeEvent: deps.recordRuntimeEvent,
           },
-          persist() {
-            return deps.topicTargetStore.persist();
-          },
-          recordRuntimeEvent: deps.recordRuntimeEvent,
-        },
-      );
-      if (deps.topicTargetStore.markOfflineByInstanceId(deps.instanceId) > 0) {
-        await deps.topicTargetStore.persist();
+        );
+        if (deps.topicTargetStore.markOfflineByInstanceId(deps.instanceId) > 0) {
+          await deps.topicTargetStore.persist();
+        }
       }
       const leaderTarget = deps.getLeaderTarget();
       if (
@@ -360,6 +364,7 @@ export async function ensureTelegramLeaderThreadBinding(
     getAllowedUserId: deps.getAllowedUserId,
     instanceId: deps.instanceId,
     cwd: deps.cwd,
+    telegramProfile: deps.telegramProfile,
     getCurrentLeaderEpoch: deps.getCurrentLeaderEpoch,
     getThreadReconciliationMachineState:
       deps.getThreadReconciliationMachineState,

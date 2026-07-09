@@ -14,8 +14,11 @@ import {
   createTelegramBusFollowerHeartbeatRecoveryHandler,
   createTelegramBusFollowerRegistrationRuntime,
   createTelegramBusFollowerRegistrationState,
+  createTelegramBusFollowerSessionReplacementSuspender,
   createTelegramBusFollowerTargetReplacementHandler,
   createTelegramBusForwardedUpdateReceiverRuntime,
+  getTelegramFollowerSessionHandoff,
+  setTelegramFollowerSessionHandoff,
 } from "../lib/bus-follower.ts";
 import {
   createTelegramBusFollowerRegistry,
@@ -847,4 +850,48 @@ test("Bus follower API caller sends method calls and returns leader results", as
     await server.stop();
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("Bus follower session replacement disconnects instead of preserving stale registration", async () => {
+  const registrationState = createTelegramBusFollowerRegistrationState();
+  registrationState.setRegistered(true, { chatId: 1, threadId: 2 });
+  setTelegramFollowerSessionHandoff({
+    pid: 10,
+    instanceId: "old-inst",
+    createdAtMs: Date.now(),
+  });
+  const events: unknown[] = [];
+  let suspended = false;
+  let disconnected = false;
+  const suspend = createTelegramBusFollowerSessionReplacementSuspender({
+    registrationState,
+    instanceId: "new-inst",
+    async suspendPolling() {
+      suspended = true;
+      registrationState.setRegistered(false);
+    },
+    onFollowerSessionDisconnect() {
+      disconnected = true;
+    },
+    recordRuntimeEvent(category, message, details) {
+      events.push({ category, message, details });
+    },
+  });
+
+  await suspend();
+
+  assert.equal(disconnected, true);
+  assert.equal(suspended, true);
+  assert.equal(registrationState.isRegistered(), false);
+  assert.equal(getTelegramFollowerSessionHandoff(), undefined);
+  assert.deepEqual(events, [
+    {
+      category: "bus",
+      message: "Telegram follower registration stopped for session replacement",
+      details: {
+        phase: "follower-session-disconnect",
+        instanceId: "new-inst",
+      },
+    },
+  ]);
 });

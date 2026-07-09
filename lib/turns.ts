@@ -8,12 +8,14 @@ import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
 import {
+  appendTelegramForwardContext,
   appendTelegramReplyContext,
+  buildTelegramReplyContextBlock,
   collectTelegramMessageIds,
   downloadTelegramMessageFiles,
+  extractTelegramForwardContextText,
   extractTelegramMessagesPromptText,
   extractTelegramMessagesText,
-  extractTelegramReplyContextText,
   formatTelegramHistoryText,
   guessMediaType,
   type DownloadedTelegramMessageFile,
@@ -132,8 +134,14 @@ function appendTelegramAttachmentSection(
   return `${prefix}${header}\n${items.map((item) => `- ${item}`).join("\n")}`;
 }
 
+function appendTelegramSourceContext(text: string, sourceContext: string | undefined): string {
+  if (!sourceContext) return text;
+  return text ? `${text}\n\n${sourceContext}` : sourceContext;
+}
+
 function appendTelegramPromptText(prompt: string, rawText: string): string {
   if (!rawText) return prompt;
+  if (rawText.startsWith("\n")) return `${prompt}${rawText}`;
   return `${prompt} ${rawText}`;
 }
 
@@ -160,6 +168,7 @@ export function buildTelegramTurnPrompt(options: {
   files: DownloadedTelegramTurnFile[];
   promptFiles?: DownloadedTelegramTurnFile[];
   handlerOutputs?: string[];
+  sourceContext?: string;
   historyTurns?: Pick<PendingTelegramTurn, "historyText">[];
   timeLine?: string | null;
   voiceContext?: Record<string, string>;
@@ -181,6 +190,7 @@ export function buildTelegramTurnPrompt(options: {
   }
   const promptFiles = options.promptFiles ?? options.files;
   prompt = appendTelegramAttachmentSection(prompt, promptFiles);
+  prompt = appendTelegramSourceContext(prompt, options.sourceContext);
   prompt = appendTelegramListSection(
     prompt,
     "outputs",
@@ -368,6 +378,7 @@ export interface BuildTelegramPromptTurnOptions {
   files: DownloadedTelegramTurnFile[];
   promptFiles?: DownloadedTelegramTurnFile[];
   handlerOutputs?: string[];
+  sourceContext?: string;
   timeLine?: string | null;
   readBinaryFile: (path: string) => Promise<Uint8Array>;
   inferImageMimeType: (path: string) => string | undefined;
@@ -399,6 +410,7 @@ export interface TelegramPromptTurnRuntimeBuilderDeps<
   isVoiceReplyModeConfigured?: () => boolean;
   /** Returns the visible thread label for a message target, used to add thread context to the prompt prefix. */
   getTelegramThreadLabel?: (message: { chat: { id: number }; message_thread_id?: number }) => string | undefined;
+  getAllowedUserId?: () => number | undefined;
 }
 
 export function createTelegramPromptTurnRuntimeBuilder<
@@ -413,8 +425,18 @@ export function createTelegramPromptTurnRuntimeBuilder<
 ) => Promise<PendingTelegramTurn> {
   return async (messages, historyTurns = [], ctx) => {
     const rawText = extractTelegramMessagesText(messages);
-    const replyContext = messages[0]
-      ? extractTelegramReplyContextText(messages[0])
+    const firstMessage = messages[0];
+    const replyFiles = firstMessage?.reply_to_message
+      ? await downloadTelegramMessageFiles(
+          [firstMessage.reply_to_message as typeof firstMessage],
+          { downloadFile: deps.downloadFile },
+        )
+      : [];
+    const replyContext = firstMessage
+      ? buildTelegramReplyContextBlock(firstMessage, replyFiles)
+      : "";
+    const forwardContext = firstMessage
+      ? extractTelegramForwardContextText(firstMessage, deps.getAllowedUserId?.())
       : "";
     const files = await downloadTelegramMessageFiles(messages, {
       downloadFile: deps.downloadFile,
@@ -422,10 +444,18 @@ export function createTelegramPromptTurnRuntimeBuilder<
     const processed = deps.processAttachments
       ? await deps.processAttachments(files, rawText, ctx as TContext)
       : { rawText, promptFiles: files };
-    const promptText = appendTelegramReplyContext(
-      processed.rawText,
-      replyContext,
-    );
+    const sourceBlocks: string[] = [];
+    let promptRawText = processed.rawText;
+    if (forwardContext) {
+      sourceBlocks.push(
+        `[forward|${forwardContext.replace(/:\s+/g, ":")}]${
+          processed.rawText ? ` ${processed.rawText}` : ""
+        }`,
+      );
+      promptRawText = "";
+    }
+    if (replyContext) sourceBlocks.push(replyContext);
+    const sourceContext = sourceBlocks.join("\n\n");
     // Compute voice mode once and pass it to both the turn builder and the prompt contribution helper
     const voiceReplyMode = deps.getVoiceReplyMode?.();
     const chatId = messages[0]?.chat.id;
@@ -433,7 +463,6 @@ export function createTelegramPromptTurnRuntimeBuilder<
       deps.resolveTimeLine && chatId !== undefined
         ? deps.resolveTimeLine(chatId)
         : null;
-    const firstMessage = messages[0];
     const threadLabel = firstMessage
       ? deps.getTelegramThreadLabel?.(firstMessage)
       : undefined;
@@ -443,7 +472,8 @@ export function createTelegramPromptTurnRuntimeBuilder<
       messages,
       historyTurns,
       queueOrder: deps.allocateQueueOrder(),
-      rawText: promptText,
+      rawText: promptRawText,
+      sourceContext,
       statusText: processed.rawText,
       files,
       promptFiles: processed.promptFiles,
@@ -495,6 +525,7 @@ export async function buildTelegramPromptTurn(
         files: options.files,
         promptFiles: options.promptFiles,
         handlerOutputs: options.handlerOutputs,
+        sourceContext: options.sourceContext,
         historyTurns: options.historyTurns,
         timeLine: options.timeLine,
         voiceContext: showVoiceContext
@@ -534,10 +565,13 @@ export async function buildTelegramPromptTurn(
     laneOrder: options.queueOrder,
     queuedAttachments: [],
     content,
-    historyText: formatTelegramHistoryText(
-      options.rawText,
-      options.promptFiles ?? options.files,
-      options.handlerOutputs,
+    historyText: appendTelegramSourceContext(
+      formatTelegramHistoryText(
+        options.rawText,
+        options.promptFiles ?? options.files,
+        options.handlerOutputs,
+      ),
+      options.sourceContext,
     ),
     statusSummary: formatTelegramTurnStatusSummary(
       options.statusText ?? options.rawText,

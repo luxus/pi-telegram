@@ -1,8 +1,14 @@
 # Changelog
 
-## 0.19.3: Extension Catalogue Image Hotfix
+## 0.20.0: Pi-Compatible Multi-Profile Runtime
 
-- `[Package]` Updated the Pi extension catalogue image URL from the missing `screenshot.png` to the packaged `banner.png`. Impact: Pi extension catalogue listings can render the working banner image for `pi-telegram`.
+- `[Profiles]` Added named Telegram bot/session profiles under `telegram.json` `profiles` while preserving the top-level default profile and legacy default paths. Profile activation is session-local, bot/session fields are profile-scoped, shared bridge settings remain global, and setup/connect accept explicit profile names. Impact: separate bots can run from the same agent directory without `telegram-bots.json`, persisted active-profile drift, or default-profile migration risk.
+- `[Runtime Isolation]` Scoped Telegram lock ownership, Threaded Mode owner keys, runtime logs, previous logs, and Threaded Mode state by selected profile. Impact: named profiles keep independent polling ownership and observable bot realities, while the default profile remains backward-compatible.
+- `[Pi Compatibility]` Centralized agent-dir/path resolution with `PI_CODING_AGENT_DIR` support and moved queued Telegram prompt dispatch back under pi-telegram's scheduler as normal `sendUserMessage(content)` turns. Impact: Pi-compatible runtimes such as OMP can share the bridge without stranded follow-up work or duplicated path contracts.
+- `[Prompt Context]` Normalized Telegram prompt metadata for forwards, replies, source attachments, and guest surfaces. Impact: `[telegram...]` identifies only the inbound surface, while `[reply|from:...]`, `[forward|from:...]`, and `[attachments|from:...]` carry source provenance without conflating owner-authored prompts with quoted or forwarded evidence.
+- `[Threaded Mode]` Hardened manual follower lifecycle around reloads, reconnects, disconnects, and registration races. Followers now disconnect cleanly on session replacement, reconnect only on explicit `Telegram Connect`, provision one fresh routable tab with monotonic slot allocation, and never show stale previous thread names while disconnected. Impact: follower churn is predictable across reload/election paths without duplicate-tab spam or unroutable preserved bindings.
+- `[Reliability]` Hardened Windows lock heartbeat writes for transient `EPERM` / `EBUSY` / `EACCES` failures, skipped virtual prompt-template commands without source paths, and treats `createForumTopic` as non-idempotent by avoiding retry on topic creation. Impact: common runtime and Telegram-client edge cases degrade to diagnosable state instead of crashes, menu failures, or duplicate visible topics.
+- `[Validation]` Added regressions for profile persistence/activation, setup/connect profile behavior, profile-scoped locks/state/logs, OMP-style dispatch, path resolution, prompt context, follower reconnect/provisioning, status projection, and Domain DAG invariants. Live Linux smoke confirmed independent named-profile setup/connect, hot Threaded Mode upgrade, parallel leaders for separate bots, explicit follower reconnect, monotonic follower slot allocation including Z→A wraparound, and single-topic provisioning.
 
 ## 0.19.2: Draft And Rendering Isolation Hotfix
 

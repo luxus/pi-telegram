@@ -7,11 +7,15 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname } from "node:path";
 
+import type { TelegramApiCallOptions } from "./telegram-api.ts";
 import type { TelegramTarget } from "./target.ts";
 import * as ThreadReconciler from "./thread-reconciler.ts";
+import {
+  resolveAgentDir,
+  resolveTelegramProfileTempFilePath,
+} from "./paths.ts";
 
 export interface TelegramThreadNameInput {
   seed: string;
@@ -22,18 +26,18 @@ export interface TelegramThreadNameInput {
 }
 
 export type TelegramTopicTargetStatus =
-  | "active"
-  | "offline"
-  | "stale"
-  | "pending"
-  | "starting"
-  | "failed";
+  "active" | "offline" | "stale" | "pending" | "starting" | "failed";
 
 export type TelegramTopicSyncStatus = "open" | "closed" | "deleted" | "unknown";
 
 export type TelegramThreadOwner =
-  | { kind: "leader"; cwd?: string; instanceId?: string }
-  | { kind: "manual-follower"; instanceId: string }
+  | {
+      kind: "leader";
+      cwd?: string;
+      instanceId?: string;
+      telegramProfile?: string;
+    }
+  | { kind: "manual-follower"; instanceId: string; telegramProfile?: string }
   | { kind: "pending-topic"; chatId: number; threadId: number }
   | { kind: "legacy"; key: string };
 
@@ -200,6 +204,7 @@ export interface TelegramTopicTargetStore {
   getIdentityByProfileKey: (
     profileKey: string,
   ) => TelegramThreadIdentityRecord | undefined;
+  forgetIdentityByProfileKey: (profileKey: string) => boolean;
   upsert: (record: TelegramTopicTargetRecord) => TelegramTopicTargetRecord;
   markOfflineByInstanceId: (instanceId: string) => number;
   markStaleByTarget: (
@@ -224,7 +229,7 @@ export interface TelegramTopicTargetStore {
 }
 
 export interface TelegramTopicTargetStoreOptions {
-  path: string;
+  path: string | (() => string);
   getNowMs?: () => number;
 }
 
@@ -236,7 +241,9 @@ export interface TelegramTopicTargetProvisionerDeps {
     | "getByProfileKey"
     | "getActiveByInstanceId"
     | "getIdentityByProfileKey"
+    | "forgetIdentityByProfileKey"
     | "upsert"
+    | "markStaleByTarget"
     | "allocateSlot"
     | "claimReusableTarget"
     | "upsertPendingProvision"
@@ -246,6 +253,7 @@ export interface TelegramTopicTargetProvisionerDeps {
   callApi: <TResponse>(
     method: string,
     body: Record<string, unknown>,
+    options?: TelegramApiCallOptions,
   ) => Promise<TResponse>;
   topicNameTemplate?: string;
   getNowMs?: () => number;
@@ -286,12 +294,6 @@ export interface TelegramTopicTargetProvisionResult {
 
 interface TelegramTopicResult {
   message_thread_id?: number;
-}
-
-function getAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
 }
 
 function hashString(value: string): number {
@@ -339,22 +341,39 @@ export function createTelegramThreadName(
   );
 }
 
-export function getTelegramStatePath(agentDir = getAgentDir()): string {
-  return join(agentDir, "tmp", "telegram", "state.json");
+export function getTelegramStatePath(
+  agentDir = resolveAgentDir(),
+  profileName?: string,
+): string {
+  return resolveTelegramProfileTempFilePath(
+    "state",
+    "json",
+    agentDir,
+    profileName,
+  );
 }
 
-export function getTelegramTopicTargetsPath(agentDir = getAgentDir()): string {
-  return getTelegramStatePath(agentDir);
+export function getTelegramTopicTargetsPath(
+  agentDir = resolveAgentDir(),
+  profileName?: string,
+): string {
+  return getTelegramStatePath(agentDir, profileName);
 }
 
 export function getTelegramThreadOwnerKey(owner: TelegramThreadOwner): string {
   switch (owner.kind) {
-    case "leader":
-      return owner.cwd
+    case "leader": {
+      const base = owner.cwd
         ? `cwd:${owner.cwd}`
         : `leader:${owner.instanceId ?? "default"}`;
+      return owner.telegramProfile
+        ? `profile:${owner.telegramProfile}:${base}`
+        : base;
+    }
     case "manual-follower":
-      return `manual:${owner.instanceId}`;
+      return owner.telegramProfile
+        ? `profile:${owner.telegramProfile}:manual:${owner.instanceId}`
+        : `manual:${owner.instanceId}`;
     case "pending-topic":
       return `topic:${owner.chatId}:${owner.threadId}`;
     case "legacy":
@@ -365,6 +384,16 @@ export function getTelegramThreadOwnerKey(owner: TelegramThreadOwner): string {
 export function getTelegramThreadOwnerFromProfileKey(
   profileKey: string,
 ): TelegramThreadOwner {
+  if (profileKey.startsWith("profile:")) {
+    const [, telegramProfile, ownerKind, ...rest] = profileKey.split(":");
+    const value = rest.join(":");
+    if (ownerKind === "cwd")
+      return { kind: "leader", cwd: value, telegramProfile };
+    if (ownerKind === "leader")
+      return { kind: "leader", instanceId: value, telegramProfile };
+    if (ownerKind === "manual")
+      return { kind: "manual-follower", instanceId: value, telegramProfile };
+  }
   if (profileKey.startsWith("cwd:"))
     return { kind: "leader", cwd: profileKey.slice(4) };
   if (profileKey.startsWith("manual:")) {
@@ -444,7 +473,9 @@ function cloneRecord(
   };
 }
 
-function getPersistedThreadName(record: Record<string, unknown>): string | undefined {
+function getPersistedThreadName(
+  record: Record<string, unknown>,
+): string | undefined {
   const value =
     typeof record.threadName === "string"
       ? record.threadName
@@ -561,9 +592,8 @@ function normalizeIdentityRecord(
   };
   const persistedThreadName = getPersistedThreadName(record);
   if (persistedThreadName) {
-    const threadName = normalizeTelegramTopicTargetThreadName(
-      persistedThreadName,
-    );
+    const threadName =
+      normalizeTelegramTopicTargetThreadName(persistedThreadName);
     if (threadName) identity.threadName = threadName;
   }
   if (typeof record.slot === "string" && /^[A-Z]$/.test(record.slot)) {
@@ -841,6 +871,7 @@ export function createTelegramTopicTargetStore(
   let pendingProvisions: TelegramThreadPendingProvision[] = [];
   let syncObservations: TelegramTopicSyncObservation[] = [];
   let loaded = false;
+  let loadedPath: string | undefined;
   let dirty = false;
   let statusSnapshot: {
     runtime?: Record<string, unknown>;
@@ -866,8 +897,26 @@ export function createTelegramTopicTargetStore(
     });
   };
 
+  const getPath = () =>
+    typeof options.path === "function" ? options.path() : options.path;
+  const resetForPath = (path: string) => {
+    if (loadedPath === path) return;
+    botState = { threadMode: "unknown" };
+    records = new Map();
+    identities = new Map();
+    reservations = [];
+    pendingProvisions = [];
+    syncObservations = [];
+    statusSnapshot = {};
+    loaded = false;
+    dirty = false;
+    loadedPath = path;
+  };
+
   const loadFromDisk = async () => {
-    if (!existsSync(options.path)) {
+    const path = getPath();
+    resetForPath(path);
+    if (!existsSync(path)) {
       botState = { threadMode: "unknown" };
       records = new Map();
       identities = new Map();
@@ -877,7 +926,7 @@ export function createTelegramTopicTargetStore(
       loaded = true;
       return;
     }
-    const content = await readFile(options.path, "utf8");
+    const content = await readFile(path, "utf8");
     const file = parseTopicTargetFile(JSON.parse(content));
     botState = file.bot;
     records = new Map(
@@ -920,9 +969,11 @@ export function createTelegramTopicTargetStore(
       await loadFromDisk();
     },
     async persist() {
+      const path = getPath();
+      if (loadedPath !== path && !dirty) resetForPath(path);
       if (!loaded && !dirty) await loadFromDisk();
-      await mkdir(dirname(options.path), { recursive: true });
-      const tempPath = `${options.path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+      await mkdir(dirname(path), { recursive: true });
+      const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
       const nowMs = getNowMs();
       reservations = reservations.filter(
         (reservation) =>
@@ -967,8 +1018,8 @@ export function createTelegramTopicTargetStore(
         mode: 0o600,
       });
       await chmod(tempPath, 0o600);
-      await rename(tempPath, options.path);
-      await chmod(options.path, 0o600);
+      await rename(tempPath, path);
+      await chmod(path, 0o600);
       loaded = true;
       dirty = false;
     },
@@ -1060,6 +1111,7 @@ export function createTelegramTopicTargetStore(
       dirty = true;
     },
     setStatusSnapshot(snapshot) {
+      if (!loadedPath) loadedPath = getPath();
       statusSnapshot = { ...snapshot };
     },
     getByProfileKey(profileKey) {
@@ -1084,6 +1136,17 @@ export function createTelegramTopicTargetStore(
       );
       const identity = identities.get(ownerKey) ?? identities.get(profileKey);
       return identity ? cloneIdentityRecord(identity) : undefined;
+    },
+    forgetIdentityByProfileKey(profileKey) {
+      const ownerKey = getTelegramThreadOwnerKey(
+        getTelegramThreadOwnerFromProfileKey(profileKey),
+      );
+      const removedOwner = identities.delete(ownerKey);
+      const removedProfile = identities.delete(profileKey);
+      if (!removedOwner && !removedProfile) return false;
+      loaded = true;
+      dirty = true;
+      return true;
     },
     upsert(record) {
       const next = cloneRecord(record);
@@ -1316,9 +1379,7 @@ function getGraphemeSegments(value: string): string[] {
 }
 
 export function getTelegramTopicIdentityName(threadName: string): string {
-  return getGraphemeSegments(
-    normalizeTelegramTopicTargetThreadName(threadName),
-  )
+  return getGraphemeSegments(normalizeTelegramTopicTargetThreadName(threadName))
     .join("")
     .trim();
 }
@@ -1332,7 +1393,7 @@ const TELEGRAM_THREAD_NAME_PALETTE: Record<string, readonly string[]> = {
   F: ["Falcon", "Fjord", "Flint", "Forest", "Fable"],
   G: ["Grove", "Glade", "Glyph", "Garnet", "Gale"],
   H: ["Harbor", "Hawk", "Hazel", "Helix", "Haven"],
-  I: ["Iris", "Ivory", "Iron", "Isle", "Ibis"],
+  I: ["Iris", "Ivory", "Iron", "Isle", "Idea"],
   J: ["Jade", "Juno", "Jolt", "Jewel", "Jasper"],
   K: ["Kite", "Karma", "Kernel", "Kodiak", "Kelp"],
   L: ["Lumen", "Laurel", "Lynx", "Lotus", "Lagoon"],
@@ -1363,7 +1424,10 @@ export function chooseTelegramThreadName(input: {
   const index = input.getRandom
     ? Math.max(
         0,
-        Math.min(names.length - 1, Math.floor(input.getRandom() * names.length)),
+        Math.min(
+          names.length - 1,
+          Math.floor(input.getRandom() * names.length),
+        ),
       )
     : getTelegramThreadNameEntropyIndex(input.entropy, names.length);
   return names[index];
@@ -1505,6 +1569,7 @@ export interface TelegramPromoteFollowerBindingToLeaderDeps {
   store: TelegramTopicTargetStore;
   instanceId: string;
   cwd?: string;
+  telegramProfile?: string;
   target?: TelegramTarget;
   slot?: string;
   threadName?: string;
@@ -1529,6 +1594,7 @@ export async function promoteTelegramFollowerBindingToLeader(
     kind: "leader",
     cwd: deps.cwd,
     instanceId: deps.instanceId,
+    ...(deps.telegramProfile ? { telegramProfile: deps.telegramProfile } : {}),
   };
   const record = deps.store.upsert({
     profileKey: getTelegramThreadOwnerKey(owner),
@@ -1537,11 +1603,13 @@ export async function promoteTelegramFollowerBindingToLeader(
     status: "active",
     createdAtMs: existing?.createdAtMs ?? nowMs,
     updatedAtMs: nowMs,
-    ...(existing?.threadName ?? deps.threadName
+    ...((existing?.threadName ?? deps.threadName)
       ? { threadName: existing?.threadName ?? deps.threadName }
       : {}),
     instanceId: deps.instanceId,
-    ...(existing?.slot ?? deps.slot ? { slot: existing?.slot ?? deps.slot } : {}),
+    ...((existing?.slot ?? deps.slot)
+      ? { slot: existing?.slot ?? deps.slot }
+      : {}),
     ...(existing?.syncStatus ? { syncStatus: existing.syncStatus } : {}),
     ...(existing?.lastSyncObservedAtMs !== undefined
       ? { lastSyncObservedAtMs: existing.lastSyncObservedAtMs }
@@ -1559,12 +1627,12 @@ export interface TelegramOwnTopicProvisionDeps {
   getAllowedUserId: () => number | undefined;
   instanceId: string;
   cwd?: string;
+  telegramProfile?: string;
   getNowMs?: () => number;
   getRandom?: () => number;
   getCurrentLeaderEpoch?: () => number | string | undefined;
   getThreadReconciliationMachineState?: () =>
-    | ThreadReconciler.ThreadReconciliationMachineState
-    | undefined;
+    ThreadReconciler.ThreadReconciliationMachineState | undefined;
   recordThreadReconciliationPlan?: (
     plan: ThreadReconciler.ThreadReconciliationPlan,
   ) => void;
@@ -1596,7 +1664,12 @@ export async function provisionOwnBusTopic(
   deps: TelegramOwnTopicProvisionDeps,
 ): Promise<TelegramOwnTopicProvisionResult | undefined> {
   const chatId = deps.getAllowedUserId();
-  let profileKey = deps.cwd ? `cwd:${deps.cwd}` : `leader:${deps.instanceId}`;
+  let profileKey = getTelegramThreadOwnerKey({
+    kind: "leader",
+    cwd: deps.cwd,
+    instanceId: deps.instanceId,
+    telegramProfile: deps.telegramProfile,
+  });
   if (typeof chatId !== "number") return undefined;
   await deps.store.load();
   const reservationCleanupPorts = {
@@ -1678,11 +1751,12 @@ export async function provisionOwnBusTopic(
     },
   );
   const nowMs = Date.now();
-  const currentLeaderOwner: TelegramThreadOwner = profileKey.startsWith(
-    "leader:",
-  )
-    ? { kind: "leader", instanceId: deps.instanceId }
-    : { kind: "leader", cwd: deps.cwd, instanceId: deps.instanceId };
+  const currentLeaderOwner: TelegramThreadOwner = {
+    kind: "leader",
+    cwd: deps.cwd,
+    instanceId: deps.instanceId,
+    ...(deps.telegramProfile ? { telegramProfile: deps.telegramProfile } : {}),
+  };
   const recordsBeforePreviousLeaderCleanup = deps.store.list();
   const previousLeaderCleanupPlan = ThreadReconciler.planThreadReconciliation({
     nowMs,
@@ -2108,8 +2182,20 @@ export function createTelegramTopicTargetProvisioner(
   const getRandom = deps.getRandom;
   return async (request) => {
     normalizeCurrentThreadNameSlots(deps.store);
-    const existing = deps.store.getByProfileKey(request.profileKey);
-    const identity = deps.store.getIdentityByProfileKey(request.profileKey);
+    let existing = deps.store.getByProfileKey(request.profileKey);
+    const isManualFollowerRequest = request.owner?.kind === "manual-follower";
+    if (isManualFollowerRequest && existing && isCurrentThreadRecord(existing)) {
+      deps.store.markStaleByTarget(
+        existing.target,
+        "unknown",
+        "Manual follower runtime was replaced before reconnect.",
+      );
+      deps.store.forgetIdentityByProfileKey(request.profileKey);
+      existing = undefined;
+    }
+    const identity = isManualFollowerRequest && !existing
+      ? undefined
+      : deps.store.getIdentityByProfileKey(request.profileKey);
     const nowMs = getNowMs();
     if (existing && isCurrentThreadRecord(existing)) {
       const slot = existing.slot ?? deps.store.allocateSlot(request.profileKey);
@@ -2166,7 +2252,9 @@ export function createTelegramTopicTargetProvisioner(
       (candidateThreadName ? undefined : identity?.slot) ??
       deps.store.allocateSlot(
         request.profileKey,
-        request.preferredSlot ?? preferredNameSlot,
+        isManualFollowerRequest
+          ? request.preferredSlot
+          : request.preferredSlot ?? preferredNameSlot,
       );
     const requestThreadName =
       candidateThreadName &&
@@ -2197,15 +2285,14 @@ export function createTelegramTopicTargetProvisioner(
           name: getTelegramTopicName(
             {
               ...request,
-              ...(requestThreadName
-                ? { threadName: requestThreadName }
-                : {}),
+              ...(requestThreadName ? { threadName: requestThreadName } : {}),
             },
             deps.topicNameTemplate ??
               (requestThreadName ? "{threadName}" : "{slot}"),
             slot,
           ),
         },
+        { maxAttempts: 1 },
       );
       threadId = topic.message_thread_id;
       if (typeof threadId !== "number" || !Number.isInteger(threadId)) {

@@ -90,6 +90,7 @@ export interface TelegramBusFollowerSessionReplacementSuspenderDeps {
   registrationState: Pick<TelegramBusFollowerRegistrationState, "isRegistered">;
   instanceId: string;
   suspendPolling: () => Promise<void>;
+  onFollowerSessionDisconnect?: () => Promise<void> | void;
   recordRuntimeEvent: (
     category: string,
     error: unknown,
@@ -387,24 +388,42 @@ function isTelegramStaleContextError(error: unknown): boolean {
   );
 }
 
+export async function markTelegramFollowerThreadStaleForSessionDisconnect(input: {
+  topicTargetStore: Threads.TelegramTopicTargetStore;
+  target: TelegramTarget;
+}): Promise<void> {
+  await input.topicTargetStore.load();
+  const record = input.topicTargetStore.list().find(
+    (candidate) =>
+      candidate.target.chatId === input.target.chatId &&
+      candidate.target.threadId === input.target.threadId,
+  );
+  const marked = input.topicTargetStore.markStaleByTarget(
+    input.target,
+    "unknown",
+    "Follower session reloaded before reconnect.",
+  );
+  const forgotIdentity = record?.profileKey
+    ? input.topicTargetStore.forgetIdentityByProfileKey(record.profileKey)
+    : false;
+  if (marked || forgotIdentity) await input.topicTargetStore.persist();
+}
+
 export function createTelegramBusFollowerSessionReplacementSuspender(
   deps: TelegramBusFollowerSessionReplacementSuspenderDeps,
 ): () => Promise<void> {
   return async () => {
     if (deps.registrationState.isRegistered()) {
-      setTelegramFollowerSessionHandoff({
-        pid: (deps.getPid ?? (() => process.pid))(),
-        instanceId: deps.instanceId,
-        createdAtMs: (deps.getNowMs ?? Date.now)(),
-      });
+      setTelegramFollowerSessionHandoff(undefined);
+      await deps.onFollowerSessionDisconnect?.();
       deps.recordRuntimeEvent(
         "bus",
-        "Telegram follower registration preserved",
+        "Telegram follower registration stopped for session replacement",
         {
-          phase: "follower-session-preserve",
+          phase: "follower-session-disconnect",
+          instanceId: deps.instanceId,
         },
       );
-      return;
     }
     await deps.suspendPolling();
   };

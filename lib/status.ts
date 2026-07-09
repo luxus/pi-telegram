@@ -180,6 +180,7 @@ export type TelegramBridgeBusLifecyclePhase = "electing";
 export interface TelegramBridgeStatusLineState {
   hasBotToken?: boolean;
   botUsername?: string;
+  activeProfileName?: string;
   allowedUserId?: number;
   botThreadMode?: "unknown" | "enabled" | "disabled";
   botThreadModeUpdatedAtMs?: number;
@@ -257,6 +258,7 @@ export interface TelegramBridgeStatusRuntimeDeps<
 > {
   statusKey?: string;
   getConfig: () => TelegramBridgeStatusConfig;
+  getActiveProfileName?: () => string | undefined;
   isPollingActive: () => boolean;
   getActiveSourceMessageIds: () => number[] | undefined;
   hasActiveTurn: () => boolean;
@@ -621,6 +623,7 @@ export function createTelegramBridgeStatusRuntime<
       return {
         hasBotToken: Boolean(config.botToken),
         botUsername: config.botUsername,
+        activeProfileName: deps.getActiveProfileName?.(),
         allowedUserId: config.allowedUserId,
         botThreadMode: botThreadMode?.threadMode,
         botThreadModeUpdatedAtMs: botThreadMode?.updatedAtMs,
@@ -770,7 +773,7 @@ export function buildTelegramStatusBarText(
   if (state.busLifecyclePhase === "electing")
     return `${label} ${theme.fg("warning", "electing")}${queued}`;
   if (!state.pollingActive && state.busRole !== "follower")
-    return `${label} ${theme.fg("muted", "disconnected")}${queued}`;
+    return `${theme.fg("accent", "telegram")} ${theme.fg("muted", "disconnected")}${queued}`;
   if (state.compactionInProgress) {
     return `${label} ${theme.fg("warning", "compacting")}${queued}`;
   }
@@ -1065,6 +1068,7 @@ function buildTelegramBridgeCompactStatusLines(
   return [
     "connection:",
     `- bot: ${formatTelegramBridgeBotStatus(state)}`,
+    ...(state.activeProfileName ? [`- profile: ${state.activeProfileName}`] : []),
     `- user: ${state.allowedUserId ?? "not paired"}`,
     ...(state.botThreadMode ? [`- thread mode: ${state.botThreadMode}`] : []),
     ...(state.busRole ? [`- role: ${state.busRole}`] : []),
@@ -1119,6 +1123,7 @@ export function buildTelegramBridgeDiagnosticStatusLines(
   return [
     "connection:",
     `- bot: ${formatTelegramBridgeBotStatus(state)}`,
+    ...(state.activeProfileName ? [`- profile: ${state.activeProfileName}`] : []),
     `- allowed user: ${state.allowedUserId ?? "not paired"}`,
     ...(state.botThreadMode
       ? [

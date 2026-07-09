@@ -12,20 +12,38 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname } from "node:path";
+import { resolveTelegramLocksPath } from "./paths.ts";
 
 export const TELEGRAM_LOCK_KEY = "@llblab/pi-telegram";
 export const TELEGRAM_BUS_LEADER_STALE_HEARTBEAT_MS = 5_000;
-
-function getAgentDir(): string {
-  return process.env.PI_CODING_AGENT_DIR
-    ? resolve(process.env.PI_CODING_AGENT_DIR)
-    : join(homedir(), ".pi", "agent");
-}
+const TELEGRAM_LOCK_WRITE_RETRY_ATTEMPTS = 5;
+const TELEGRAM_LOCK_WRITE_RETRY_DELAY_MS = 25;
 
 function getLocksPath(): string {
-  return join(getAgentDir(), "locks.json");
+  return resolveTelegramLocksPath();
+}
+
+/**
+ * Resolve the scoped lock key for the active Telegram profile.
+ * Default profile → @llblab/pi-telegram
+ * Named profile → @llblab/pi-telegram:<name>
+ */
+export function resolveTelegramLockKey(activeProfile?: string): string {
+  if (activeProfile) return `${TELEGRAM_LOCK_KEY}:${activeProfile}`;
+  return TELEGRAM_LOCK_KEY;
+}
+
+export interface TelegramActiveProfileGetter {
+  getActiveProfileName: () => string | undefined;
+}
+
+export function createTelegramLockKeyResolver(
+  activeProfile: TelegramActiveProfileGetter,
+): () => string {
+  return function getTelegramLockKey() {
+    return resolveTelegramLockKey(activeProfile.getActiveProfileName());
+  };
 }
 
 export interface TelegramLockEntry {
@@ -81,7 +99,7 @@ export interface TelegramLockContextStore<
 }
 
 export interface TelegramLockRuntimeOptions {
-  key?: string;
+  key?: string | (() => string | undefined);
   locksPath?: string;
   pid?: number;
   isProcessAlive?: (pid: number) => boolean;
@@ -104,23 +122,46 @@ export function readLocks(path = getLocksPath()): Record<string, unknown> {
   }
 }
 
+function isRetryableLockWriteError(error: unknown): boolean {
+  const code = (error as { code?: unknown })?.code;
+  return code === "EPERM" || code === "EBUSY" || code === "EACCES";
+}
+
+function sleepSync(ms: number): void {
+  const buffer = new SharedArrayBuffer(4);
+  Atomics.wait(new Int32Array(buffer), 0, 0, ms);
+}
+
 export function writeLocks(path: string, locks: Record<string, unknown>): void {
   mkdirSync(dirname(path), { recursive: true });
-  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    writeFileSync(tempPath, `${JSON.stringify(locks, null, 2)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-    });
-    renameSync(tempPath, path);
-  } catch (error) {
+  const payload = `${JSON.stringify(locks, null, 2)}\n`;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < TELEGRAM_LOCK_WRITE_RETRY_ATTEMPTS; attempt += 1) {
+    const tempPath = `${path}.${process.pid}.${Date.now()}.${attempt}.tmp`;
     try {
-      unlinkSync(tempPath);
-    } catch {
-      /* best effort */
+      writeFileSync(tempPath, payload, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
+      renameSync(tempPath, path);
+      return;
+    } catch (error) {
+      lastError = error;
+      try {
+        unlinkSync(tempPath);
+      } catch {
+        /* best effort */
+      }
+      if (
+        !isRetryableLockWriteError(error) ||
+        attempt === TELEGRAM_LOCK_WRITE_RETRY_ATTEMPTS - 1
+      ) {
+        throw error;
+      }
+      sleepSync(TELEGRAM_LOCK_WRITE_RETRY_DELAY_MS * (attempt + 1));
     }
-    throw error;
   }
+  throw lastError;
 }
 
 export function parseTelegramLockEntry(
@@ -238,10 +279,18 @@ export function createTelegramLockRuntime<TContext extends TelegramLockContext>(
     nowMs: getNowMs(),
     staleHeartbeatMs: options.staleHeartbeatMs,
   });
-  const readLock = () => parseTelegramLockEntry(readLocks(locksPath)[key]);
+  const resolveEffectiveKey = (): string => {
+    if (typeof key === "function") return key() || TELEGRAM_LOCK_KEY;
+    return key;
+  };
+  const readLock = () => {
+    const effectiveKey = resolveEffectiveKey();
+    return parseTelegramLockEntry(readLocks(locksPath)[effectiveKey]);
+  };
   const writeLock = (lock: TelegramLockEntry) => {
+    const effectiveKey = resolveEffectiveKey();
     const locks = readLocks(locksPath);
-    locks[key] = lock;
+    locks[effectiveKey] = lock;
     writeLocks(locksPath, locks);
   };
   return {
@@ -262,7 +311,7 @@ export function createTelegramLockRuntime<TContext extends TelegramLockContext>(
       const state = getLockState(readLock(), pid, isAlive, stateOptions());
       if (state.kind === "active-here" || state.kind === "stale") {
         const locks = readLocks(locksPath);
-        delete locks[key];
+        delete locks[resolveEffectiveKey()];
         writeLocks(locksPath, locks);
       }
       return state;
@@ -411,7 +460,11 @@ export function createTelegramLockedPollingRuntime<
     const owner = snapshotLockContext(ctx);
     stopOwnershipWatcher();
     ownershipInterval = setInterval(() => {
-      if (deps.lock.refresh(owner)) return;
+      try {
+        if (deps.lock.refresh(owner)) return;
+      } catch (error) {
+        deps.recordRuntimeEvent?.("lock", error, { phase: "refresh" });
+      }
       stopAfterOwnershipLoss();
     }, ownershipCheckMs);
     ownershipInterval.unref?.();

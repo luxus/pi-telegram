@@ -17,6 +17,8 @@ import {
   createTelegramTopicTargetRenamer,
   createTelegramTopicTargetStore,
   findCurrentTelegramInstanceThreadRecord,
+  getTelegramThreadOwnerFromProfileKey,
+  getTelegramThreadOwnerKey,
   getTelegramStatePath,
   getTelegramTopicTargetsPath,
   provisionOwnBusTopic,
@@ -32,6 +34,26 @@ import {
   isTelegramTopicModeUnavailableError,
   isTelegramTopicTargetStaleError,
 } from "../lib/threads.ts";
+
+test("Thread owner keys isolate named Telegram profiles without changing default keys", () => {
+  assert.equal(
+    getTelegramThreadOwnerKey({ kind: "leader", cwd: "/repo", instanceId: "a" }),
+    "cwd:/repo",
+  );
+  assert.equal(
+    getTelegramThreadOwnerKey({
+      kind: "leader",
+      cwd: "/repo",
+      instanceId: "a",
+      telegramProfile: "omp",
+    }),
+    "profile:omp:cwd:/repo",
+  );
+  assert.deepEqual(
+    getTelegramThreadOwnerFromProfileKey("profile:omp:manual:worker-a"),
+    { kind: "manual-follower", instanceId: "worker-a", telegramProfile: "omp" },
+  );
+});
 
 test("Thread names are deterministic for the same seed", () => {
   const input = {
@@ -105,7 +127,7 @@ test("Thread names can include the assigned slot", () => {
   assert.match(name, /Follower/);
 });
 
-test("Thread state path is transient", () => {
+test("Thread state path is transient and profile-aware", () => {
   assert.equal(
     getTelegramTopicTargetsPath("/agent"),
     join("/agent", "tmp", "telegram", "state.json"),
@@ -113,6 +135,14 @@ test("Thread state path is transient", () => {
   assert.equal(
     getTelegramStatePath("/agent"),
     getTelegramTopicTargetsPath("/agent"),
+  );
+  assert.equal(
+    getTelegramTopicTargetsPath("/agent", "omp"),
+    join("/agent", "tmp", "telegram", "state.omp.json"),
+  );
+  assert.equal(
+    getTelegramStatePath("/agent", "omp"),
+    getTelegramTopicTargetsPath("/agent", "omp"),
   );
 });
 
@@ -1001,7 +1031,7 @@ test("Thread provisioner does not reuse offline target history by profile key", 
   assert.equal(store.getByProfileKey("cwd:/repo")?.threadName, "Atlas");
 });
 
-test("Thread provisioner reuses manual follower profile across runtime replacement", async () => {
+test("Thread provisioner does not reuse active manual follower profile across runtime replacement", async () => {
   const calls: unknown[] = [];
   const store = createTelegramTopicTargetStore({
     path: "/tmp/unused-telegram-targets.json",
@@ -1034,11 +1064,145 @@ test("Thread provisioner reuses manual follower profile across runtime replaceme
     profileKey: "manual:1234",
   });
 
-  assert.equal(result.reused, true);
-  assert.deepEqual(result.target, { chatId: -1001, threadId: 42 });
+  assert.equal(result.reused, false);
+  assert.deepEqual(result.target, { chatId: -1001, threadId: 99 });
   assert.equal(result.record.instanceId, "1234:new");
-  assert.equal(result.record.slot, "C");
-  assert.deepEqual(calls, []);
+  assert.equal(result.record.slot, "D");
+  assert.deepEqual(calls, [
+    { method: "createForumTopic", body: { chat_id: -1001, name: "Delta" } },
+  ]);
+});
+
+test("Thread provisioner allocates a fresh follower slot after stale identity is forgotten", async () => {
+  const calls: unknown[] = [];
+  const store = createTelegramTopicTargetStore({
+    path: "/tmp/unused-telegram-targets.json",
+    getNowMs: () => 1000,
+  });
+  store.upsert({
+    profileKey: "manual:1234",
+    owner: { kind: "manual-follower", instanceId: "1234" },
+    target: { chatId: -1001, threadId: 42 },
+    status: "active",
+    createdAtMs: 500,
+    updatedAtMs: 500,
+    instanceId: "1234:old",
+    slot: "T",
+    threadName: "Talon",
+  });
+  store.markStaleByTarget({ chatId: -1001, threadId: 42 });
+  store.forgetIdentityByProfileKey("manual:1234");
+
+  const provision = createTelegramTopicTargetProvisioner({
+    topicChatId: -1001,
+    store,
+    getNowMs: () => 2000,
+    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
+      calls.push({ method, body });
+      return { message_thread_id: 99 } as TResponse;
+    },
+  });
+
+  const result = await provision({
+    instanceId: "1234:new",
+    owner: { kind: "manual-follower", instanceId: "1234" },
+    profileKey: "manual:1234",
+  });
+
+  assert.equal(result.reused, false);
+  assert.deepEqual(result.target, { chatId: -1001, threadId: 99 });
+  assert.equal(result.record.slot, "U");
+  assert.notEqual(result.record.threadName, "Talon");
+  assert.deepEqual(calls, [
+    { method: "createForumTopic", body: { chat_id: -1001, name: "Umber" } },
+  ]);
+});
+
+test("Thread provisioner replaces stale active manual follower runtime with a fresh topic", async () => {
+  const calls: unknown[] = [];
+  const store = createTelegramTopicTargetStore({
+    path: "/tmp/unused-telegram-targets.json",
+    getNowMs: () => 1000,
+  });
+  store.upsert({
+    profileKey: "manual:1234",
+    owner: { kind: "manual-follower", instanceId: "1234" },
+    target: { chatId: -1001, threadId: 42 },
+    status: "active",
+    createdAtMs: 500,
+    updatedAtMs: 500,
+    instanceId: "1234:old",
+    slot: "T",
+    threadName: "Talon",
+  });
+
+  const provision = createTelegramTopicTargetProvisioner({
+    topicChatId: -1001,
+    store,
+    getNowMs: () => 2000,
+    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
+      calls.push({ method, body });
+      return { message_thread_id: 99 } as TResponse;
+    },
+  });
+
+  const result = await provision({
+    instanceId: "1234:new",
+    owner: { kind: "manual-follower", instanceId: "1234" },
+    profileKey: "manual:1234",
+  });
+
+  assert.equal(result.reused, false);
+  assert.deepEqual(result.target, { chatId: -1001, threadId: 99 });
+  assert.equal(result.record.slot, "U");
+  assert.notEqual(result.record.threadName, "Talon");
+  assert.equal(store.getByProfileKey("manual:1234")?.target.threadId, 99);
+  assert.deepEqual(calls, [
+    { method: "createForumTopic", body: { chat_id: -1001, name: "Umber" } },
+  ]);
+});
+
+test("Thread provisioner replaces same-runtime active manual follower with a fresh topic", async () => {
+  const calls: unknown[] = [];
+  const store = createTelegramTopicTargetStore({
+    path: "/tmp/unused-telegram-targets.json",
+    getNowMs: () => 1000,
+  });
+  store.upsert({
+    profileKey: "manual:1234",
+    owner: { kind: "manual-follower", instanceId: "1234" },
+    target: { chatId: -1001, threadId: 42 },
+    status: "active",
+    createdAtMs: 500,
+    updatedAtMs: 500,
+    instanceId: "1234:same",
+    slot: "T",
+    threadName: "Talon",
+  });
+
+  const provision = createTelegramTopicTargetProvisioner({
+    topicChatId: -1001,
+    store,
+    getNowMs: () => 2000,
+    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
+      calls.push({ method, body });
+      return { message_thread_id: 99 } as TResponse;
+    },
+  });
+
+  const result = await provision({
+    instanceId: "1234:same",
+    owner: { kind: "manual-follower", instanceId: "1234" },
+    profileKey: "manual:1234",
+  });
+
+  assert.equal(result.reused, false);
+  assert.deepEqual(result.target, { chatId: -1001, threadId: 99 });
+  assert.equal(result.record.slot, "U");
+  assert.notEqual(result.record.threadName, "Talon");
+  assert.deepEqual(calls, [
+    { method: "createForumTopic", body: { chat_id: -1001, name: "Umber" } },
+  ]);
 });
 
 test("Thread provisioner persists pending provision while creating a fresh topic", async () => {
@@ -1147,6 +1311,37 @@ test("Thread provisioner keeps targeted pending provision after post-create bind
   } finally {
     await rm(dir, { force: true, recursive: true });
   }
+});
+
+test("Thread provisioner creates forum topics without retrying non-idempotent requests", async () => {
+  const calls: unknown[] = [];
+  const store = createTelegramTopicTargetStore({
+    path: "/tmp/unused-telegram-targets.json",
+    getNowMs: () => 1000,
+  });
+  const provision = createTelegramTopicTargetProvisioner({
+    topicChatId: -1001,
+    store,
+    getNowMs: () => 2000,
+    async callApi<TResponse>(
+      method: string,
+      body: Record<string, unknown>,
+      options?: unknown,
+    ) {
+      calls.push({ method, body, options });
+      return { message_thread_id: 77 } as TResponse;
+    },
+  });
+
+  await provision({ instanceId: "instance-a", profileKey: "manual:instance-a" });
+
+  assert.deepEqual(calls, [
+    {
+      method: "createForumTopic",
+      body: { chat_id: -1001, name: "Atlas" },
+      options: { maxAttempts: 1 },
+    },
+  ]);
 });
 
 test("Thread provisioner creates a new topic for new or stale profiles", async () => {
@@ -1486,10 +1681,10 @@ test("Thread provisioner assigns fresh baked names from visible thread-name sequ
   });
 
   assert.equal(store.getByProfileKey("cwd:/leader")?.slot, "D");
-  assert.equal(result.record.slot, "E");
-  assert.equal(result.record.threadName, "Ember");
+  assert.equal(result.record.slot, "F");
+  assert.equal(result.record.threadName, "Falcon");
   assert.deepEqual(calls, [
-    { method: "createForumTopic", body: { chat_id: -1001, name: "Ember" } },
+    { method: "createForumTopic", body: { chat_id: -1001, name: "Falcon" } },
   ]);
 });
 

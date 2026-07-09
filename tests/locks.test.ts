@@ -11,8 +11,10 @@ import test from "node:test";
 
 import {
   createTelegramLockedPollingRuntime,
+  createTelegramLockKeyResolver,
   createTelegramLockRuntime,
   readLocks,
+  resolveTelegramLockKey,
   TELEGRAM_LOCK_KEY,
   writeLocks,
 } from "../lib/locks.ts";
@@ -52,6 +54,51 @@ test("Lock runtime acquires, refreshes, and releases its own key", () => {
     });
     assert.equal(lock.release().kind, "active-here");
     assert.deepEqual(readLocks(temp.path), {});
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock key resolver preserves default compatibility and scopes named profiles", () => {
+  let activeProfileName: string | undefined;
+  const resolveKey = createTelegramLockKeyResolver({
+    getActiveProfileName: () => activeProfileName,
+  });
+
+  assert.equal(resolveTelegramLockKey(), TELEGRAM_LOCK_KEY);
+  assert.equal(resolveKey(), TELEGRAM_LOCK_KEY);
+  activeProfileName = "omp";
+  assert.equal(resolveKey(), `${TELEGRAM_LOCK_KEY}:omp`);
+});
+
+test("Lock runtime releases only the active profile key", () => {
+  const temp = createTempLockPath();
+  try {
+    let activeProfileName: string | undefined = "work";
+    const lock = createTelegramLockRuntime({
+      locksPath: temp.path,
+      pid: 10,
+      key: createTelegramLockKeyResolver({
+        getActiveProfileName: () => activeProfileName,
+      }),
+    });
+    assert.equal(lock.acquire({ cwd: "/repo" }).ok, true);
+    activeProfileName = "omp";
+    const other = createTelegramLockRuntime({
+      locksPath: temp.path,
+      pid: 10,
+      key: createTelegramLockKeyResolver({
+        getActiveProfileName: () => activeProfileName,
+      }),
+    });
+    assert.equal(other.acquire({ cwd: "/repo" }).ok, true);
+
+    assert.equal(other.release().kind, "active-here");
+    assert.deepEqual(readLocks(temp.path)[`${TELEGRAM_LOCK_KEY}:work`], {
+      pid: 10,
+      cwd: "/repo",
+    });
+    assert.equal(readLocks(temp.path)[`${TELEGRAM_LOCK_KEY}:omp`], undefined);
   } finally {
     rmSync(temp.dir, { recursive: true, force: true });
   }
@@ -765,6 +812,52 @@ test("Locked polling runtime stops after ownership loss without live context", a
   } finally {
     rmSync(temp.dir, { recursive: true, force: true });
   }
+});
+
+test("Locked polling runtime records refresh write failures instead of throwing from watcher", async () => {
+  const events: string[] = [];
+  const runtimeEvents: {
+    category: string;
+    phase: unknown;
+    message: string;
+  }[] = [];
+  const lock = {
+    acquire: () => ({ ok: true, lock: { pid: 10, cwd: "/repo" }, replacedStale: false as const }),
+    release: () => ({ kind: "inactive" as const }),
+    getState: () => ({ kind: "active-here" as const, lock: { pid: 10, cwd: "/repo" } }),
+    getStatusLabel: () => "active here",
+    owns: () => true,
+    refresh: () => {
+      throw new Error("EPERM: operation not permitted, rename locks tmp");
+    },
+  };
+  const runtime = createTelegramLockedPollingRuntime({
+    lock,
+    hasBotToken: () => true,
+    ownershipCheckMs: 1,
+    startPolling: async () => {
+      events.push("start");
+    },
+    stopPolling: async () => {
+      events.push("stop");
+    },
+    updateStatus: () => {
+      events.push("status");
+    },
+    recordRuntimeEvent: (category, error, details) => {
+      runtimeEvents.push({
+        category,
+        phase: details?.phase,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    },
+  });
+  assert.equal((await runtime.start({ cwd: "/repo" })).ok, true);
+  await waitForCondition(() => events.includes("stop"));
+  assert.deepEqual(events, ["start", "status", "stop"]);
+  assert.equal(runtimeEvents[0]?.category, "lock");
+  assert.equal(runtimeEvents[0]?.phase, "refresh");
+  assert.match(runtimeEvents[0]?.message ?? "", /EPERM/);
 });
 
 test("Locked polling runtime resumes stale same-cwd ownership after process restart", async () => {
