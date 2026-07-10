@@ -623,14 +623,27 @@ test("Bus follower re-registration carries its last known target", async () => {
   );
   const socketPath = join(dir, "bus.sock");
   const state = createTelegramBusFollowerRegistrationState();
-  const registrationTargets: unknown[] = [];
+  const registrations: Array<{
+    target?: unknown;
+    slot?: string;
+    threadName?: string;
+  }> = [];
   const server = createTelegramBusLocalServer({
     socketPath,
     handleEnvelope: createTelegramBusLeaderEnvelopeHandler({
       followerRegistry: createTelegramBusFollowerRegistry(),
       provisionFollowerTarget(registration) {
-        registrationTargets.push(registration.target);
-        return { chatId: 7, threadId: 42 };
+        registrations.push({
+          target: registration.target,
+          slot: registration.slot,
+          threadName: registration.threadName,
+        });
+        return {
+          chatId: 7,
+          threadId: 42,
+          slot: "E",
+          threadName: "Ember",
+        };
       },
     }),
   });
@@ -656,9 +669,13 @@ test("Bus follower re-registration carries its last known target", async () => {
       ),
       true,
     );
-    assert.deepEqual(registrationTargets, [
-      undefined,
-      { chatId: 7, threadId: 42 },
+    assert.deepEqual(registrations, [
+      { target: undefined, slot: undefined, threadName: "repo" },
+      {
+        target: { chatId: 7, threadId: 42 },
+        slot: "E",
+        threadName: "Ember",
+      },
     ]);
   } finally {
     follower.stop();

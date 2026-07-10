@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.20.4: Thread State Ownership Hotfix
+
+- `[State Ownership]` Made the active transport lock owner the only process allowed to persist the profile-shared `state.json`; followers remain readers and acquire write authority only after promotion. Status-only persistence now refreshes disk-backed bindings before serialization. Impact: a stale follower diagnostics snapshot cannot erase newer leader-owned bindings, produce duplicate slot occupancy, or make a live follower disappear from current thread state.
+- `[Follower Recovery]` Followers now carry target, slot, and thread name during re-registration. When an authenticated live follower carries an exact target missing from persisted bindings, the leader recovers that target without creating another Telegram thread and restores its slot only when unoccupied; a matching previous live-roster observation can recover the name for an older follower runtime. Impact: damaged local state converges around the surviving Telegram tab instead of replacing it or preserving a duplicate letter.
+- `[Thread Identity]` Unified terminal status and `[telegram|thread:name]` behind one target-aware current-instance identity resolver. Registered follower/leader metadata takes precedence over a stale shared record for the same target, with persisted state used only as fallback. Impact: when the prompt tag correctly identifies `Beacon`, terminal status can no longer regress to a previous thread name from stale state.
+- `[Live Linux]` A clean same-directory bootstrap produced one leader and two followers with exact unique bindings `A / Aster / 524667`, `B / Beacon / 524669`, and `C / Cinder / 524671`; the live roster and persisted targets agreed without duplicate slots. Impact: multiple processes launched from the same cwd no longer expose the state-writer collision that originally duplicated slot `E`.
+- `[Validation]` Added deterministic coverage for stale status writers, denied follower writes, promotion-time write authority, carried identity metadata, exact live-target recovery, collision-safe slot recovery, and status/prompt identity convergence. The full release validation passes with one platform-only named-pipe skip. Impact: the original corruption and cross-surface mismatch scenarios are release-gated.
+
 ## 0.20.3: Persistent Threads And Activity
 
 - `[Follower Sessions]` Registered followers now snapshot their target, slot, and thread name before same-process Pi session replacement, stop the old receiver/heartbeat context, and automatically re-register the new session through the live leader. Impact: `/new` and `/reload` no longer intentionally leave a healthy follower disconnected or require another manual `/telegram-connect`.

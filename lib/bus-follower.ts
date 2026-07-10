@@ -777,6 +777,8 @@ export function createTelegramBusFollowerRegistrationRuntime<
   let activeAuthSecret: string | undefined;
   let activeContext: TContext | undefined;
   let lastKnownTarget: TelegramTarget | undefined;
+  let lastKnownSlot: string | undefined;
+  let lastKnownThreadName: string | undefined;
   const stopHeartbeat = () => {
     if (!heartbeatInterval) return;
     clearInterval(heartbeatInterval);
@@ -788,6 +790,8 @@ export function createTelegramBusFollowerRegistrationRuntime<
     deps.setActiveAuthSecret?.(undefined);
     deps.registrationState?.setRegistered(false);
     lastKnownTarget = undefined;
+    lastKnownSlot = undefined;
+    lastKnownThreadName = undefined;
     activeContext = undefined;
     void deps.stopReceiving?.();
   };
@@ -849,8 +853,13 @@ export function createTelegramBusFollowerRegistrationRuntime<
             deps.getProfileKey?.(ctx) ??
             (ctx.cwd ? `cwd:${ctx.cwd}` : undefined),
           threadName:
+            deps.registrationState?.getThreadName() ??
+            lastKnownThreadName ??
             deps.getThreadName?.(ctx) ??
             (ctx.cwd ? basename(ctx.cwd) : undefined),
+          ...(deps.registrationState?.getSlot() ?? lastKnownSlot
+            ? { slot: deps.registrationState?.getSlot() ?? lastKnownSlot }
+            : {}),
           cwd: ctx.cwd,
           pid: getPid(),
           target:
@@ -912,6 +921,8 @@ export function createTelegramBusFollowerRegistrationRuntime<
           registrationResult,
         );
         lastKnownTarget = registrationResult.target;
+        lastKnownSlot = registrationResult.slot;
+        lastKnownThreadName = registrationResult.threadName;
         activeLeaderSocketPath = leaderSocketPath;
         activeContext = ctx;
         await sendHeartbeat();

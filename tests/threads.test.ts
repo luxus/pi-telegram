@@ -23,6 +23,7 @@ import {
   getTelegramTopicTargetsPath,
   provisionOwnBusTopic,
   reconcileTelegramFreshAllocationCursor,
+  resolveTelegramInstanceThreadIdentity,
   resolveTelegramInstanceThreadTarget,
   listTelegramThreadStatusFollowers,
   listTelegramThreadStatusTargets,
@@ -298,6 +299,120 @@ test("Thread store status snapshot persist preserves unloaded thread records", a
     );
     const file = JSON.parse(await readFile(path, "utf8"));
     assert.deepEqual(file.runtime, { busRole: "leader", instanceSlot: "C" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Thread store stale status writer refreshes current bindings before persist", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-telegram-state-"));
+  const path = join(dir, "state.json");
+  try {
+    const leader = createTelegramTopicTargetStore({ path });
+    leader.upsert({
+      profileKey: "cwd:/leader",
+      target: { chatId: 7, threadId: 42 },
+      status: "active",
+      createdAtMs: 1000,
+      updatedAtMs: 1000,
+      instanceId: "leader-a",
+      slot: "A",
+    });
+    await leader.persist();
+
+    const staleStatusWriter = createTelegramTopicTargetStore({ path });
+    await staleStatusWriter.load();
+    leader.upsert({
+      profileKey: "manual:follower-b",
+      owner: { kind: "manual-follower", instanceId: "follower-b" },
+      target: { chatId: 7, threadId: 43 },
+      status: "active",
+      createdAtMs: 1100,
+      updatedAtMs: 1100,
+      instanceId: "follower-b",
+      slot: "B",
+    });
+    await leader.persist();
+
+    staleStatusWriter.setStatusSnapshot({
+      runtime: { busRole: "follower", instanceSlot: "A" },
+    });
+    await staleStatusWriter.persist();
+
+    const reloaded = createTelegramTopicTargetStore({ path });
+    await reloaded.load();
+    assert.equal(
+      reloaded.getByProfileKey("manual:follower-b")?.target.threadId,
+      43,
+    );
+    const file = JSON.parse(await readFile(path, "utf8"));
+    assert.deepEqual(file.runtime, {
+      busRole: "follower",
+      instanceSlot: "A",
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Thread store denies follower writes until transport ownership promotes", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-telegram-state-"));
+  const path = join(dir, "state.json");
+  try {
+    const leader = createTelegramTopicTargetStore({ path });
+    leader.upsert({
+      profileKey: "cwd:/leader",
+      target: { chatId: 7, threadId: 42 },
+      status: "active",
+      createdAtMs: 1000,
+      updatedAtMs: 1000,
+      instanceId: "leader-a",
+      slot: "A",
+    });
+    await leader.persist();
+
+    let ownsTransport = false;
+    const follower = createTelegramTopicTargetStore({
+      path,
+      canPersist: () => ownsTransport,
+    });
+    await follower.load();
+    follower.upsert({
+      profileKey: "manual:follower-e",
+      owner: { kind: "manual-follower", instanceId: "follower-e" },
+      target: { chatId: 7, threadId: 45 },
+      status: "active",
+      createdAtMs: 1100,
+      updatedAtMs: 1100,
+      instanceId: "follower-e",
+      slot: "E",
+    });
+    await follower.persist();
+
+    let reloaded = createTelegramTopicTargetStore({ path });
+    await reloaded.load();
+    assert.equal(reloaded.getByProfileKey("manual:follower-e"), undefined);
+    assert.equal(follower.getByProfileKey("manual:follower-e"), undefined);
+
+    ownsTransport = true;
+    follower.upsert({
+      profileKey: "manual:follower-c",
+      owner: { kind: "manual-follower", instanceId: "follower-c" },
+      target: { chatId: 7, threadId: 44 },
+      status: "active",
+      createdAtMs: 1200,
+      updatedAtMs: 1200,
+      instanceId: "follower-c",
+      slot: "C",
+    });
+    await follower.persist();
+
+    reloaded = createTelegramTopicTargetStore({ path });
+    await reloaded.load();
+    assert.equal(
+      reloaded.getByProfileKey("manual:follower-c")?.target.threadId,
+      44,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1804,6 +1919,45 @@ test("Thread helpers resolve the current instance record from preferred target o
     findCurrentTelegramInstanceThreadRecord({ records, instanceId: "current" })
       ?.profileKey,
     "manual:follower",
+  );
+});
+
+test("Thread identity resolver keeps status and prompt on registered local metadata", () => {
+  const staleRecord = {
+    profileKey: "cwd:/repo",
+    target: { chatId: 100, threadId: 42 },
+    status: "active" as const,
+    createdAtMs: 1000,
+    updatedAtMs: 1000,
+    instanceId: "old-leader",
+    slot: "D",
+    threadName: "Dune",
+  };
+  const follower = {
+    target: { chatId: 100, threadId: 42 },
+    slot: "J",
+    threadName: "Juno",
+  };
+
+  assert.deepEqual(
+    resolveTelegramInstanceThreadIdentity({ follower, record: staleRecord }),
+    {
+      target: { chatId: 100, threadId: 42 },
+      slot: "J",
+      threadName: "Juno",
+    },
+  );
+  assert.deepEqual(
+    resolveTelegramInstanceThreadIdentity({
+      target: { chatId: 100, threadId: 42 },
+      follower,
+      record: staleRecord,
+    }),
+    {
+      target: { chatId: 100, threadId: 42 },
+      slot: "J",
+      threadName: "Juno",
+    },
   );
 });
 

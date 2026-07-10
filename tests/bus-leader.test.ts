@@ -488,6 +488,84 @@ test("Reloaded bus leader reuses a surviving follower's persisted target", async
   }
 });
 
+test("Bus leader recovers a live follower target missing from persisted state", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-telegram-live-target-recovery-"));
+  const path = join(dir, "state.json");
+  const store = createTelegramTopicTargetStore({
+    path,
+    getNowMs: () => 2000,
+  });
+  store.upsert({
+    profileKey: "cwd:/leader",
+    owner: { kind: "leader", cwd: "/leader" },
+    target: { chatId: 7, threadId: 11 },
+    status: "active",
+    createdAtMs: 1000,
+    updatedAtMs: 1000,
+    instanceId: "leader-a",
+    slot: "E",
+    threadName: "Atlas",
+  });
+  store.setStatusSnapshot({
+    liveRoster: {
+      busFollowers: [
+        {
+          instanceId: "follower-e",
+          target: {
+            chatId: 7,
+            threadId: 12,
+            slot: "E",
+            threadName: "Eagle",
+          },
+        },
+      ],
+    },
+  });
+  await store.persist();
+  const reloadedStore = createTelegramTopicTargetStore({
+    path,
+    getNowMs: () => 2000,
+  });
+  const calls: unknown[] = [];
+  let syncState = {};
+  const provision = createTelegramBusFollowerTargetProvisioner({
+    getAllowedUserId: () => 7,
+    topicTargetStore: reloadedStore,
+    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
+      calls.push({ method, body });
+      return { ok: true } as TResponse;
+    },
+    getSyncState: () => syncState,
+    setSyncState: (state) => {
+      syncState = state;
+    },
+    recordRuntimeEvent() {},
+    getNowMs: () => 2000,
+  });
+  try {
+    assert.deepEqual(
+      await provision({
+        instanceId: "follower-e",
+        profileKey: "manual:owner-e",
+        target: { chatId: 7, threadId: 12 },
+        threadName: "extensions",
+        connectedAtMs: 1500,
+      }),
+      { chatId: 7, threadId: 12, slot: undefined, threadName: "Eagle" },
+    );
+    assert.deepEqual(calls, []);
+    const recovered = reloadedStore.getByProfileKey("manual:owner-e");
+    assert.deepEqual(recovered?.target, { chatId: 7, threadId: 12 });
+    assert.equal(recovered?.instanceId, "follower-e");
+    assert.equal(recovered?.threadName, "Eagle");
+    assert.equal(recovered?.slot, undefined);
+    assert.equal(recovered?.lastReconcileAction, "follower-live-target-recovery");
+    assert.equal(reloadedStore.getBotState().lastSlot, "E");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("Bus leader follower target provisioner replaces existing manual follower thread on new connect", async () => {
   const dir = mkdtempSync(
     join(tmpdir(), "pi-telegram-bus-follower-stale-provision-"),

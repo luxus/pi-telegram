@@ -142,12 +142,18 @@ export default function (pi: Pi.ExtensionAPI) {
   };
   Config.bindGlobalTelegramConfigRuntime(configStore);
   const configControls = Config.createTelegramConfigControls(configStore);
+  let canPersistThreadState = function (): boolean {
+    return false;
+  };
   const threadStore = Threads.createTelegramTopicTargetStore({
     path: function () {
       return Threads.getTelegramTopicTargetsPath(
         undefined,
         configStore.getActiveProfileName(),
       );
+    },
+    canPersist: function () {
+      return canPersistThreadState();
     },
   });
   const lockRuntime = Locks.createTelegramLockRuntime<Pi.ExtensionContext>({
@@ -156,6 +162,9 @@ export default function (pi: Pi.ExtensionAPI) {
     busSecret: telegramBusAuthSecret,
     staleHeartbeatMs: Locks.TELEGRAM_BUS_LEADER_STALE_HEARTBEAT_MS,
   });
+  canPersistThreadState = function (): boolean {
+    return lockRuntime.getState().kind === "active-here";
+  };
   const lockOwnershipGuard =
     Locks.createTelegramLockOwnershipGuard(lockRuntime);
   const getCurrentLeaderEpoch = function (): number | undefined {
@@ -262,6 +271,38 @@ export default function (pi: Pi.ExtensionAPI) {
     }
     return record;
   };
+  const getCurrentInstanceThreadIdentity = function (
+    target?: Queue.TelegramQueueTarget,
+  ): Threads.TelegramInstanceThreadIdentityCandidate {
+    const followerTarget = telegramBusFollowerRegistrationState.getTarget();
+    const record = target
+      ? Threads.findCurrentTelegramInstanceThreadRecord({
+          records: threadStore.list(),
+          instanceId: telegramInstanceId,
+          preferredTarget: target,
+        })
+      : getCurrentThreadRecord();
+    return Threads.resolveTelegramInstanceThreadIdentity({
+      target,
+      follower:
+        telegramBusFollowerRegistrationState.isRegistered() && followerTarget
+          ? {
+              target: followerTarget,
+              slot: telegramBusFollowerRegistrationState.getSlot(),
+              threadName:
+                telegramBusFollowerRegistrationState.getThreadName(),
+            }
+          : undefined,
+      leader: telegramBusLeaderTarget
+        ? {
+            target: telegramBusLeaderTarget,
+            slot: telegramBusLeaderSlot,
+            threadName: telegramBusLeaderThreadName,
+          }
+        : undefined,
+      record,
+    });
+  };
   const statusRuntime = Status.createTelegramBridgeStatusRuntime<
     Pi.ExtensionContext,
     Queue.TelegramQueueItem<Pi.ExtensionContext>
@@ -337,19 +378,11 @@ export default function (pi: Pi.ExtensionAPI) {
     },
     getInstanceSlot() {
       if (threadStore.getBotState().threadMode === "disabled") return undefined;
-      return (
-        getCurrentThreadRecord()?.slot ??
-        telegramBusFollowerRegistrationState.getSlot() ??
-        telegramBusLeaderSlot
-      );
+      return getCurrentInstanceThreadIdentity().slot;
     },
     getInstanceThreadName() {
       if (threadStore.getBotState().threadMode === "disabled") return undefined;
-      return (
-        getCurrentThreadRecord()?.threadName ??
-        telegramBusFollowerRegistrationState.getThreadName() ??
-        telegramBusLeaderThreadName
-      );
+      return getCurrentInstanceThreadIdentity().threadName;
     },
   });
   const { updateStatus: updateStatusLine } = statusRuntime;
@@ -733,19 +766,15 @@ export default function (pi: Pi.ExtensionAPI) {
     },
     getLocalThreadLabelForTarget(target) {
       const followerTarget = telegramBusFollowerRegistrationState.getTarget();
-      if (
+      const isLocalFollowerTarget =
+        telegramBusFollowerRegistrationState.isRegistered() &&
         followerTarget?.chatId === target.chatId &&
-        followerTarget.threadId === target.threadId
-      ) {
-        return telegramBusFollowerRegistrationState.getThreadName();
-      }
-      if (
+        followerTarget.threadId === target.threadId;
+      const isLocalLeaderTarget =
         telegramBusLeaderTarget?.chatId === target.chatId &&
-        telegramBusLeaderTarget.threadId === target.threadId
-      ) {
-        return telegramBusLeaderThreadName;
-      }
-      return undefined;
+        telegramBusLeaderTarget.threadId === target.threadId;
+      if (!isLocalFollowerTarget && !isLocalLeaderTarget) return undefined;
+      return getCurrentInstanceThreadIdentity(target).threadName;
     },
     getCurrentLeaderEpoch,
     getThreadReconciliationMachineState() {

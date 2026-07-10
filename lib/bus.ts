@@ -98,6 +98,7 @@ export interface TelegramBusInstanceRegistration {
   instanceId: string;
   profileKey?: string;
   threadName?: string;
+  slot?: string;
   cwd?: string;
   pid?: number;
   target?: TelegramTarget;
@@ -1068,6 +1069,9 @@ function parseRegistration(
     registration.profileKey = value.profileKey;
   if (typeof value.threadName === "string")
     registration.threadName = value.threadName;
+  if (typeof value.slot === "string" && /^[A-Z]$/.test(value.slot)) {
+    registration.slot = value.slot;
+  }
   if (typeof value.cwd === "string") registration.cwd = value.cwd;
   if (typeof value.pid === "number") registration.pid = value.pid;
   if (typeof value.busSocketPath === "string") {

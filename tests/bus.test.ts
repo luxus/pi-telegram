@@ -209,7 +209,8 @@ test("Bus contract encodes and parses follower registration envelopes", () => {
     registration: {
       instanceId: "inst-a",
       profileKey: "repo:/work/project",
-      threadName: "project",
+      threadName: "Eagle",
+      slot: "E",
       cwd: "/work/project",
       pid: 123,
       target: { chatId: -1007, threadId: 42 },

@@ -183,6 +183,9 @@ export interface TelegramTopicTargetStore {
   load: () => Promise<void>;
   persist: () => Promise<void>;
   list: () => TelegramTopicTargetRecord[];
+  getFollowerRecoveryHintByTarget?: (
+    target: TelegramTarget,
+  ) => { slot?: string; threadName?: string } | undefined;
   listReservations: () => TelegramThreadReservation[];
   listPendingProvisions: () => TelegramThreadPendingProvision[];
   listSyncObservations: () => TelegramTopicSyncObservation[];
@@ -266,6 +269,7 @@ export function reconcileTelegramFreshAllocationCursor(
 export interface TelegramTopicTargetStoreOptions {
   path: string | (() => string);
   getNowMs?: () => number;
+  canPersist?: () => boolean;
 }
 
 export interface TelegramTopicTargetProvisionerDeps {
@@ -869,6 +873,54 @@ function targetMatches(left: TelegramTarget, right: TelegramTarget): boolean {
   return left.chatId === right.chatId && left.threadId === right.threadId;
 }
 
+function getTargetRecoveryHintKey(target: TelegramTarget): string {
+  return `${target.chatId}:${target.threadId ?? "private"}`;
+}
+
+function parseFollowerRecoveryHints(
+  value: unknown,
+): Map<string, { slot?: string; threadName?: string }> {
+  const hints = new Map<string, { slot?: string; threadName?: string }>();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return hints;
+  const liveRoster = (value as Record<string, unknown>).liveRoster;
+  if (!liveRoster || typeof liveRoster !== "object" || Array.isArray(liveRoster))
+    return hints;
+  const followers = (liveRoster as Record<string, unknown>).busFollowers;
+  if (!Array.isArray(followers)) return hints;
+  for (const follower of followers) {
+    if (!follower || typeof follower !== "object" || Array.isArray(follower))
+      continue;
+    const record = follower as Record<string, unknown>;
+    const target = record.target;
+    if (!target || typeof target !== "object" || Array.isArray(target)) continue;
+    const targetRecord = target as Record<string, unknown>;
+    if (typeof targetRecord.chatId !== "number") continue;
+    const normalizedTarget: TelegramTarget = {
+      chatId: targetRecord.chatId,
+      ...(typeof targetRecord.threadId === "number"
+        ? { threadId: targetRecord.threadId }
+        : {}),
+    };
+    const slot =
+      typeof targetRecord.slot === "string" && /^[A-Z]$/.test(targetRecord.slot)
+        ? targetRecord.slot
+        : typeof record.slot === "string" && /^[A-Z]$/.test(record.slot)
+          ? record.slot
+          : undefined;
+    const threadName =
+      typeof targetRecord.threadName === "string"
+        ? targetRecord.threadName
+        : typeof record.threadName === "string"
+          ? record.threadName
+          : undefined;
+    hints.set(getTargetRecoveryHintKey(normalizedTarget), {
+      ...(slot ? { slot } : {}),
+      ...(threadName ? { threadName } : {}),
+    });
+  }
+  return hints;
+}
+
 function getInstanceProcessKey(
   instanceId: string | undefined,
 ): string | undefined {
@@ -905,6 +957,10 @@ export function createTelegramTopicTargetStore(
   let reservations: TelegramThreadReservation[] = [];
   let pendingProvisions: TelegramThreadPendingProvision[] = [];
   let syncObservations: TelegramTopicSyncObservation[] = [];
+  let followerRecoveryHints = new Map<
+    string,
+    { slot?: string; threadName?: string }
+  >();
   let loaded = false;
   let loadedPath: string | undefined;
   let dirty = false;
@@ -939,6 +995,7 @@ export function createTelegramTopicTargetStore(
     reservations = [];
     pendingProvisions = [];
     syncObservations = [];
+    followerRecoveryHints = new Map();
     statusSnapshot = {};
     loaded = false;
     dirty = false;
@@ -955,11 +1012,14 @@ export function createTelegramTopicTargetStore(
       reservations = [];
       pendingProvisions = [];
       syncObservations = [];
+      followerRecoveryHints = new Map();
       loaded = true;
       return;
     }
     const content = await readFile(path, "utf8");
-    const file = parseTopicTargetFile(JSON.parse(content));
+    const rawFile: unknown = JSON.parse(content);
+    const file = parseTopicTargetFile(rawFile);
+    followerRecoveryHints = parseFollowerRecoveryHints(rawFile);
     botState = file.bot;
     records = new Map(
       file.threads.map((record) => [
@@ -993,6 +1053,7 @@ export function createTelegramTopicTargetStore(
       target: { ...observation.target },
     }));
     loaded = true;
+    dirty = false;
   };
 
   return {
@@ -1003,7 +1064,11 @@ export function createTelegramTopicTargetStore(
     async persist() {
       const path = getPath();
       if (loadedPath !== path && !dirty) resetForPath(path);
-      if (!loaded && !dirty) await loadFromDisk();
+      if (options.canPersist && !options.canPersist()) {
+        await loadFromDisk();
+        return;
+      }
+      if (!dirty || !loaded) await loadFromDisk();
       await mkdir(dirname(path), { recursive: true });
       const tempPath = `${path}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
       const nowMs = getNowMs();
@@ -1057,6 +1122,10 @@ export function createTelegramTopicTargetStore(
     },
     list() {
       return Array.from(records.values()).map(cloneRecord);
+    },
+    getFollowerRecoveryHintByTarget(target) {
+      const hint = followerRecoveryHints.get(getTargetRecoveryHintKey(target));
+      return hint ? { ...hint } : undefined;
     },
     listReservations() {
       const nowMs = getNowMs();
@@ -1959,6 +2028,48 @@ export async function provisionOwnBusTopic(
       ? { threadName: result.record.threadName }
       : {}),
     reused: result.reused,
+  };
+}
+
+export interface TelegramInstanceThreadIdentityCandidate {
+  target?: TelegramTarget;
+  slot?: string;
+  threadName?: string;
+}
+
+export function resolveTelegramInstanceThreadIdentity(options: {
+  target?: TelegramTarget;
+  follower?: TelegramInstanceThreadIdentityCandidate;
+  leader?: TelegramInstanceThreadIdentityCandidate;
+  record?: TelegramTopicTargetRecord;
+}): TelegramInstanceThreadIdentityCandidate {
+  const targetMatchesCandidate = (
+    candidate: TelegramInstanceThreadIdentityCandidate | undefined,
+  ) => {
+    if (!candidate) return false;
+    if (!options.target) return true;
+    return !!candidate.target && targetMatches(candidate.target, options.target);
+  };
+  const local = targetMatchesCandidate(options.follower)
+    ? options.follower
+    : targetMatchesCandidate(options.leader)
+      ? options.leader
+      : undefined;
+  const record =
+    options.record &&
+    (!options.target || targetMatches(options.record.target, options.target))
+      ? options.record
+      : undefined;
+  return {
+    ...(local?.target ?? record?.target
+      ? { target: local?.target ?? record?.target }
+      : {}),
+    ...(local?.slot ?? record?.slot
+      ? { slot: local?.slot ?? record?.slot }
+      : {}),
+    ...(local?.threadName ?? record?.threadName
+      ? { threadName: local?.threadName ?? record?.threadName }
+      : {}),
   };
 }
 

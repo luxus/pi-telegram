@@ -477,6 +477,22 @@ export function createTelegramBusFollowerTargetProvisioner(
       : undefined;
     const followerOwner =
       Threads.getTelegramThreadOwnerFromProfileKey(followerProfileKey);
+    const recoverableTarget =
+      !reconnectRecord &&
+      registration.target?.chatId === chatId &&
+      registration.target.threadId !== undefined &&
+      !recordsBeforeProvision.some(
+        (record) =>
+          record.target.chatId === registration.target?.chatId &&
+          record.target.threadId === registration.target.threadId,
+      )
+        ? registration.target
+        : undefined;
+    const recoveryHint = recoverableTarget
+      ? deps.topicTargetStore.getFollowerRecoveryHintByTarget?.(
+          recoverableTarget,
+        )
+      : undefined;
     const registrationKey = followerProfileKey || registration.instanceId;
     const pendingRegistration = pendingRegistrations.get(registrationKey);
     if (pendingRegistration) return pendingRegistration;
@@ -499,12 +515,69 @@ export function createTelegramBusFollowerTargetProvisioner(
         deps.onProvisioningEnd?.();
       }
     };
+    const recoverRequestedTarget = async () => {
+      const nowMs = getNowMs();
+      const requestedThreadName =
+        registration.threadName &&
+        Threads.isTelegramTopicThreadNameValidForSlot(
+          registration.threadName,
+          registration.slot,
+        )
+          ? registration.threadName
+          : recoveryHint?.threadName &&
+              Threads.isTelegramTopicThreadNameValidForSlot(
+                recoveryHint.threadName,
+                recoveryHint.slot,
+              )
+            ? recoveryHint.threadName
+            : undefined;
+      let recoveredRecord = deps.topicTargetStore.upsert({
+        profileKey: followerProfileKey,
+        owner:
+          followerOwner.kind === "manual-follower"
+            ? followerOwner
+            : {
+                kind: "manual-follower",
+                instanceId: registration.instanceId,
+              },
+        target: {
+          chatId: recoverableTarget!.chatId,
+          threadId: recoverableTarget!.threadId!,
+        },
+        status: "active",
+        createdAtMs: registration.connectedAtMs || nowMs,
+        updatedAtMs: nowMs,
+        instanceId: registration.instanceId,
+        ...(requestedThreadName ? { threadName: requestedThreadName } : {}),
+        lastSyncObservedAtMs: nowMs,
+        lastReconcileAction: "follower-live-target-recovery",
+      });
+      const requestedSlot = registration.slot ?? recoveryHint?.slot;
+      const requestedSlotAvailable =
+        !!requestedSlot &&
+        /^[A-Z]$/.test(requestedSlot) &&
+        !recordsBeforeProvision.some((record) => record.slot === requestedSlot);
+      if (requestedSlotAvailable) {
+        recoveredRecord = deps.topicTargetStore.upsert({
+          ...recoveredRecord,
+          slot: requestedSlot,
+        });
+      }
+      await deps.topicTargetStore.persist();
+      return {
+        target: recoveredRecord.target,
+        reused: true,
+        record: recoveredRecord,
+      };
+    };
     const runRegistration = async (): Promise<
       (TelegramTarget & { slot?: string; threadName?: string }) | undefined
     > => {
     let result = reconnectRecord
       ? { target: reconnectRecord.target, reused: true, record: reconnectRecord }
-      : await provisionTarget();
+      : recoverableTarget
+        ? await recoverRequestedTarget()
+        : await provisionTarget();
     if (reconnectRecord) {
       const nowMs = getNowMs();
       const transferredRecord = deps.topicTargetStore.upsert({
