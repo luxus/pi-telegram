@@ -1,6 +1,6 @@
 /**
  * Public Telegram updates API
- * Zones: package boundary, companion extension interop
+ * Zones: package boundary, extension interop
  * Exposes the stable raw-update handler surface while keeping update routing internals package-private
  */
 

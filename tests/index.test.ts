@@ -84,6 +84,7 @@ test("Extension entrypoint wires domain bindings into the pi API", () => {
   assert.deepEqual(
     [...harness.handlers.keys()],
     [
+      "input",
       "session_start",
       "session_shutdown",
       "session_before_compact",
@@ -97,6 +98,7 @@ test("Extension entrypoint wires domain bindings into the pi API", () => {
       "message_start",
       "message_update",
       "agent_end",
+      "agent_settled",
     ],
   );
 });

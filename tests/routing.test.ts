@@ -1030,8 +1030,8 @@ test("Routing runtime labels owner-authored private guest turns with the remote 
         chat: {
           id: 99,
           type: "private",
-          username: "sister",
-          first_name: "Maria",
+          username: "counterparty",
+          first_name: "Remote",
         } as never,
         from: { id: 7, is_bot: false, username: "llblab" } as TestUser & {
           username: string;
@@ -1047,7 +1047,7 @@ test("Routing runtime labels owner-authored private guest turns with the remote 
     queued?.kind === "prompt" && queued.content[0]?.type === "text"
       ? queued.content[0].text
       : "",
-    "[telegram|guest:sister] @k1awbot attach something",
+    "[telegram|guest:counterparty] @k1awbot attach something",
   );
 });
 
@@ -1090,22 +1090,45 @@ test("Guest peer resolver never labels the paired owner and uses stable fallback
   assert.equal(
     Routing.resolveTelegramGuestPromptPeer({
       chatType: "private",
+      chat: { id: 99, username: "remote" },
+      from: { id: 7, username: "llblab" },
+      ownerUserId: 7,
+    }),
+    "remote",
+  );
+  assert.equal(
+    Routing.resolveTelegramGuestPromptPeer({
+      chatType: "private",
+      from: { id: 7, username: "llblab" },
+      replyFrom: { id: 99, is_bot: false, username: "remote" },
+      ownerUserId: 7,
+    }),
+    "remote",
+  );
+  assert.equal(
+    Routing.resolveTelegramGuestPromptPeer({
+      chatType: "private",
       chat: { id: 7, username: "llblab" },
       from: { id: 7, username: "llblab" },
+      replyFrom: { id: 123, is_bot: true, username: "k1awbot" },
       ownerUserId: 7,
     }),
     undefined,
   );
 });
 
-test("Routing runtime labels owner replies in private guest-mode with replied guest metadata", async () => {
+test("Routing runtime separates private guest identity from replied peer metadata", async () => {
   const { routeRuntime, telegramQueueStore } = createRouteHarness({});
 
   await routeRuntime.handleUpdate(
     {
       guest_message: {
         guest_query_id: "guest-dm-reply-1",
-        chat: { type: "private" },
+        chat: {
+          id: 98,
+          type: "private",
+          username: "counterparty",
+        } as never,
         from: { id: 7, is_bot: false, username: "llblab" } as TestUser & {
           username: string;
         },
@@ -1113,7 +1136,11 @@ test("Routing runtime labels owner replies in private guest-mode with replied gu
         reply_to_message: {
           message_id: 22,
           chat: { id: 7, type: "private" },
-          from: { id: 99, is_bot: false, username: "marshab" } as TestUser & {
+          from: {
+            id: 99,
+            is_bot: false,
+            username: "quotedparty",
+          } as TestUser & {
             username: string;
           },
           photo: [{ file_id: "photo", file_unique_id: "photo-u", width: 1, height: 1 }],
@@ -1129,12 +1156,54 @@ test("Routing runtime labels owner replies in private guest-mode with replied gu
       ? queued.content[0].text
       : "",
     [
-      "[telegram|guest:marshab] @k1awbot test",
+      "[telegram|guest:counterparty] @k1awbot test",
       "",
-      "[reply|from:marshab]",
+      "[reply|from:quotedparty]",
       "",
-      "[attachments|from:marshab] /tmp",
+      "[attachments|from:quotedparty] /tmp",
       "- /photo-22.jpg",
+    ].join("\n"),
+  );
+});
+
+test("Routing runtime keeps private guest identity when replying to the bot", async () => {
+  const { routeRuntime, telegramQueueStore } = createRouteHarness({});
+
+  await routeRuntime.handleUpdate(
+    {
+      guest_message: {
+        guest_query_id: "guest-dm-bot-reply-1",
+        chat: {
+          id: 99,
+          type: "private",
+          username: "counterparty",
+        } as never,
+        from: { id: 7, is_bot: false, username: "llblab" } as TestUser & {
+          username: string;
+        },
+        text: "@k1awbot follow up",
+        reply_to_message: {
+          message_id: 23,
+          chat: { id: 99, type: "private" },
+          from: { id: 123, is_bot: true, username: "k1awbot" } as TestUser & {
+            username: string;
+          },
+          text: "Bot answer",
+        } as TestMessage,
+      },
+    },
+    { cwd: "/repo" },
+  );
+
+  const queued = telegramQueueStore.getQueuedItems()[0];
+  assert.equal(
+    queued?.kind === "prompt" && queued.content[0]?.type === "text"
+      ? queued.content[0].text
+      : "",
+    [
+      "[telegram|guest:counterparty] @k1awbot follow up",
+      "",
+      "[reply|from:k1awbot] Bot answer",
     ].join("\n"),
   );
 });

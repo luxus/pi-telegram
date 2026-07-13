@@ -4,6 +4,7 @@
  * Keeps the runtime wiring in one place while delegating reusable domain logic to /lib modules
  */
 
+import * as Activity from "./lib/activity.ts";
 import * as Bindings from "./lib/bindings.ts";
 import * as BusApi from "./lib/bus-api.ts";
 import * as Bus from "./lib/bus.ts";
@@ -13,6 +14,7 @@ import * as BusTransport from "./lib/bus-transport.ts";
 import * as CommandTemplates from "./lib/command-templates.ts";
 import * as Commands from "./lib/commands.ts";
 import * as Config from "./lib/config.ts";
+import * as Delivery from "./lib/delivery.ts";
 import * as Threads from "./lib/threads.ts";
 import * as Inbound from "./lib/inbound.ts";
 import * as Lifecycle from "./lib/lifecycle.ts";
@@ -531,6 +533,54 @@ export default function (pi: Pi.ExtensionAPI) {
   });
   const { replyTransport, editInteractiveMessage, sendInteractiveMessage } =
     replyRuntime;
+  const getDeliveryTargetPolicyView = function (): Delivery.TelegramDeliveryTargetPolicyView {
+    const ownsDirect = lockRuntime.owns();
+    const followerTarget = telegramBusFollowerRegistrationState.getTarget();
+    return {
+      canDeliver:
+        ownsDirect || telegramBusFollowerRegistrationState.isRegistered(),
+      ownsDirect,
+      allowedChatId: configStore.getAllowedUserId(),
+      followerTarget,
+      leaderTarget: telegramBusLeaderTarget,
+      liveTargets: threadStore.list().map(function (record) {
+        return record.target;
+      }),
+    };
+  };
+  const deliveryGenerationSeed = `${telegramInstanceId}:${Date.now()}`;
+  const deliveryLifecycleRuntime =
+    Delivery.createTelegramBridgeDeliveryLifecycleHooks({
+      generationSeed: deliveryGenerationSeed,
+      getTargetPolicyView: getDeliveryTargetPolicyView,
+      getActiveTurnTarget() {
+        if (activeTurnRuntime.getGuestQueryId()) return undefined;
+        return activeTurnRuntime.getTarget();
+      },
+      api: telegramApiRuntime,
+      recordOwnership(input) {
+        messageOwnershipStore.record({
+          ...input,
+          instanceId: telegramInstanceId,
+        });
+      },
+      recordFailure(operation, error, target) {
+        recordRuntimeEvent("delivery", error, {
+          operation,
+          scope: target?.threadId === undefined ? "aggregate" : "thread",
+        });
+      },
+    });
+  const activityRuntime = Activity.createTelegramActivityBridgeRuntime({
+    generation: deliveryGenerationSeed,
+    recordFailure(handlerId, event, error) {
+      recordRuntimeEvent("activity", error, {
+        handlerId,
+        eventType: event.type,
+        activityId: event.activityId,
+      });
+    },
+  });
   const { sendTextReply, sendMarkdownReply } =
     Outbound.createTelegramOutboundTextReplyRuntime({
       sendTextReply: replyRuntime.sendTextReply,
@@ -1238,11 +1288,13 @@ export default function (pi: Pi.ExtensionAPI) {
     queueSessionLifecycle,
     {
       async onSessionStart(event, ctx) {
+        await deliveryLifecycleRuntime.onSessionStart();
         await lockedPollingRuntime.onSessionStart(event, ctx);
         telegramThreadCapabilityMonitor.start(ctx);
         queueDispatchWatchdogRuntime.start(ctx);
       },
       async onSessionShutdown() {
+        await deliveryLifecycleRuntime.onSessionShutdown();
         queueDispatchWatchdogRuntime.stop();
         telegramThreadCapabilityMonitor.stop();
       },
@@ -1301,6 +1353,7 @@ export default function (pi: Pi.ExtensionAPI) {
       ...sessionLifecycleRuntime,
       onModelSelect: currentModelRuntime.onModelSelect,
     },
+    activityRuntime,
     configStore,
     abort,
     typing,

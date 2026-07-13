@@ -16,6 +16,7 @@ import {
   isTelegramBusEnvelopeAuthorized,
   getTelegramBusFollowerSocketPath,
   sendTelegramBusLocalEnvelope,
+  stripTelegramBusApiMetadata,
   type TelegramBusEnvelope,
   type TelegramBusFollowerRegistry,
   type TelegramBusFollowerView,
@@ -795,7 +796,9 @@ export function createTelegramBusLeaderApiProxy(
 ): (method: string, args: unknown[]) => Promise<unknown> {
   return async (method, args) => {
     if (method === "call") {
-      const body = args[1] as Record<string, unknown>;
+      const body = stripTelegramBusApiMetadata(
+        args[1] as Record<string, unknown>,
+      );
       try {
         return await deps.call(
           args[0] as string,

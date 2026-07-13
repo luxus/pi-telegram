@@ -34,7 +34,9 @@ import {
   getTelegramBusSocketPath,
   getTelegramFollowerTargetOwnership,
   isTelegramFollowerApiCallAllowed,
+  markTelegramBusAggregateDelivery,
   parseTelegramBusEnvelope,
+  stripTelegramBusApiMetadata,
   sendTelegramBusLocalEnvelope,
 } from "../lib/bus.ts";
 
@@ -597,6 +599,50 @@ test("Bus follower API allowlist permits own-chat typing and safe identity reads
     }),
     false,
   );
+});
+
+test("Bus follower API allowlist permits marked aggregate delivery only in its own chat", () => {
+  const follower = {
+    instanceId: "inst-a",
+    connectedAtMs: 1000,
+    lastHeartbeatMs: 1000,
+    target: { chatId: 100, threadId: 42 },
+  };
+  const marked = markTelegramBusAggregateDelivery({
+    chat_id: 100,
+    text: "Aggregate",
+  });
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["sendMessage", marked],
+    }),
+    true,
+  );
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: ["sendMessage", { chat_id: 100, text: "Unmarked" }],
+    }),
+    false,
+  );
+  assert.equal(
+    isTelegramFollowerApiCallAllowed({
+      follower,
+      method: "call",
+      args: [
+        "sendMessage",
+        markTelegramBusAggregateDelivery({ chat_id: 101, text: "Wrong chat" }),
+      ],
+    }),
+    false,
+  );
+  assert.deepEqual(stripTelegramBusApiMetadata(marked), {
+    chat_id: 100,
+    text: "Aggregate",
+  });
 });
 
 test("Bus follower API allowlist permits scoped own-topic rename only", () => {

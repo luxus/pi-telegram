@@ -133,6 +133,7 @@ test("Model helpers match models, detect thinking levels, and expose constants",
     "medium",
     "high",
     "xhigh",
+    "max",
   ]);
   assert.equal(
     modelsMatch(createModelTestModel(), createModelTestModel()),

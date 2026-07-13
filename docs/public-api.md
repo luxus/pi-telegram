@@ -9,6 +9,8 @@
 - **Compatibility:** older import/config paths that remain supported but should not be used for new code.
 - **Internal:** exported from source for tests or domain reuse, but not a compatibility promise.
 
+The 0.21 Activity surface requires Pi `0.80.6` or newer. This minimum belongs to the package peer contract because `agent_settled` provides the only safe terminal boundary after retries, compaction, and queued continuations.
+
 ## Package Entrypoints
 
 Preferred public imports:
@@ -21,6 +23,8 @@ import { registerTelegramUpdateHandler } from "@llblab/pi-telegram/updates";
 import { registerTelegramCommand } from "@llblab/pi-telegram/commands";
 import { registerTelegramInboundHandler } from "@llblab/pi-telegram/inbound";
 import { registerTelegramOutboundHandler } from "@llblab/pi-telegram/outbound";
+import { sendTelegramView } from "@llblab/pi-telegram/delivery";
+import { registerTelegramActivityHandler } from "@llblab/pi-telegram/activity";
 import {
   registerTelegramVoiceSynthesisProvider,
   registerTelegramVoiceTranscriptionProvider,
@@ -118,6 +122,12 @@ High-level stable APIs:
 - `registerTelegramStatusLineProvider()`
   - Identity: required `id`.
   - Purpose: compact companion status rows in the `/start` menu status text.
+- `sendTelegramView()` / `editTelegramView()` / `deleteTelegramView()` / `sendTelegramChatAction()`
+  - Identity: current process-local delivery generation and returned logical message handles.
+  - Purpose: ownership-gated operational delivery to active-turn, current-instance, aggregate, or explicitly authorized targets.
+- `registerTelegramActivityHandler()`
+  - Identity: required stable `id`.
+  - Purpose: normalized non-blocking Pi lifecycle activity with source identity and fresh delivery contexts.
 - `registerTelegramVoiceTranscriptionProvider()`
   - Identity: required stable `id` for new code.
   - Purpose: STT fallback for voice/audio input.
@@ -144,6 +154,45 @@ Advanced stable diagnostics:
   - Purpose: surface companion diagnostics in `/telegram-status`.
 
 All registration APIs return a disposer. Companion extensions should call disposers on shutdown and re-register on session start when they recreate runtime state. Low-level bus APIs intentionally avoid ids and run in registration order. High-level provider/UI APIs require stable identity in their public contract so diagnostics, replacement, and cleanup are understandable. Generated voice-provider ids remain a temporary compatibility path where documented.
+
+## Capability Inventory And Gap Classification
+
+This inventory maps the complete bridge capability plane to its supported extension boundary. A capability may stay private deliberately; completeness means every meaningful capability has an explicit classification, not that every internal helper becomes public.
+
+### Public now
+
+- **Extension loading:** The root export loads the bridge as a Pi extension; companion code uses the domain subpaths below rather than importing root runtime state.
+- **Telegram commands:** `/commands` registers explicit Telegram-native slash commands with scoped reply and prompt-enqueue ports.
+- **Managed menu and Settings UI:** `/sections` registers main-menu views, Settings rows, namespaced callbacks, standalone callback-scoped messages, and diagnostics.
+- **Programmatic target-aware delivery:** `/delivery` sends, edits, deletes, and signals operational views against active-turn, current-instance, aggregate, or explicitly authorized targets through generation-bound logical handles.
+- **Normalized lifecycle activity:** `/activity` registers non-blocking extension handlers for evidence-based run/source identity, assistant prose/reasoning segments, executed tools, compaction, and settlement with fresh delivery contexts.
+- **Compact status projection:** `/status` contributes synchronous status rows to the `/start` menu.
+- **Raw inbound update interception:** `/updates` observes or consumes Telegram updates before default routing and remains the low-level callback escape hatch.
+- **Inbound content transforms:** `/inbound` adds Telegram-to-Pi text/media preprocessing after operator-configured handlers.
+- **Final outbound transforms:** `/outbound` adds final text/voice transformation fallbacks and exposes redacted runtime-event recording.
+- **Voice providers and policy helpers:** `/voice` registers STT/TTS providers and exposes stable voice-mode projections.
+- **Keyboard structures:** `/keyboard` exposes inline-keyboard structural types without transport operations.
+- **Agent-callable delivery:** `telegram_message` and `telegram_attach` provide ownership-gated text/file delivery to the agent, not a JavaScript companion-extension transport API.
+
+### Intentionally private
+
+- **Credentials and raw transport:** Bot tokens, Telegram clients, unrestricted Bot API calls, polling, retry loops, offsets, and multipart/download internals stay private so companions cannot bypass pairing or open a second transport owner.
+- **Ownership and multi-instance routing:** Locks, named-profile isolation, leader/follower IPC, authorization capabilities, thread provisioning, reconciliation, and sync assumptions stay bridge-owned.
+- **Session and queue coordination:** Active turns, queue lanes, dispatch gates, abort/compaction state, previews, final-reply ordering, and session-bound context stores stay internal invariants rather than shared mutable extension state.
+- **Core operator UI:** Built-in menus, model/thinking controls, rendering internals, prompt-template expansion, status diagnostics assembly, and thread naming remain core policy; companions extend them through commands, sections, and status providers.
+- **Raw Pi runtime objects:** Companion APIs never return captured `ExtensionContext`, `ExtensionCommandContext`, session managers, or private session-replacement/runtime handles.
+
+### Assessed and not required for 0.21
+
+- **General managed callbacks outside Sections:** The documented issue #126 consumer shape needs interactive Settings toggles, not interactive activity rows. `/sections` already owns stable callback namespacing, callback answers, edits, navigation, and cleanup for those toggles; `/delivery` can render the resulting non-interactive activity views. A second callback registry would duplicate ownership without a proven use case, while `/updates` remains the deliberate low-level escape hatch for consumers that truly need raw callback interception. Revisit only when a public-import-only consumer must generate managed callbacks independently of a registered Section context for arbitrary delivered messages.
+
+### Explicitly deferred
+
+- **Programmatic artifact/media delivery:** `telegram_attach` covers agent-authored artifacts, while companion JavaScript has no general file/media send contract. The first 0.21 delivery slice targets operational text/activity views; media should earn a typed extension only from a concrete companion use case.
+- **General configuration mutation:** Companions own their configuration and Settings state. pi-telegram does not expose unrestricted mutation of `telegram.json`, profile identity, pairing, rendering, queue, or transport settings.
+- **Process and session control:** Reload, new-session, fork, resume, process launch, and arbitrary Pi slash-command dispatch remain outside the Telegram companion API until Pi exposes safe async extension hooks.
+
+The 0.21 platform boundary lets a public-import-only consumer own reasoning, intermediate-prose, and tool-row policy while pi-telegram retains target selection, transport, authorization, lifecycle safety, and delivery ordering. Activity-specific examples live in this documentation; the separate [`pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) project remains the maintained companion-extension reference.
 
 ## Commands
 
@@ -208,6 +257,48 @@ Contract:
 - Section dynamic-label, render, and callback errors are isolated, surfaced as callback popups where applicable, and reflected by `getTelegramSectionDiagnostics()` until the matching surface succeeds.
 
 Full behavior: [Extension Sections](./sections.md).
+
+## Telegram Delivery API
+
+Import from `@llblab/pi-telegram/delivery`.
+
+```ts
+const sent = await sendTelegramView(
+  {
+    text: "<b>Indexing…</b>",
+    parseMode: "html",
+  },
+  { scope: { kind: "instance" } },
+);
+if (!sent.ok) {
+  recordLocalDiagnostic(sent.reason, sent.message);
+}
+```
+
+The delivery runtime resolves its live binding on every call and returns structured failures for unavailable runtimes, missing or unauthorized targets, stale handles, invalid views, and transport failures. A logical handle may represent several chunked Telegram messages; edit and delete reconcile the whole logical view. If send or edit growth fails after materializing messages, the failure carries a valid partial handle for deterministic retry or cleanup. Followers route through the existing leader transport, and reload/session replacement invalidates old handles rather than retaining Pi contexts.
+
+Full behavior: [Telegram Delivery API](./delivery.md).
+
+## Telegram Activity API
+
+Import from `@llblab/pi-telegram/activity`.
+
+```ts
+const off = registerTelegramActivityHandler({
+  id: "@scope/activity-view",
+  async handle(event, ctx) {
+    if (event.type !== "tool-start") return;
+    await ctx.send({
+      text: `Tool: ${event.toolName}`,
+      parseMode: "plain",
+    });
+  },
+});
+```
+
+Handlers receive ordered normalized events but run outside Pi's critical lifecycle path. Each handler has an isolated asynchronous queue; adjacent high-frequency deltas may coalesce while semantic boundaries remain ordered. Activity contexts choose active-turn delivery for Telegram-owned work and instance delivery for local/autonomous/unknown work, delegating every operation through the current `/delivery` generation.
+
+Full behavior and consumer policy examples: [Telegram Activity API](./activity.md).
 
 ## Status Lines
 
@@ -458,7 +549,7 @@ async function synthesizeDemoOgg(_text: string): Promise<string> {
 
 ### Smoke Checklist
 
-- The extension imports only public package membranes: `@llblab/pi-telegram`, `/commands`, `/sections`, `/status`, `/updates`, `/inbound`, `/outbound`, `/voice`, or `/keyboard`.
+- The extension imports only public package membranes: `@llblab/pi-telegram`, `/commands`, `/sections`, `/status`, `/delivery`, `/activity`, `/updates`, `/inbound`, `/outbound`, `/voice`, or `/keyboard`.
 - It does not import `@llblab/pi-telegram/lib/*`.
 - It registers on `session_start` and disposes on `session_shutdown`.
 - Stable high-level registrations use durable ids.

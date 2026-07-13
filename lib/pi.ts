@@ -4,13 +4,16 @@
  * Owns direct pi SDK imports and exposes narrow bridge-facing helpers/types for the extension composition layer
  */
 
+import type { AssistantMessageEvent } from "@earendil-works/pi-ai";
 import {
   type AgentEndEvent,
+  type AgentSettledEvent,
   type AgentStartEvent,
   type BeforeAgentStartEvent,
   type ExtensionAPI,
   type ExtensionCommandContext,
   type ExtensionContext,
+  type InputEvent,
   type SessionBeforeCompactEvent,
   type SessionCompactEvent,
   type SessionShutdownEvent,
@@ -21,11 +24,14 @@ import {
 
 export type {
   AgentEndEvent,
+  AgentSettledEvent,
   AgentStartEvent,
+  AssistantMessageEvent,
   BeforeAgentStartEvent,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  InputEvent,
   SessionBeforeCompactEvent,
   SessionCompactEvent,
   SessionShutdownEvent,
@@ -68,10 +74,7 @@ export type PiRunMode = "tui" | "rpc" | "json" | "print";
 
 function isPiRunMode(value: unknown): value is PiRunMode {
   return (
-    value === "tui" ||
-    value === "rpc" ||
-    value === "json" ||
-    value === "print"
+    value === "tui" || value === "rpc" || value === "json" || value === "print"
   );
 }
 
@@ -99,6 +102,18 @@ export function formatPollingStartBlockedByRunMode(ctx: unknown): string {
     : "Telegram polling is unavailable in this Pi run mode.";
 }
 
+export function getSessionCompactionReason(
+  event: unknown,
+): "manual" | "threshold" | "overflow" | "unknown" {
+  const reason =
+    event && typeof event === "object" && "reason" in event
+      ? (event as { reason?: unknown }).reason
+      : undefined;
+  return reason === "manual" || reason === "threshold" || reason === "overflow"
+    ? reason
+    : "unknown";
+}
+
 export type PiSendUserMessageOptions = NonNullable<
   Parameters<ExtensionAPI["sendUserMessage"]>[1]
 >;
@@ -124,7 +139,8 @@ export function createExtensionApiRuntimePorts(
   >,
 ): PiExtensionApiRuntimePorts {
   return {
-    sendUserMessage: (content, options) => api.sendUserMessage(content, options),
+    sendUserMessage: (content, options) =>
+      api.sendUserMessage(content, options),
     exec: (command, args, options) => api.exec(command, args, options),
     getCommands: () => api.getCommands(),
     getThinkingLevel: () => api.getThinkingLevel(),

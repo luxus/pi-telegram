@@ -986,8 +986,14 @@ test("Menu runtime routes stored callback queries through callback action ports"
     allModels: [{ model, thinkingLevel: "high" }],
     mode: "status",
   };
-  let thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" =
-    "medium";
+  let thinkingLevel:
+    | "off"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | "max" = "medium";
   await handleTelegramMenuCallbackRuntime(
     { id: "callback-1", data: "menu:thinking", message: { message_id: 2 } },
     { idle: true },

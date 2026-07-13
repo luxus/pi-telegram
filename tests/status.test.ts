@@ -982,7 +982,7 @@ test("Status HTML builder appends Threaded Mode bus role to status row", () => {
   assert.doesNotMatch(html, /Telegram/s);
 });
 
-test("Status HTML builder includes companion status lines", () => {
+test("Status HTML builder includes extension-provided status lines", () => {
   clearTelegramStatusLineProviders();
   const unregisterCodex = registerTelegramStatusLineProvider(
     ({ activeModel }) =>

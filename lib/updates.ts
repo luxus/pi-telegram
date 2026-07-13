@@ -1248,7 +1248,7 @@ export interface TelegramUpdateHandlerRegistry {
   /**
    * Run all registered handlers against an update.
    *
-   * Used by pi-telegram's polling runtime; companion extensions should call
+   * Used by pi-telegram's polling runtime; extension consumers should call
    * {@link registerTelegramUpdateHandler} or `add` instead of dispatching directly.
    */
   dispatch: (update: unknown) => Promise<TelegramUpdateHandlerVerdict>;
@@ -1297,7 +1297,7 @@ function getOrCreateUpdateHandlerRegistry(): TelegramUpdateHandlerRegistry {
 
 /**
  * Called by pi-telegram's own runtime to obtain the registry it dispatches
- * through. Companion extensions should not call this; use
+ * through. Extension consumers should not call this; use
  * {@link registerTelegramUpdateHandler} instead.
  */
 export function getTelegramUpdateHandlerRegistry(): TelegramUpdateHandlerRegistry {
@@ -1328,8 +1328,8 @@ export function createTelegramUpdateHandle<TUpdate, TContext>(
  * Register a handler that runs before pi-telegram routes a Telegram update
  * through its built-in handlers.
  *
- * This is the low-level public surface for companion extensions that share
- * the same bot and pi process with pi-telegram.
+ * This is the low-level public surface for extensions that share the same bot
+ * and Pi process with pi-telegram.
  */
 export function registerTelegramUpdateHandler(
   handler: TelegramUpdateHandler,

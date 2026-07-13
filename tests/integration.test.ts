@@ -9,6 +9,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import testRoot, { mock, type TestContext } from "node:test";
 
+import { registerTelegramActivityHandler } from "../api/activity.ts";
+import * as BusApi from "../lib/bus-api.ts";
+import * as BusLeader from "../lib/bus-leader.ts";
+import * as Bus from "../lib/bus.ts";
+import * as Delivery from "../lib/delivery.ts";
+import type { TelegramBridgeApiRuntime } from "../lib/telegram-api.ts";
+
 type RuntimeTestHandler = (context: TestContext) => void | Promise<void>;
 type RuntimeTelegramExtension = (typeof import("../index.ts"))["default"];
 
@@ -283,6 +290,151 @@ function createRuntimePiHarness(options: RuntimePiHarnessOptions = {}) {
   };
   return { handlers, commands, pi: pi as never };
 }
+
+test("Public activity delivery reaches the classic instance without blocking agent start", async () => {
+  const telegramConfig = await createRuntimeTelegramConfigFixture();
+  const { handlers, commands, pi } = createRuntimePiHarness();
+  const activitySend = createRuntimeDeferredResponse();
+  const sentBodies: Array<Record<string, unknown>> = [];
+  let activityHandledCount = 0;
+  let unregisterActivity: (() => void) | undefined;
+  const restoreFetch = setRuntimeTestFetch(async (input, init) => {
+    const method = getRuntimeTelegramApiMethod(input);
+    const body = parseJsonRequestBody(init);
+    if (method === "deleteWebhook" || method === "setMyCommands") {
+      return createRuntimeTelegramApiResponse(true);
+    }
+    if (method === "getUpdates") {
+      return await new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("stop", "AbortError"));
+        });
+      });
+    }
+    if (method === "sendChatAction") {
+      return createRuntimeTelegramApiResponse(true);
+    }
+    if (method === "sendMessage") {
+      sentBodies.push(body ?? {});
+      if (body?.text === "Activity from local") return activitySend.promise;
+      return createRuntimeTelegramApiResponse({ message_id: 90 });
+    }
+    throw new Error(`Unexpected Telegram API method: ${method}`);
+  });
+  try {
+    await telegramConfig.write({
+      botToken: "123:abc",
+      botId: 123,
+      botUsername: "test_bot",
+      allowedUserId: 77,
+      lastUpdateId: 0,
+    });
+    await writeRuntimeTelegramLocks({});
+    (await getRuntimeTelegramExtension())(pi);
+    const ctx = createRuntimeExtensionContext();
+    await handlers.get("session_start")?.({}, ctx);
+    await commands.get("telegram-connect")?.handler("", ctx);
+    unregisterActivity = registerTelegramActivityHandler({
+      id: "integration-classic-activity",
+      handle: async (event, activityCtx) => {
+        if (event.type !== "agent-start") return;
+        await activityCtx.send({ text: "Activity from local" });
+        activityHandledCount += 1;
+      },
+    });
+
+    await handlers.get("input")?.({ source: "interactive" }, ctx);
+    await handlers.get("agent_start")?.({}, ctx);
+    await waitForEventLoopCondition(() =>
+      sentBodies.some((body) => body.text === "Activity from local"),
+    );
+    assert.equal(
+      activityHandledCount,
+      0,
+      "agent_start must not await extension-owned activity delivery",
+    );
+    const activityBody = sentBodies.find(
+      (body) => body.text === "Activity from local",
+    );
+    assert.equal(activityBody?.chat_id, 77);
+    assert.equal(activityBody?.message_thread_id, undefined);
+
+    activitySend.resolve(
+      createRuntimeTelegramApiResponse({ message_id: 91 }),
+    );
+    await waitForEventLoopCondition(() => activityHandledCount === 1);
+    await handlers.get("agent_settled")?.({}, ctx);
+    await handlers.get("session_shutdown")?.({}, ctx);
+
+    await handlers.get("session_start")?.({}, ctx);
+    await handlers.get("input")?.({ source: "interactive" }, ctx);
+    await handlers.get("agent_start")?.({}, ctx);
+    await waitForEventLoopCondition(() => activityHandledCount === 2);
+    await handlers.get("agent_settled")?.({}, ctx);
+    await handlers.get("session_shutdown")?.({}, ctx);
+  } finally {
+    unregisterActivity?.();
+    restoreFetch();
+    await telegramConfig.restore();
+  }
+});
+
+test("Follower aggregate delivery crosses the authorized leader transport", async () => {
+  const follower = {
+    instanceId: "follower-one",
+    connectedAtMs: 1,
+    lastHeartbeatMs: 1,
+    target: { chatId: 77, threadId: 12 },
+  };
+  const directBodies: Array<Record<string, unknown>> = [];
+  const leaderProxy = BusLeader.createTelegramBusLeaderApiProxy({
+    async call(method, body) {
+      assert.equal(method, "sendMessage");
+      directBodies.push(body);
+      return { message_id: 301 };
+    },
+    async callMultipart() {
+      throw new Error("Multipart transport is not expected");
+    },
+    async downloadFile() {
+      throw new Error("Download transport is not expected");
+    },
+  });
+  const busAwareApi = BusApi.createTelegramBusAwareApiRuntime({
+    directRuntime: {} as TelegramBridgeApiRuntime,
+    ownsDirect: () => false,
+    getDefaultTarget: () => follower.target,
+    async callFollowerApi(method, args) {
+      assert.equal(
+        Bus.isTelegramFollowerApiCallAllowed({ follower, method, args }),
+        true,
+      );
+      return leaderProxy(method, args);
+    },
+  });
+  const runtime = Delivery.createTelegramBridgeDeliveryRuntime({
+    generation: "follower-generation",
+    getTargetPolicyView: () => ({
+      canDeliver: true,
+      ownsDirect: false,
+      allowedChatId: 77,
+      followerTarget: follower.target,
+    }),
+    getActiveTurnTarget: () => follower.target,
+    api: busAwareApi,
+    recordOwnership() {},
+  });
+
+  const result = await runtime.sendView(
+    { text: "Aggregate activity" },
+    { scope: { kind: "aggregate" } },
+  );
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(directBodies, [
+    { chat_id: 77, text: "Aggregate activity" },
+  ]);
+});
 
 test("Extension runtime polls, pairs, and dispatches an inbound Telegram turn into pi", async () => {
   const telegramConfig = await createRuntimeTelegramConfigFixture();

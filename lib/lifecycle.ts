@@ -6,10 +6,13 @@
 
 import type {
   AgentEndEvent,
+  AgentSettledEvent,
   AgentStartEvent,
+  AssistantMessageEvent,
   BeforeAgentStartEvent,
   ExtensionAPI,
   ExtensionContext,
+  InputEvent,
   SessionBeforeCompactEvent,
   SessionCompactEvent,
   SessionShutdownEvent,
@@ -47,6 +50,7 @@ type TelegramLifecycleModel = ExtensionContext["model"];
 type TelegramLifecycleMessage = AgentEndEvent["messages"][number];
 
 export interface TelegramLifecycleRegistrationDeps {
+  onInput?: (event: InputEvent, ctx: ExtensionContext) => Promise<void> | void;
   onSessionStart: (
     event: SessionStartEvent,
     ctx: ExtensionContext,
@@ -92,10 +96,17 @@ export interface TelegramLifecycleRegistrationDeps {
     ctx: ExtensionContext,
   ) => Promise<void>;
   onMessageUpdate: (
-    event: { message: TelegramLifecycleMessage },
+    event: {
+      message: TelegramLifecycleMessage;
+      assistantMessageEvent?: AssistantMessageEvent;
+    },
     ctx: ExtensionContext,
   ) => Promise<void>;
   onAgentEnd: (event: AgentEndEvent, ctx: ExtensionContext) => Promise<void>;
+  onAgentSettled?: (
+    event: AgentSettledEvent,
+    ctx: ExtensionContext,
+  ) => Promise<void> | void;
 }
 
 export interface TelegramSessionLifecycleHooks {
@@ -160,6 +171,7 @@ export interface TelegramCompactionObserverRuntimeDeps<TContext> {
   ) => void;
   dispatchNextQueuedTelegramTurn: (ctx: TContext) => void;
   recordRuntimeEvent?: (category: string, error: unknown) => void;
+  onCompactionAbandoned?: () => void;
   timeoutMs?: number;
   setTimer?: (callback: () => void, ms: number) => TelegramLifecycleTimer;
   clearTimer?: (timer: TelegramLifecycleTimer) => void;
@@ -210,6 +222,7 @@ export function createTelegramCompactionObserverRuntime<TContext>(
           "compact",
           new Error("Compaction observer timed out"),
         );
+        deps.onCompactionAbandoned?.();
         requestDispatch();
       }, timeoutMs);
       unrefTelegramLifecycleTimer(fallbackTimer);
@@ -253,11 +266,11 @@ export function createTelegramMessageActivityTypingHooks<
   const ensureTyping = (ctx: TContext): void => {
     if (deps.hasActiveTurn()) deps.startTypingLoop(ctx);
   };
-  const handleMessageActivity = async (
+  const handleMessageActivity = async <TEvent>(
     phase: "start" | "update",
-    event: Parameters<TelegramLifecycleRegistrationDeps["onMessageStart"]>[0],
+    event: TEvent,
     ctx: ExtensionContext,
-    inner: TelegramLifecycleRegistrationDeps["onMessageStart"],
+    inner: (event: TEvent, ctx: ExtensionContext) => Promise<void>,
   ): Promise<void> => {
     const typedCtx = ctx as TContext;
     ensureTyping(typedCtx);
@@ -318,6 +331,9 @@ export function registerTelegramLifecycleHooks(
   pi: ExtensionAPI,
   deps: TelegramLifecycleRegistrationDeps,
 ): void {
+  pi.on("input", async (event, ctx) => {
+    await deps.onInput?.(event, ctx);
+  });
   pi.on("session_start", async (event, ctx) => {
     await deps.onSessionStart(event, ctx);
   });
@@ -356,5 +372,8 @@ export function registerTelegramLifecycleHooks(
   });
   pi.on("agent_end", async (event, ctx) => {
     await deps.onAgentEnd(event, ctx);
+  });
+  pi.on("agent_settled", async (event, ctx) => {
+    await deps.onAgentSettled?.(event, ctx);
   });
 }

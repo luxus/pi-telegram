@@ -194,6 +194,8 @@ test("Package exports expose only stable public domains", () => {
     ".": "./index.ts",
     "./inbound": "./api/inbound.ts",
     "./outbound": "./api/outbound.ts",
+    "./delivery": "./api/delivery.ts",
+    "./activity": "./api/activity.ts",
     "./updates": "./api/updates.ts",
     "./commands": "./api/commands.ts",
     "./sections": "./api/sections.ts",

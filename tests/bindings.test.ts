@@ -232,6 +232,20 @@ test("Lifecycle binding delegates shutdown to composed session runtime", async (
   const harness = createBindingApiHarness();
   const deps = {
     pi: harness.api,
+    activityRuntime: {
+      recordInputSource: () => {},
+      onAgentStart: () => {},
+      onAssistantEvent: () => {},
+      onToolStart: () => {},
+      onToolUpdate: () => {},
+      onToolEnd: () => {},
+      onCompactionStart: () => {},
+      onCompactionEnd: () => {},
+      onCompactionAbandoned: () => {},
+      onAgentEnd: () => {},
+      onAgentSettled: () => {},
+      onSessionShutdown: () => {},
+    },
     sessionLifecycleRuntime: {
       onSessionStart: async () => {
         events.push("session-start");
@@ -320,13 +334,38 @@ test("Lifecycle binding delegates shutdown to composed session runtime", async (
   assert.deepEqual(events, ["composed-shutdown"]);
 });
 
-test("Lifecycle binding uses native typing and assistant previews without activity documents", async () => {
+test("Lifecycle binding routes native typing, previews, and normalized activity", async () => {
   const events: string[] = [];
   const harness = createBindingApiHarness();
   const runtime = Runtime.createTelegramBridgeRuntime();
   let activeTurn = false;
   const deps = {
     pi: harness.api,
+    activityRuntime: {
+      recordInputSource: (source: string) =>
+        events.push(`activity:input:${source}`),
+      onAgentStart: (target?: { chatId: number; threadId?: number }) =>
+        events.push(
+          `activity:agent-start:${target?.threadId ?? target?.chatId ?? "none"}`,
+        ),
+      onAssistantEvent: (event: { type: string }) =>
+        events.push(`activity:assistant:${event.type}`),
+      onToolStart: (event: { toolName: string }) =>
+        events.push(`activity:tool-start:${event.toolName}`),
+      onToolUpdate: (event: { toolName: string }) =>
+        events.push(`activity:tool-update:${event.toolName}`),
+      onToolEnd: (event: { toolName: string }) =>
+        events.push(`activity:tool-end:${event.toolName}`),
+      onCompactionStart: (reason: string) =>
+        events.push(`activity:compact-start:${reason}`),
+      onCompactionEnd: (reason: string) =>
+        events.push(`activity:compact-end:${reason}`),
+      onCompactionAbandoned: () =>
+        events.push("activity:compact-abandoned"),
+      onAgentEnd: () => events.push("activity:agent-end"),
+      onAgentSettled: () => events.push("activity:agent-settled"),
+      onSessionShutdown: () => events.push("activity:shutdown"),
+    },
     sessionLifecycleRuntime: {
       onSessionStart: async () => {},
       onSessionShutdown: async () => {},
@@ -415,6 +454,7 @@ test("Lifecycle binding uses native typing and assistant previews without activi
       message: {},
       assistantMessageEvent: {
         type: "thinking_delta",
+        contentIndex: 0,
         delta: "ponder <edge>",
       },
     },
@@ -444,14 +484,20 @@ test("Lifecycle binding uses native typing and assistant previews without activi
   );
 
   assert.deepEqual(events, [
+    "activity:agent-start:none",
     "typing:42:8",
     "typing:42:9",
     "preview:start",
     "typing:42:9",
+    "activity:assistant:thinking_delta",
     "typing:42:9",
     "preview:update",
     "typing:42:9",
+    "activity:tool-start:read",
+    "activity:compact-start:unknown",
     "typing:42:9",
+    "activity:compact-end:unknown",
+    "activity:compact-start:unknown",
     "typing:42:8",
   ]);
 });
