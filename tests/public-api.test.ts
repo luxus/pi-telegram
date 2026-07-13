@@ -1,10 +1,11 @@
 /**
  * Regression tests for public package API exports
- * Zones: package boundary, companion extension interop
- * Guards the stable 0.12 public subpaths and the removal of deep lib wildcard exports
+ * Zones: package boundary, extension interop
+ * Guards stable public subpaths and the removal of deep lib wildcard exports
  */
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 async function assertPackagePathNotExported(specifier: string): Promise<void> {
@@ -17,11 +18,13 @@ async function assertPackagePathNotExported(specifier: string): Promise<void> {
   );
 }
 
-test("Public package subpaths expose the stable companion-extension API", async () => {
+test("Public package subpaths expose the stable extension API", async () => {
   const [
     root,
     inbound,
     outbound,
+    delivery,
+    activity,
     updates,
     commands,
     sections,
@@ -32,6 +35,8 @@ test("Public package subpaths expose the stable companion-extension API", async 
     import("@llblab/pi-telegram"),
     import("@llblab/pi-telegram/inbound"),
     import("@llblab/pi-telegram/outbound"),
+    import("@llblab/pi-telegram/delivery"),
+    import("@llblab/pi-telegram/activity"),
     import("@llblab/pi-telegram/updates"),
     import("@llblab/pi-telegram/commands"),
     import("@llblab/pi-telegram/sections"),
@@ -47,6 +52,15 @@ test("Public package subpaths expose the stable companion-extension API", async 
   assert.deepEqual(Object.keys(outbound).sort(), [
     "recordTelegramRuntimeEvent",
     "registerTelegramOutboundHandler",
+  ]);
+  assert.deepEqual(Object.keys(delivery).sort(), [
+    "deleteTelegramView",
+    "editTelegramView",
+    "sendTelegramChatAction",
+    "sendTelegramView",
+  ]);
+  assert.deepEqual(Object.keys(activity).sort(), [
+    "registerTelegramActivityHandler",
   ]);
   assert.deepEqual(Object.keys(updates).sort(), [
     "registerTelegramUpdateHandler",
@@ -71,6 +85,24 @@ test("Public package subpaths expose the stable companion-extension API", async 
     "shouldSuppressPreviewForVoice",
   ]);
   assert.deepEqual(Object.keys(keyboard), []);
+});
+
+test("Activity API declares the Pi lifecycle compatibility floor", async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { peerDependencies?: Record<string, string> };
+  assert.equal(
+    packageJson.peerDependencies?.["@earendil-works/pi-coding-agent"],
+    ">=0.80.6",
+  );
+  assert.equal(
+    packageJson.peerDependencies?.["@earendil-works/pi-agent-core"],
+    ">=0.80.6",
+  );
+  assert.equal(
+    packageJson.peerDependencies?.["@earendil-works/pi-ai"],
+    ">=0.80.6",
+  );
 });
 
 test("Package-private lib implementation paths are not exported", async () => {

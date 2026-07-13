@@ -24,6 +24,8 @@ From git:
 pi install git:github.com/llblab/pi-telegram
 ```
 
+The 0.21 extension platform requires Pi `0.80.6` or newer. Its Activity API uses the public `agent_settled` lifecycle event to keep retries/continuations under one activity identity and release that identity only after the run fully settles.
+
 ## Quick Start
 
 ### 1. Create a Telegram bot
@@ -217,12 +219,14 @@ Companion extensions can integrate with Telegram without owning polling or trans
 - Register Telegram slash commands.
 - Add menu sections and settings surfaces.
 - Add compact status rows.
+- Deliver target-aware operational views and chat actions from companion code.
+- Observe normalized assistant, reasoning, tool, compaction, and settlement activity without blocking Pi.
 - Handle update/callback namespaces.
 - Provide inbound preprocessing handlers.
 - Provide outbound voice synthesis.
 - Use direct delivery helpers for explicit local/TUI sends.
 
-Stable public entrypoints are documented in [Public API](./docs/public-api.md), [Extension Sections](./docs/sections.md), [Inbound Handlers](./docs/inbound.md), [Outbound Handlers](./docs/outbound.md), [Updates](./docs/updates.md), and [Voice Integration](./docs/voice.md).
+Stable public entrypoints are documented in [Public API](./docs/public-api.md), [Telegram Delivery API](./docs/delivery.md), [Telegram Activity API](./docs/activity.md), [Extension Sections](./docs/sections.md), [Inbound Handlers](./docs/inbound.md), [Outbound Handlers](./docs/outbound.md), [Updates](./docs/updates.md), and [Voice Integration](./docs/voice.md).
 
 ## Safety Boundaries
 
@@ -241,6 +245,8 @@ Telegram is a companion surface around a live Pi runtime, not a second runtime.
 
 - [Architecture](./docs/architecture.md) — runtime, domains, queue, transport, and Threaded Mode overview.
 - [Public API](./docs/public-api.md) — package entrypoints and stable companion-extension contracts.
+- [Telegram Delivery API](./docs/delivery.md) — target-aware operational views, logical message handles, and lifecycle-safe transport.
+- [Telegram Activity API](./docs/activity.md) — normalized lifecycle events, source identity, non-blocking delivery contexts, and consumer policy examples.
 - [Inbound Handlers](./docs/inbound.md) — Telegram-to-Pi preprocessing pipelines.
 - [Outbound Handlers](./docs/outbound.md) — final text/voice/file transformation and delivery.
 - [Voice Integration](./docs/voice.md) — STT/TTS provider model and reply policies.

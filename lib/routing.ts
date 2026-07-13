@@ -23,6 +23,7 @@ import * as Turns from "./turns.ts";
 
 interface TelegramPromptPeerView {
   id?: unknown;
+  is_bot?: unknown;
   username?: unknown;
   first_name?: unknown;
   last_name?: unknown;
@@ -56,6 +57,12 @@ function isTelegramPromptOwnerPeer(
   return ownerUserId !== undefined && peer?.id === ownerUserId;
 }
 
+function isTelegramPromptBotPeer(
+  peer: TelegramPromptPeerView | undefined,
+): boolean {
+  return peer?.is_bot === true;
+}
+
 export function resolveTelegramGuestPromptPeer(input: {
   chatType?: string;
   chat?: TelegramPromptPeerView;
@@ -68,16 +75,24 @@ export function resolveTelegramGuestPromptPeer(input: {
   if (input.chatType !== "private") {
     return formatTelegramPromptPeer(input.chat);
   }
-  if (!isTelegramPromptOwnerPeer(input.from, input.ownerUserId)) {
+  if (
+    !isTelegramPromptOwnerPeer(input.from, input.ownerUserId) &&
+    !isTelegramPromptBotPeer(input.from)
+  ) {
     return formatTelegramPromptPeer(input.from);
   }
   for (const candidate of [
-    input.replyFrom,
     input.chat,
     input.guestBotCallerUser,
     input.guestBotCallerChat,
+    input.replyFrom,
   ]) {
-    if (isTelegramPromptOwnerPeer(candidate, input.ownerUserId)) continue;
+    if (
+      isTelegramPromptOwnerPeer(candidate, input.ownerUserId) ||
+      isTelegramPromptBotPeer(candidate)
+    ) {
+      continue;
+    }
     const peer = formatTelegramPromptPeer(candidate);
     if (peer) return peer;
   }

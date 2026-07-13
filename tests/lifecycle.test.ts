@@ -263,6 +263,9 @@ test("Compaction observer stops typing on timeout and shutdown", () => {
     recordRuntimeEvent(category, error) {
       events.push(`${category}:${(error as Error).message}`);
     },
+    onCompactionAbandoned() {
+      events.push("activity:compact-abandoned");
+    },
     setTimer(callback) {
       timerCallback = callback;
       return 1;
@@ -283,6 +286,7 @@ test("Compaction observer stops typing on timeout and shutdown", () => {
     "typing:stop",
     "status",
     "compact:Compaction observer timed out",
+    "activity:compact-abandoned",
     "dispatch:request",
     "compact:true",
     "typing:start",
@@ -314,7 +318,7 @@ test("Message activity hooks re-arm typing for active Telegram turns", async () 
   );
   active = false;
   await hooks.onMessageUpdate(
-    { message: {} as never },
+    { message: {} as never, assistantMessageEvent: {} as never },
     createLifecycleContext(),
   );
   assert.deepEqual(events, [
@@ -346,7 +350,7 @@ test("Message activity hooks preserve typing after transient preview errors", as
   });
 
   await hooks.onMessageUpdate(
-    { message: {} as never },
+    { message: {} as never, assistantMessageEvent: {} as never },
     createLifecycleContext(),
   );
 
@@ -406,6 +410,7 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
   assert.deepEqual(
     [...harness.handlers.keys()],
     [
+      "input",
       "session_start",
       "session_shutdown",
       "session_before_compact",
@@ -419,9 +424,11 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
       "message_start",
       "message_update",
       "agent_end",
+      "agent_settled",
     ],
   );
   const ctx = createLifecycleContext();
+  await getRequiredLifecycleHandler(harness.handlers, "input")({}, ctx);
   await getRequiredLifecycleHandler(harness.handlers, "session_start")({}, ctx);
   await getRequiredLifecycleHandler(harness.handlers, "session_shutdown")(
     {},
@@ -459,6 +466,7 @@ test("Lifecycle helpers register pi hooks and delegate to handlers", async () =>
     ctx,
   );
   await getRequiredLifecycleHandler(harness.handlers, "agent_end")({}, ctx);
+  await getRequiredLifecycleHandler(harness.handlers, "agent_settled")({}, ctx);
   assert.deepEqual(beforeAgentStartResult, { systemPrompt: "prompt" });
   assert.deepEqual(events, [
     "session-start",

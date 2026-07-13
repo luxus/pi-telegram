@@ -145,6 +145,38 @@ export function getTelegramFollowerTargetOwnership(input: {
   return record?.instanceId ? { instanceId: record.instanceId } : undefined;
 }
 
+const TELEGRAM_BUS_AGGREGATE_DELIVERY_FIELD =
+  "__piTelegramAggregateDelivery";
+
+export function markTelegramBusAggregateDelivery<T extends Record<string, unknown>>(
+  body: T,
+): T {
+  return {
+    ...body,
+    [TELEGRAM_BUS_AGGREGATE_DELIVERY_FIELD]: true,
+  };
+}
+
+export function isTelegramBusAggregateDelivery(body: unknown): boolean {
+  return Boolean(
+    body &&
+      typeof body === "object" &&
+      !Array.isArray(body) &&
+      (body as Record<string, unknown>)[
+        TELEGRAM_BUS_AGGREGATE_DELIVERY_FIELD
+      ] === true,
+  );
+}
+
+export function stripTelegramBusApiMetadata<T extends Record<string, unknown>>(
+  body: T,
+): T {
+  if (!(TELEGRAM_BUS_AGGREGATE_DELIVERY_FIELD in body)) return body;
+  const clean = { ...body };
+  delete clean[TELEGRAM_BUS_AGGREGATE_DELIVERY_FIELD];
+  return clean;
+}
+
 export function isTelegramFollowerApiCallAllowed(input: {
   follower: TelegramBusFollowerView;
   method: string;
@@ -227,6 +259,12 @@ export function isTelegramFollowerApiCallAllowed(input: {
       return isBotCommandRegistration(input.args[1]);
     if (apiMethod === "sendChatAction")
       return isTargetChatScoped(input.args[1]);
+    if (apiMethod === "sendMessage" && isTelegramBusAggregateDelivery(input.args[1])) {
+      const body = input.args[1] as Record<string, unknown>;
+      return (
+        body.message_thread_id === undefined && isTargetChatScoped(body)
+      );
+    }
     if (apiMethod === "deleteMessage" || apiMethod === "editMessageText") {
       return isTargetMessageScoped(input.args[1]);
     }

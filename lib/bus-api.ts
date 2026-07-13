@@ -4,6 +4,7 @@
  * Wraps the direct Telegram Bot API runtime so follower instances can route outbound calls through the bus leader
  */
 
+import { stripTelegramBusApiMetadata } from "./bus.ts";
 import type {
   TelegramAnswerGuestQueryOptions,
   TelegramApiCallOptions,
@@ -224,7 +225,7 @@ export function createTelegramBusAwareApiRuntime(
     },
     sendMessage(body: TelegramSendMessageBody): Promise<TelegramSentMessage> {
       return deps.ownsDirect()
-        ? deps.directRuntime.sendMessage(body)
+        ? deps.directRuntime.sendMessage(stripTelegramBusApiMetadata(body))
         : deps
             .callFollowerApi("call", ["sendMessage", body])
             .then(asSentMessage);

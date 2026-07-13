@@ -25,7 +25,7 @@ export type TelegramSectionCallbackResult = "handled" | "pass";
 export interface TelegramSectionView {
   text: string;
   /**
-   * Source format for companion section content.
+   * Source format for extension-provided section content.
    * Defaults to "html" for explicit Telegram UI markup; use "markdown"
    * when a section naturally owns Markdown content, or "plain" for text.
    */

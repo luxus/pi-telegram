@@ -441,10 +441,11 @@ Available programmatically via `getTelegramSectionDiagnostics()`. Main-menu/sett
 
 ## 15. Demo Extension
 
-`@llblab/pi-telegram-extension-demo` (`extensions/pi-telegram-extension-demo/`) is the reference implementation:
+[`@llblab/pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) is the maintained companion-extension reference:
 
-- Main menu: `🧪 Demo submenu` — enqueue prompt, answer callback, show info, interactive counter
-- Settings: `🧪 Demo settings` — ON/OFF toggle with dynamic `getLabel()` status indicator, enqueue from settings
-- Navigation: full Back/Main menu hierarchy across all three levels
+- Main-menu and Settings surfaces with dynamic labels.
+- Managed section callbacks, buttons, edits, navigation, and cleanup.
+- Public `@llblab/pi-telegram/*` imports rather than package-private `/lib` paths.
+- Independent package and lifecycle ownership outside pi-telegram core.
 
-Use it as a template for new section-based extensions.
+Use it as a template for section-based extensions. Activity-specific registration and delivery patterns remain in [Telegram Activity API](./activity.md); pi-telegram does not duplicate the demo as an in-package `examples/` directory.

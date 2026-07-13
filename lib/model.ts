@@ -20,7 +20,8 @@ export type ThinkingLevel =
   | "low"
   | "medium"
   | "high"
-  | "xhigh";
+  | "xhigh"
+  | "max";
 
 export interface ScopedTelegramModel<TModel extends MenuModel = MenuModel> {
   model: TModel;
@@ -34,6 +35,7 @@ export const THINKING_LEVELS: readonly ThinkingLevel[] = [
   "medium",
   "high",
   "xhigh",
+  "max",
 ];
 
 export interface CurrentModelStore<

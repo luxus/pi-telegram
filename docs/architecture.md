@@ -14,6 +14,8 @@ The bridge is a mobile companion for a live Pi session, not a remote terminal. I
 This document is the architectural map. Focused behavior standards live in sibling docs:
 
 - [Public API](./public-api.md) — stable commands, config, package entrypoints, assistant markup, extension APIs, and compatibility boundaries.
+- [Telegram Delivery API](./delivery.md) — target-aware operational views, logical message handles, lifecycle fencing, and leader/follower transport.
+- [Telegram Activity API](./activity.md) — normalized Pi lifecycle events, activity/source identity, non-blocking extension dispatch, and delivery contexts.
 - [UI Style](./ui-style.md) — inline UI labels, navigation, state markers, cards, and dialogs.
 - [Callback Namespaces](./callback-namespaces.md) — callback prefix ownership and fallback rules.
 - [Sections](./sections.md) — structured Telegram menu sections.
@@ -64,6 +66,8 @@ The repository uses a **Flat Domain DAG**:
 - `sections`: Telegram menu-section registry, opaque section callback tokens, render/callback dispatch, safe section ports, and diagnostics.
 - `keyboard`: shared inline-keyboard reply-markup shape only; feature domains own labels, callback data, and behavior.
 - `preview` / `replies` / `rendering`: throttled native Rich Markdown draft delivery, native final reply delivery, reply parameters, transport-limit chunking, and remaining Telegram HTML rendering for bridge-owned UI/compatibility surfaces.
+- `delivery`: public extension operational-view delivery, active-turn/instance/aggregate/authorized target policy, logical chunk handles, per-target ordering, runtime generation fencing, and the process-local runtime membrane. Its bridge adapter composes the established UI/compat reply renderer with narrow bus-aware Telegram API and ownership ports; it never exposes bot clients or Pi contexts.
+- `activity`: public normalized Pi lifecycle registration, activity/source identity, assistant segment and reasoning normalization, executed-tool events, non-blocking per-handler queues, delivery contexts, compatibility adapters, and shutdown fencing. It does not own visibility policy or Telegram rendering.
 - `outbound-markup`: top-level assistant action comment parsing, attribute parsing, voice reply planning, and preview/delivery stripping.
 - `outbound`: outbound text transformations, voice/button artifact delivery, and generated callback actions.
 - `outbound-attachments`: `telegram_attach`, queued outbound files, stat/limit checks, and photo/document delivery classification.
@@ -233,7 +237,7 @@ Assistant delivery guarantees:
 
 - Model-authored Markdown is the source of truth; the bridge does not pre-render assistant Markdown to HTML unless the operator selects `assistant.rendering: "html"` for compatibility.
 - Before native Rich Markdown delivery, the bridge normalizes known Bot-API-fragile source forms without changing visible meaning, including space-after-marker blockquotes and dollar-prefixed ticker atoms that Telegram may otherwise treat as unterminated math.
-- Prompt context blocks use compact metadata (`[tag|key:value]`) as the stable inbound contract. `[telegram...]` names the current surface only: owner/current turns use `[telegram]` or `[telegram|thread:<name>]`; guest-mode turns use `[telegram|guest:<group-title-or-peer-username-or-id>]`. In a private Guest Mode turn the paired owner's `from` identity is never the guest: an explicit replied peer wins, then the remote private-chat identity, then non-owner caller metadata; username falls back to the remote display name and numeric id. Source authors for quoted/forwarded material and their files are carried by `[reply|from:<username-or-id>]`, `[forward|from:<username-or-id>]`, and `[attachments|from:<username-or-id>]`, while plain `[attachments]` remains current-turn attachments and is ordered before reply/forward/source context.
+- Prompt context blocks use compact metadata (`[tag|key:value]`) as the stable inbound contract. `[telegram...]` names the current surface only: owner/current turns use `[telegram]` or `[telegram|thread:<name>]`; guest-mode turns use `[telegram|guest:<group-title-or-peer-username-or-id>]`. In a private Guest Mode turn the paired owner's `from` identity is never the guest: the remote private-chat identity wins, then non-owner caller metadata, with a non-bot replied peer available only as a final identity fallback when stronger conversation evidence is absent; username falls back to the remote display name and numeric id. Reply attribution still belongs independently in `[reply|from:...]`, and a replied bot can never define or replace the current `[telegram|guest:...]` location identity. Source authors for quoted/forwarded material and their files are carried by `[reply|from:<username-or-id>]`, `[forward|from:<username-or-id>]`, and `[attachments|from:<username-or-id>]`, while plain `[attachments]` remains current-turn attachments and is ordered before reply/forward/source context.
 - Quoted rich replies use Telegram `rich_message` blocks as the prompt-context source when available, so `[reply]` context receives rendered plain text instead of raw `InputRichMessage.markdown` fallback text.
 - Long native Markdown replies are split only at Telegram Rich Message transport limits; oversized fenced code, display-math, and fully wrapped inline-formatting blocks are rewrapped per chunk so persisted Rich Markdown chunks remain structurally valid.
 - When Draft previews are enabled, streaming previews pass structurally closed assistant Markdown prefixes through to `sendRichMessageDraft` with ownership checks, voice suppression, and serialized flushes. Unclosed inline spans, links, fenced code, comments, and display-math blocks are held back until a safe boundary exists. Draft failures are recorded and the failing frame is skipped instead of degrading to raw plain-message previews, because partial Markdown can be invalid while the final message remains valid.
@@ -265,6 +269,8 @@ Unknown callback data outside owned prefixes is forwarded as `[callback] <data>`
 
 - Raw update observation/consumption: [Updates](./updates.md).
 - Telegram-native slash commands: `registerTelegramCommand()` from [Public API](./public-api.md#commands).
+- Target-aware operational views and chat actions: [Telegram Delivery API](./delivery.md).
+- Normalized non-blocking Pi lifecycle events: [Telegram Activity API](./activity.md); the separate [`pi-telegram-extension-demo`](https://github.com/llblab/pi-telegram-extension-demo) project remains the companion-extension reference.
 - Structured inline UI sections: [Sections](./sections.md).
 - Callback namespace discipline: [Callback Namespaces](./callback-namespaces.md).
 - Voice/STT/TTS providers: [Voice Integration](./voice.md).

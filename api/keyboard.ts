@@ -1,6 +1,6 @@
 /**
  * Public Telegram keyboard API
- * Zones: package boundary, companion extension interop
+ * Zones: package boundary, extension interop
  * Exposes shared inline-keyboard structural types without runtime exports
  */
 

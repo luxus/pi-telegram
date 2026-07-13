@@ -1,6 +1,6 @@
 /**
  * Public Telegram voice API
- * Zones: package boundary, companion extension interop
+ * Zones: package boundary, extension interop
  * Exposes the stable STT/TTS provider surface and voice policy helpers
  */
 

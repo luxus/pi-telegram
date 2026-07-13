@@ -8,6 +8,8 @@ Living index of project documentation in `/docs`.
 
 - [architecture.md](./architecture.md) — Overview of the Telegram bridge runtime, optional profile isolation, queueing model, native Rich Markdown delivery, UI/compat rendering, and interactive controls
 - [public-api.md](./public-api.md) — Stable public API map: package entrypoints, commands, config, assistant markup, extension APIs, smoke examples, and compatibility boundaries
+- [delivery.md](./delivery.md) — Target-aware companion delivery contract for operational views, logical message handles, target scopes, lifecycle fencing, and leader/follower transport
+- [activity.md](./activity.md) — Normalized Pi lifecycle API for extension-owned reasoning, intermediate prose, tool activity, source identity, delivery contexts, and consumer policy examples
 - [../.agents/skills/telegram-bot/SKILL.md](../.agents/skills/telegram-bot/SKILL.md) — Agent-facing Telegram Bot API lookup skill backed by a local full Bot API reference
 - [../.agents/skills/domain-dag/SKILL.md](../.agents/skills/domain-dag/SKILL.md) — Project-local Domain DAG architecture skill and validator guidance
 - [command-templates.md](./command-templates.md) — Portable command-template standard core

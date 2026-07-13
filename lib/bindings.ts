@@ -4,6 +4,7 @@
  * Owns pi-facing tool, command, and lifecycle hook registration for the entrypoint
  */
 
+import * as Activity from "./activity.ts";
 import * as CommandTemplates from "./command-templates.ts";
 import * as Commands from "./commands.ts";
 import * as Config from "./config.ts";
@@ -200,6 +201,7 @@ export function registerTelegramCommandsAndTools({
 
 interface TelegramLifecycleBindingDeps {
   pi: Pi.ExtensionAPI;
+  activityRuntime: Activity.TelegramActivityRuntime;
   sessionLifecycleRuntime: Pick<
     Lifecycle.TelegramLifecycleRegistrationDeps,
     "onSessionStart" | "onSessionShutdown" | "onModelSelect"
@@ -276,6 +278,7 @@ interface TelegramLifecycleBindingDeps {
 
 export function registerTelegramLifecycleRuntimeHooks({
   pi,
+  activityRuntime,
   sessionLifecycleRuntime,
   configStore,
   abort,
@@ -517,6 +520,7 @@ export function registerTelegramLifecycleRuntimeHooks({
       deferredQueueDispatchRuntime.request,
     dispatchNextQueuedTelegramTurn,
     recordRuntimeEvent,
+    onCompactionAbandoned: activityRuntime.onCompactionAbandoned,
   });
   const messageActivityTypingHooks =
     Lifecycle.createTelegramMessageActivityTypingHooks({
@@ -530,29 +534,77 @@ export function registerTelegramLifecycleRuntimeHooks({
   Lifecycle.registerTelegramLifecycleHooks(pi, {
     ...sessionLifecycleRuntime,
     ...agentLifecycleHooks,
+    onInput(event) {
+      activityRuntime.recordInputSource(event.source ?? "unknown");
+    },
+    async onSessionStart(event, ctx) {
+      activityRuntime.onSessionStart?.();
+      await sessionLifecycleRuntime.onSessionStart(event, ctx);
+    },
     async onSessionShutdown(event, ctx) {
+      activityRuntime.onSessionShutdown();
       compactionObserver.onSessionShutdown();
       await sessionLifecycleRuntime.onSessionShutdown(event, ctx);
     },
-    onSessionBeforeCompact: compactionObserver.onSessionBeforeCompact,
-    onSessionCompact: compactionObserver.onSessionCompact,
+    onSessionBeforeCompact(event, ctx) {
+      activityRuntime.onCompactionStart(Pi.getSessionCompactionReason(event));
+      compactionObserver.onSessionBeforeCompact(event, ctx);
+    },
+    onSessionCompact(event, ctx) {
+      activityRuntime.onCompactionEnd(Pi.getSessionCompactionReason(event));
+      compactionObserver.onSessionCompact(event, ctx);
+    },
     async onAgentStart(event, ctx) {
       await agentStartWithDedupReset(event, ctx);
+      activityRuntime.onAgentStart(activeTurnRuntime.get()?.target);
       startAgentActivityTypingLoop(ctx);
     },
-    async onToolExecutionStart(_event, _ctx) {
+    async onToolExecutionStart(event, _ctx) {
       agentLifecycleHooks.onToolExecutionStart();
+      activityRuntime.onToolStart({
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        args: event.args,
+      });
     },
-    onToolExecutionUpdate() {},
-    async onToolExecutionEnd(_event, ctx) {
-      agentLifecycleHooks.onToolExecutionEnd(_event, ctx);
+    onToolExecutionUpdate(event) {
+      activityRuntime.onToolUpdate({
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        update: event.partialResult,
+      });
     },
-    onAgentEnd: agentLifecycleHooks.onAgentEnd,
+    async onToolExecutionEnd(event, ctx) {
+      activityRuntime.onToolEnd({
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        result: event.result,
+        isError: event.isError,
+      });
+      agentLifecycleHooks.onToolExecutionEnd(event, ctx);
+    },
+    async onMessageStart(event, ctx) {
+      await messageActivityHooks.onMessageStart(event, ctx);
+    },
+    async onMessageUpdate(event, ctx) {
+      if (event.assistantMessageEvent) {
+        activityRuntime.onAssistantEvent(
+          event.assistantMessageEvent as Activity.TelegramAssistantStreamEvent,
+        );
+      }
+      await messageActivityHooks.onMessageUpdate(event, ctx);
+    },
+    async onAgentEnd(event, ctx) {
+      activityRuntime.onAgentEnd();
+      await agentLifecycleHooks.onAgentEnd(event, ctx);
+    },
+    onAgentSettled() {
+      activityRuntime.onAgentSettled();
+    },
     onBeforeAgentStart: Prompts.createTelegramProactiveBeforeAgentStartHook({
       isConfigured: configStore.hasBotToken,
       isProactivePushEnabled,
       isCurrentOwner: lockOwnershipGuard.ownsContext,
     }),
-    ...messageActivityHooks,
   });
 }

@@ -428,10 +428,10 @@ function getOrCreateTelegramStatusLineProviderRegistry(): Map<
 }
 
 /**
- * Register a compact companion-extension line for the Telegram status menu.
+ * Register a compact extension-provided line for the Telegram status menu.
  *
  * Providers are synchronous and should return undefined when their line is not
- * relevant for the active model. Errors are isolated so optional companion
+ * relevant for the active model. Errors are isolated so optional extension
  * status cannot break the core Telegram menu.
  */
 export function registerTelegramStatusLineProvider(

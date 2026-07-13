@@ -1,6 +1,6 @@
 /**
  * Public Telegram commands API
- * Zones: package boundary, companion extension interop
+ * Zones: package boundary, extension interop
  * Exposes the stable Telegram slash-command registration surface while keeping registry internals package-private
  */
 
