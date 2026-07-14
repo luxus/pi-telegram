@@ -7,14 +7,17 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 
 import {
@@ -24,6 +27,7 @@ import {
   readLocks,
   resolveTelegramLockKey,
   TELEGRAM_LOCK_KEY,
+  withTelegramFileTransaction,
   writeLocks,
   type TelegramLockEntry,
 } from "../lib/locks.ts";
@@ -232,6 +236,422 @@ test("writeLocks writes private lock files", () => {
   }
 });
 
+test("File transaction publishes a private directory guard with owner metadata", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  try {
+    withTelegramFileTransaction(transactionPath, () => {
+      assert.equal(statSync(transactionPath).isDirectory(), true);
+      assert.equal(statSync(transactionPath).mode & 0o777, 0o700);
+      const ownerPath = join(transactionPath, readdirSync(transactionPath)[0]);
+      assert.equal(statSync(ownerPath).mode & 0o777, 0o600);
+      const owner = JSON.parse(readFileSync(ownerPath, "utf8")) as {
+        pid: number;
+        acquiredAtMs: number;
+        generation: string;
+      };
+      assert.equal(owner.pid, process.pid);
+      assert.equal(typeof owner.acquiredAtMs, "number");
+      assert.match(owner.generation, /^[0-9a-f-]{36}$/u);
+    });
+    assert.equal(existsSync(transactionPath), false);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock transaction recovers a directory guard left by a dead process", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  try {
+    mkdirSync(transactionPath, { mode: 0o700 });
+    writeFileSync(
+      join(transactionPath, "owner.dead-directory-guard.json"),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        acquiredAtMs: Date.now(),
+        generation: "dead-directory-guard",
+      }),
+      { mode: 0o600 },
+    );
+    const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+    assert.equal(lock.acquire({ cwd: "/repo" }).ok, true);
+    assert.equal(existsSync(transactionPath), false);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock transaction recovers dead directory main and recovery guards", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  const recoveryPath = `${transactionPath}.recovery`;
+  try {
+    for (const [path, generation] of [
+      [transactionPath, "dead-main-directory"],
+      [recoveryPath, "dead-recovery-directory"],
+    ] as const) {
+      mkdirSync(path, { mode: 0o700 });
+      writeFileSync(
+        join(path, `owner.${generation}.json`),
+        JSON.stringify({
+          pid: 2_147_483_647,
+          acquiredAtMs: Date.now(),
+          generation,
+        }),
+        { mode: 0o600 },
+      );
+    }
+    const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+    assert.equal(lock.acquire({ cwd: "/repo" }).ok, true);
+    assert.equal(existsSync(transactionPath), false);
+    assert.equal(existsSync(recoveryPath), false);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock transaction releases recovered ownership when recovery cleanup fails", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  const recoveryPath = `${transactionPath}.recovery`;
+  try {
+    for (const [path, generation] of [
+      [transactionPath, "dead-main-before-cleanup-failure"],
+      [recoveryPath, "dead-recovery-before-cleanup-failure"],
+    ] as const) {
+      mkdirSync(path, { mode: 0o700 });
+      writeFileSync(
+        join(path, `owner.${generation}.json`),
+        JSON.stringify({
+          pid: 2_147_483_647,
+          acquiredAtMs: Date.now(),
+          generation,
+        }),
+        { mode: 0o600 },
+      );
+    }
+    assert.throws(
+      () =>
+        withTelegramFileTransaction(
+          transactionPath,
+          () => undefined,
+          {
+            recoveryRename(fromPath, toPath) {
+              if (fromPath === recoveryPath) {
+                throw Object.assign(new Error("injected recovery cleanup busy"), {
+                  code: "EBUSY",
+                });
+              }
+              renameSync(fromPath, toPath);
+            },
+          },
+        ),
+      /injected recovery cleanup busy/,
+    );
+    assert.equal(existsSync(transactionPath), false);
+    withTelegramFileTransaction(transactionPath, () => undefined);
+    assert.equal(existsSync(transactionPath), false);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock transaction rollback retry restores peer-process recovery", async () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  const readyPath = join(temp.dir, "ready-peer");
+  const startPath = join(temp.dir, "start-peer");
+  let rollbackFailed = false;
+  try {
+    mkdirSync(transactionPath, { mode: 0o700 });
+    writeFileSync(
+      join(
+        transactionPath,
+        "owner.dead-main-before-rename-failure.json",
+      ),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        acquiredAtMs: Date.now(),
+        generation: "dead-main-before-rename-failure",
+      }),
+      { mode: 0o600 },
+    );
+    assert.throws(
+      () =>
+        withTelegramFileTransaction(
+          transactionPath,
+          () => undefined,
+          {
+            recoveryRename(fromPath, toPath) {
+              const isRollback = basename(String(fromPath)).startsWith(
+                "owner.reclaim.",
+              );
+              if (
+                fromPath === transactionPath ||
+                (isRollback && !rollbackFailed)
+              ) {
+                if (isRollback) rollbackFailed = true;
+                throw Object.assign(new Error("injected transient busy"), {
+                  code: "EBUSY",
+                });
+              }
+              renameSync(fromPath, toPath);
+            },
+          },
+        ),
+      /injected transient busy/,
+    );
+    assert.deepEqual(readdirSync(transactionPath), [
+      "owner.dead-main-before-rename-failure.json",
+    ]);
+    const child = spawnLockRaceChild({
+      locksPath: temp.path,
+      key: TELEGRAM_LOCK_KEY,
+      readyPath,
+      startPath,
+    });
+    await waitForCondition(() => existsSync(readyPath), 2_000);
+    writeFileSync(startPath, "start");
+    assert.equal((await child.result).ok, true);
+    assert.equal(existsSync(transactionPath), false);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock transaction reclaims an inactive same-process marker after rollback failure", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  try {
+    mkdirSync(transactionPath, { mode: 0o700 });
+    writeFileSync(
+      join(
+        transactionPath,
+        "owner.dead-main-before-rollback-failure.json",
+      ),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        acquiredAtMs: Date.now(),
+        generation: "dead-main-before-rollback-failure",
+      }),
+      { mode: 0o600 },
+    );
+    assert.throws(
+      () =>
+        withTelegramFileTransaction(
+          transactionPath,
+          () => undefined,
+          {
+            recoveryRename(fromPath, toPath) {
+              if (
+                fromPath === transactionPath ||
+                basename(String(fromPath)).startsWith("owner.reclaim.")
+              ) {
+                throw Object.assign(new Error("injected rollback busy"), {
+                  code: "EBUSY",
+                });
+              }
+              renameSync(fromPath, toPath);
+            },
+          },
+        ),
+      AggregateError,
+    );
+    assert.match(readdirSync(transactionPath)[0], /^owner\.reclaim\./u);
+    withTelegramFileTransaction(transactionPath, () => undefined);
+    assert.equal(existsSync(transactionPath), false);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock transaction recovery preserves a live recovery guard", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  const recoveryPath = `${transactionPath}.recovery`;
+  const liveRecoveryOwner = {
+    pid: process.pid,
+    acquiredAtMs: Date.now(),
+    generation: "live-recovery-owner",
+  };
+  try {
+    mkdirSync(transactionPath, { mode: 0o700 });
+    writeFileSync(
+      join(transactionPath, "owner.dead-main-with-live-recovery.json"),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        acquiredAtMs: Date.now(),
+        generation: "dead-main-with-live-recovery",
+      }),
+      { mode: 0o600 },
+    );
+    mkdirSync(recoveryPath, { mode: 0o700 });
+    writeFileSync(
+      join(recoveryPath, "owner.live-recovery-owner.json"),
+      JSON.stringify(liveRecoveryOwner),
+      { mode: 0o600 },
+    );
+    const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+    assert.equal(lock.acquire({ cwd: "/repo" }).ok, true);
+    assert.deepEqual(
+      JSON.parse(
+        readFileSync(
+          join(recoveryPath, "owner.live-recovery-owner.json"),
+          "utf8",
+        ),
+      ),
+      liveRecoveryOwner,
+    );
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock transaction recovers dead legacy main and recovery guards", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  const recoveryPath = `${transactionPath}.recovery`;
+  try {
+    for (const [path, generation] of [
+      [transactionPath, "dead-main-legacy"],
+      [recoveryPath, "dead-recovery-legacy"],
+    ] as const) {
+      writeFileSync(
+        path,
+        JSON.stringify({
+          pid: 2_147_483_647,
+          acquiredAtMs: Date.now(),
+          generation,
+        }),
+        { mode: 0o600 },
+      );
+    }
+    const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+    assert.equal(lock.acquire({ cwd: "/repo" }).ok, true);
+    assert.equal(existsSync(transactionPath), false);
+    assert.equal(existsSync(recoveryPath), false);
+    assert.equal(existsSync(`${recoveryPath}.migration`), false);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock transaction resumes a reclaim marker left by a dead recoverer", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  try {
+    mkdirSync(transactionPath, { mode: 0o700 });
+    writeFileSync(
+      join(
+        transactionPath,
+        "owner.reclaim.2147483647.00000000-0000-4000-8000-000000000000.json",
+      ),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        acquiredAtMs: Date.now(),
+        generation: "dead-original-owner",
+      }),
+      { mode: 0o600 },
+    );
+    const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+    assert.equal(lock.acquire({ cwd: "/repo" }).ok, true);
+    assert.equal(existsSync(transactionPath), false);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("File transaction refuses to release a replacement directory owner", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  try {
+    assert.throws(
+      () =>
+        withTelegramFileTransaction(transactionPath, () => {
+          rmSync(transactionPath, { recursive: true, force: true });
+          mkdirSync(transactionPath, { mode: 0o700 });
+          writeFileSync(
+            join(transactionPath, "owner.replacement-owner.json"),
+            JSON.stringify({
+              pid: process.pid,
+              acquiredAtMs: Date.now(),
+              generation: "replacement-owner",
+            }),
+            { mode: 0o600 },
+          );
+        }),
+      /changed ownership/,
+    );
+    assert.equal(existsSync(transactionPath), true);
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Delayed stale recovery cannot claim a replacement generation", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  const replacementOwner = {
+    pid: process.pid,
+    acquiredAtMs: Date.now(),
+    generation: "replacement-generation",
+  };
+  let replaced = false;
+  try {
+    mkdirSync(transactionPath, { mode: 0o700 });
+    writeFileSync(
+      join(transactionPath, "owner.stale-generation.json"),
+      JSON.stringify({
+        pid: 2_147_483_647,
+        acquiredAtMs: Date.now(),
+        generation: "stale-generation",
+      }),
+      { mode: 0o600 },
+    );
+    assert.throws(
+      () =>
+        withTelegramFileTransaction(
+          transactionPath,
+          () => undefined,
+          {
+            recoveryRename(fromPath, toPath) {
+              if (
+                !replaced &&
+                basename(String(fromPath)) === "owner.stale-generation.json"
+              ) {
+                replaced = true;
+                rmSync(transactionPath, { recursive: true, force: true });
+                mkdirSync(transactionPath, { mode: 0o700 });
+                writeFileSync(
+                  join(
+                    transactionPath,
+                    "owner.replacement-generation.json",
+                  ),
+                  JSON.stringify(replacementOwner),
+                  { mode: 0o600 },
+                );
+              }
+              renameSync(fromPath, toPath);
+            },
+          },
+        ),
+      /Timed out acquiring Telegram lock transaction/,
+    );
+    assert.deepEqual(
+      JSON.parse(
+        readFileSync(
+          join(transactionPath, "owner.replacement-generation.json"),
+          "utf8",
+        ),
+      ),
+      replacementOwner,
+    );
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
 test("Lock transaction recovers a guard left by a dead process", () => {
   const temp = createTempLockPath();
   try {
@@ -261,6 +681,23 @@ test("Lock transaction fails closed on an unverified guard", () => {
       /Timed out acquiring Telegram lock transaction/,
     );
     assert.equal(readFileSync(`${temp.path}.transaction`, "utf8"), "");
+  } finally {
+    rmSync(temp.dir, { recursive: true, force: true });
+  }
+});
+
+test("Lock transaction fails closed on an unverified directory guard", () => {
+  const temp = createTempLockPath();
+  const transactionPath = `${temp.path}.transaction`;
+  try {
+    mkdirSync(transactionPath, { mode: 0o700 });
+    const lock = createTelegramLockRuntime({ locksPath: temp.path, pid: 10 });
+    assert.throws(
+      () => lock.acquire({ cwd: "/repo" }),
+      /Timed out acquiring Telegram lock transaction/,
+    );
+    assert.equal(statSync(transactionPath).isDirectory(), true);
+    assert.deepEqual(readdirSync(transactionPath), []);
   } finally {
     rmSync(temp.dir, { recursive: true, force: true });
   }
@@ -315,13 +752,16 @@ test("Concurrent stale-guard recovery elects exactly one child process", async (
   const startPath = join(temp.dir, "start");
   const readyPaths = [join(temp.dir, "ready-a"), join(temp.dir, "ready-b")];
   try {
+    const transactionPath = `${temp.path}.transaction`;
+    mkdirSync(transactionPath, { mode: 0o700 });
     writeFileSync(
-      `${temp.path}.transaction`,
+      join(transactionPath, "owner.dead-race-guard.json"),
       JSON.stringify({
         pid: 2_147_483_647,
         acquiredAtMs: Date.now(),
         generation: "dead-race-guard",
       }),
+      { mode: 0o600 },
     );
     const children = readyPaths.map((readyPath) =>
       spawnLockRaceChild({
