@@ -181,6 +181,75 @@ test("Runtime JSONL destructive reset commits only under exact ownership", async
   }
 });
 
+test("Runtime JSONL append failures stay contained and do not poison later records", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-telegram-log-failure-"));
+  const blockerPath = join(dir, "not-a-directory");
+  const validPath = join(dir, "logs.jsonl");
+  let path = join(blockerPath, "logs.jsonl");
+  try {
+    await writeFile(blockerPath, "block mkdir");
+    const log = createTelegramRuntimeJsonlLog({ path: () => path });
+    log.record({ at: 1, category: "failure", message: "contained" });
+    path = validPath;
+    log.record({ at: 2, category: "recovery", message: "persisted" });
+
+    const deadline = Date.now() + 1_000;
+    while (!existsSync(validPath) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.deepEqual(await readJsonl(validPath), [
+      {
+        at: 2,
+        kind: "event",
+        category: "recovery",
+        message: "persisted",
+      },
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Runtime JSONL contains one failed record under strict unhandled rejection mode", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-telegram-log-strict-failure-"));
+  const blockerPath = join(dir, "not-a-directory");
+  const moduleUrl = new URL("../lib/logs.ts", import.meta.url).href;
+  try {
+    await writeFile(blockerPath, "block mkdir");
+    const source = `
+      import { createTelegramRuntimeJsonlLog } from ${JSON.stringify(moduleUrl)};
+      const log = createTelegramRuntimeJsonlLog({ path: process.env.LOG_PATH });
+      log.record({ at: 1, category: "failure", message: "contained" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    `;
+    const child = spawn(
+      process.execPath,
+      [
+        "--unhandled-rejections=strict",
+        "--experimental-strip-types",
+        "--input-type=module",
+        "--eval",
+        source,
+      ],
+      {
+        env: { ...process.env, LOG_PATH: join(blockerPath, "logs.jsonl") },
+        stdio: ["ignore", "ignore", "pipe"],
+      },
+    );
+    const result = await new Promise<{ code: number | null; stderr: string }>(
+      (resolve, reject) => {
+        let stderr = "";
+        child.stderr.on("data", (chunk) => (stderr += String(chunk)));
+        child.on("error", reject);
+        child.on("exit", (code) => resolve({ code, stderr }));
+      },
+    );
+    assert.equal(result.code, 0, result.stderr);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("Runtime JSONL appends serialize across processes without lost lines", async () => {
   const dir = await mkdtemp(join(tmpdir(), "pi-telegram-log-race-"));
   const path = join(dir, "logs.jsonl");

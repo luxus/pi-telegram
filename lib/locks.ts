@@ -5,16 +5,20 @@
  */
 
 import {
+  chmodSync,
   existsSync,
-  linkSync,
+  lstatSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { resolveTelegramLocksPath } from "./paths.ts";
 
 export const TELEGRAM_LOCK_KEY = "@llblab/pi-telegram";
@@ -178,14 +182,37 @@ interface TelegramLockTransactionOwner {
   generation: string;
 }
 
+const TELEGRAM_TRANSACTION_OWNER_PATTERN =
+  /^owner\.([A-Za-z0-9-]+)\.json$/u;
+
+function getLockTransactionOwnerFile(generation: string): string {
+  return `owner.${generation}.json`;
+}
+
+function getLockTransactionOwnerPath(path: string): string {
+  const stat = lstatSync(path);
+  if (stat.isDirectory()) {
+    const entries = readdirSync(path);
+    if (
+      entries.length === 1 &&
+      (TELEGRAM_TRANSACTION_OWNER_PATTERN.test(entries[0]) ||
+        TELEGRAM_TRANSACTION_RECLAIM_PATTERN.test(entries[0]))
+    ) {
+      return join(path, entries[0]);
+    }
+    throw new Error(`Unverifiable Telegram lock transaction guard: ${path}`);
+  }
+  if (stat.isFile()) return path;
+  throw new Error(`Unsupported Telegram lock transaction guard: ${path}`);
+}
+
 function readLockTransactionOwner(
   path: string,
 ): TelegramLockTransactionOwner | undefined {
   try {
-    const value = JSON.parse(readFileSync(path, "utf8")) as Record<
-      string,
-      unknown
-    >;
+    const value = JSON.parse(
+      readFileSync(getLockTransactionOwnerPath(path), "utf8"),
+    ) as Record<string, unknown>;
     if (
       typeof value.pid !== "number" ||
       typeof value.acquiredAtMs !== "number" ||
@@ -193,6 +220,10 @@ function readLockTransactionOwner(
     ) {
       return undefined;
     }
+    const ownerMatch = TELEGRAM_TRANSACTION_OWNER_PATTERN.exec(
+      basename(getLockTransactionOwnerPath(path)),
+    );
+    if (ownerMatch && ownerMatch[1] !== value.generation) return undefined;
     return {
       pid: value.pid,
       acquiredAtMs: value.acquiredAtMs,
@@ -203,6 +234,33 @@ function readLockTransactionOwner(
   }
 }
 
+function createLockTransactionContentionError(path: string): Error {
+  return Object.assign(
+    new Error(`Telegram lock transaction guard already exists: ${path}`),
+    { code: "EEXIST" },
+  );
+}
+
+function isLockTransactionContentionError(
+  error: unknown,
+  path: string,
+): boolean {
+  const code = (error as { code?: unknown })?.code;
+  if (
+    code === "EEXIST" ||
+    code === "ENOTEMPTY" ||
+    code === "ENOTDIR" ||
+    code === "EISDIR"
+  ) {
+    return true;
+  }
+  return existsSync(path) && (code === "EPERM" || code === "EACCES");
+}
+
+function removeLockTransactionGuard(path: string): void {
+  rmSync(path, { recursive: true, force: true });
+}
+
 function createLockTransactionGuard(
   path: string,
 ): TelegramLockTransactionOwner {
@@ -211,18 +269,20 @@ function createLockTransactionGuard(
     acquiredAtMs: Date.now(),
     generation: randomUUID(),
   };
-  const stagedPath = `${path}.${owner.generation}.tmp`;
+  const stagedPath = mkdtempSync(`${path}.staged.`);
   try {
-    writeFileSync(stagedPath, `${JSON.stringify(owner)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    linkSync(stagedPath, path);
+    chmodSync(stagedPath, 0o700);
+    writeFileSync(
+      join(stagedPath, getLockTransactionOwnerFile(owner.generation)),
+      `${JSON.stringify(owner)}\n`,
+      { encoding: "utf8", flag: "wx", mode: 0o600 },
+    );
+    if (existsSync(path)) throw createLockTransactionContentionError(path);
+    renameSync(stagedPath, path);
     return owner;
   } finally {
     try {
-      unlinkSync(stagedPath);
+      removeLockTransactionGuard(stagedPath);
     } catch {
       /* best effort */
     }
@@ -247,13 +307,19 @@ function releaseLockTransactionGuard(
       `Telegram lock transaction guard changed ownership: ${path}`,
     );
   }
+  const releasedPath = `${path}.released.${randomUUID()}`;
   for (
     let attempt = 0;
     attempt < TELEGRAM_LOCK_WRITE_RETRY_ATTEMPTS;
     attempt += 1
   ) {
     try {
-      unlinkSync(path);
+      renameSync(path, releasedPath);
+      try {
+        removeLockTransactionGuard(releasedPath);
+      } catch {
+        /* released debris cannot retain transaction authority */
+      }
       return;
     } catch (error) {
       if ((error as { code?: unknown })?.code === "ENOENT") return;
@@ -273,22 +339,241 @@ function isAbandonedLockTransaction(path: string): boolean {
   return owner ? !isProcessAlive(owner.pid) : false;
 }
 
-function recoverAbandonedLockTransaction(
+const TELEGRAM_TRANSACTION_RECLAIM_PATTERN =
+  /^owner\.reclaim\.(\d+)\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/u;
+const TELEGRAM_ACTIVE_TRANSACTION_RECLAIMS = Symbol.for(
+  "@llblab/pi-telegram/active-transaction-reclaims",
+);
+
+type TelegramTransactionGlobal = typeof globalThis & {
+  [TELEGRAM_ACTIVE_TRANSACTION_RECLAIMS]?: Set<string>;
+};
+
+export interface TelegramFileTransactionOptions {
+  recoveryRename?: typeof renameSync;
+}
+
+function getActiveTransactionReclaims(): Set<string> {
+  const root = globalThis as TelegramTransactionGlobal;
+  return (root[TELEGRAM_ACTIVE_TRANSACTION_RECLAIMS] ??= new Set());
+}
+
+function reclaimAbandonedDirectoryGuard(
   path: string,
-): TelegramLockTransactionOwner | undefined {
-  if (!isAbandonedLockTransaction(path)) return undefined;
-  const recoveryGuardPath = `${path}.recovery`;
-  let recoveryOwner: TelegramLockTransactionOwner;
+  options: TelegramFileTransactionOptions = {},
+): boolean {
   try {
-    recoveryOwner = createLockTransactionGuard(recoveryGuardPath);
+    if (!lstatSync(path).isDirectory()) return false;
+  } catch {
+    return false;
+  }
+  const entries = readdirSync(path);
+  if (entries.length !== 1) return false;
+  const entry = entries[0];
+  let observedPid: number;
+  let observedReclaimGeneration: string | undefined;
+  if (TELEGRAM_TRANSACTION_OWNER_PATTERN.test(entry)) {
+    const owner = readLockTransactionOwner(path);
+    if (!owner) return false;
+    observedPid = owner.pid;
+  } else {
+    const match = TELEGRAM_TRANSACTION_RECLAIM_PATTERN.exec(entry);
+    if (!match) return false;
+    observedPid = Number.parseInt(match[1], 10);
+    observedReclaimGeneration = match[2];
+  }
+  const activeReclaims = getActiveTransactionReclaims();
+  if (
+    observedPid === process.pid &&
+    observedReclaimGeneration !== undefined
+  ) {
+    if (activeReclaims.has(observedReclaimGeneration)) return false;
+  } else if (isProcessAlive(observedPid)) {
+    return false;
+  }
+
+  const renameRecovery = options.recoveryRename ?? renameSync;
+  const sourcePath = join(path, entry);
+  const reclaimGeneration = randomUUID();
+  const reclaimPath = join(
+    path,
+    `owner.reclaim.${process.pid}.${reclaimGeneration}.json`,
+  );
+  try {
+    // Claim inside the still-occupied guard before making its stable path free.
+    renameRecovery(sourcePath, reclaimPath);
   } catch (error) {
-    if ((error as { code?: unknown })?.code === "EEXIST") return undefined;
+    if ((error as { code?: unknown })?.code === "ENOENT") return false;
     throw error;
   }
+
+  const renameWithRetry = (fromPath: string, toPath: string): boolean => {
+    for (
+      let attempt = 0;
+      attempt < TELEGRAM_LOCK_WRITE_RETRY_ATTEMPTS;
+      attempt += 1
+    ) {
+      try {
+        renameRecovery(fromPath, toPath);
+        return true;
+      } catch (error) {
+        if ((error as { code?: unknown })?.code === "ENOENT") return false;
+        if (
+          !isRetryableLockWriteError(error) ||
+          attempt === TELEGRAM_LOCK_WRITE_RETRY_ATTEMPTS - 1
+        ) {
+          throw error;
+        }
+        sleepSync(TELEGRAM_LOCK_WRITE_RETRY_DELAY_MS * (attempt + 1));
+      }
+    }
+    return false;
+  };
+
+  activeReclaims.add(reclaimGeneration);
+  const stalePath = `${path}.stale.${process.pid}.${randomUUID()}`;
+  try {
+    try {
+      if (!renameWithRetry(path, stalePath)) return false;
+    } catch (renameError) {
+      try {
+        if (!renameWithRetry(reclaimPath, sourcePath)) throw renameError;
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [renameError, rollbackError],
+          `Failed to reclaim or restore Telegram lock transaction guard: ${path}`,
+        );
+      }
+      throw renameError;
+    }
+  } finally {
+    activeReclaims.delete(reclaimGeneration);
+  }
+  try {
+    removeLockTransactionGuard(stalePath);
+  } catch {
+    /* stale debris cannot retain transaction authority */
+  }
+  return true;
+}
+
+function acquireRecoverableDirectoryGuard(
+  path: string,
+  options: TelegramFileTransactionOptions = {},
+): TelegramLockTransactionOwner | undefined {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return createLockTransactionGuard(path);
+    } catch (error) {
+      if (!isLockTransactionContentionError(error, path)) throw error;
+      if (!reclaimAbandonedDirectoryGuard(path, options)) return undefined;
+    }
+  }
+  return undefined;
+}
+
+function removeAbandonedLegacyRecoveryGuard(
+  path: string,
+  options: TelegramFileTransactionOptions = {},
+): boolean {
+  try {
+    if (!lstatSync(path).isFile() || !isAbandonedLockTransaction(path))
+      return false;
+  } catch {
+    return false;
+  }
+  const migrationGuardPath = `${path}.migration`;
+  const migrationOwner = acquireRecoverableDirectoryGuard(
+    migrationGuardPath,
+    options,
+  );
+  if (!migrationOwner) return false;
+  try {
+    try {
+      if (!lstatSync(path).isFile() || !isAbandonedLockTransaction(path))
+        return false;
+    } catch {
+      return false;
+    }
+    const stalePath = `${path}.stale.${process.pid}.${randomUUID()}`;
+    try {
+      renameSync(path, stalePath);
+    } catch (error) {
+      if ((error as { code?: unknown })?.code === "ENOENT") return false;
+      throw error;
+    }
+    try {
+      removeLockTransactionGuard(stalePath);
+    } catch {
+      /* stale debris cannot retain transaction authority */
+    }
+    return true;
+  } finally {
+    releaseLockTransactionGuard(migrationGuardPath, migrationOwner);
+  }
+}
+
+function acquireLegacyRecoveryGuard(
+  path: string,
+  options: TelegramFileTransactionOptions = {},
+): TelegramLockTransactionOwner | undefined {
+  let owner = acquireRecoverableDirectoryGuard(path, options);
+  if (owner) return owner;
+  if (!removeAbandonedLegacyRecoveryGuard(path, options)) return undefined;
+  owner = acquireRecoverableDirectoryGuard(path, options);
+  return owner;
+}
+
+function createRecoveredLockTransactionGuard(
+  path: string,
+): TelegramLockTransactionOwner | undefined {
+  try {
+    return createLockTransactionGuard(path);
+  } catch (error) {
+    if (isLockTransactionContentionError(error, path)) return undefined;
+    throw error;
+  }
+}
+
+function recoverAbandonedLockTransaction(
+  path: string,
+  options: TelegramFileTransactionOptions = {},
+): TelegramLockTransactionOwner | undefined {
+  if (!isAbandonedLockTransaction(path)) return undefined;
+  let isDirectory: boolean;
+  try {
+    isDirectory = lstatSync(path).isDirectory();
+  } catch {
+    return undefined;
+  }
+  if (isDirectory) {
+    if (!reclaimAbandonedDirectoryGuard(path, options)) return undefined;
+    const recoveredOwner = createRecoveredLockTransactionGuard(path);
+    try {
+      reclaimAbandonedDirectoryGuard(`${path}.recovery`, options);
+      return recoveredOwner;
+    } catch (error) {
+      if (recoveredOwner) {
+        try {
+          releaseLockTransactionGuard(path, recoveredOwner);
+        } catch {
+          /* preserve the recovery cleanup failure */
+        }
+      }
+      throw error;
+    }
+  }
+
+  const recoveryGuardPath = `${path}.recovery`;
+  const recoveryOwner = acquireLegacyRecoveryGuard(
+    recoveryGuardPath,
+    options,
+  );
+  if (!recoveryOwner) return undefined;
   let recoveredOwner: TelegramLockTransactionOwner | undefined;
   try {
     if (!isAbandonedLockTransaction(path)) return undefined;
-    const stalePath = `${path}.stale.${process.pid}.${Date.now()}`;
+    const stalePath = `${path}.stale.${process.pid}.${randomUUID()}`;
     try {
       renameSync(path, stalePath);
     } catch (error) {
@@ -296,17 +581,12 @@ function recoverAbandonedLockTransaction(
       throw error;
     }
     try {
-      unlinkSync(stalePath);
+      removeLockTransactionGuard(stalePath);
     } catch {
-      /* best effort */
+      /* stale debris cannot retain transaction authority */
     }
-    try {
-      recoveredOwner = createLockTransactionGuard(path);
-      return recoveredOwner;
-    } catch (error) {
-      if ((error as { code?: unknown })?.code === "EEXIST") return undefined;
-      throw error;
-    }
+    recoveredOwner = createRecoveredLockTransactionGuard(path);
+    return recoveredOwner;
   } finally {
     try {
       releaseLockTransactionGuard(recoveryGuardPath, recoveryOwner);
@@ -323,7 +603,10 @@ function recoverAbandonedLockTransaction(
   }
 }
 
-function acquireLockTransaction(path: string): TelegramLockTransactionOwner {
+function acquireLockTransaction(
+  path: string,
+  options: TelegramFileTransactionOptions = {},
+): TelegramLockTransactionOwner {
   mkdirSync(dirname(path), { recursive: true });
   for (
     let attempt = 0;
@@ -333,8 +616,8 @@ function acquireLockTransaction(path: string): TelegramLockTransactionOwner {
     try {
       return createLockTransactionGuard(path);
     } catch (error) {
-      if ((error as { code?: unknown })?.code !== "EEXIST") throw error;
-      const recoveredOwner = recoverAbandonedLockTransaction(path);
+      if (!isLockTransactionContentionError(error, path)) throw error;
+      const recoveredOwner = recoverAbandonedLockTransaction(path, options);
       if (recoveredOwner !== undefined) return recoveredOwner;
       if (attempt === TELEGRAM_LOCK_TRANSACTION_ATTEMPTS - 1) {
         throw new Error(
@@ -350,8 +633,9 @@ function acquireLockTransaction(path: string): TelegramLockTransactionOwner {
 export function withTelegramFileTransaction<T>(
   transactionPath: string,
   operation: () => T,
+  options: TelegramFileTransactionOptions = {},
 ): T {
-  const owner = acquireLockTransaction(transactionPath);
+  const owner = acquireLockTransaction(transactionPath, options);
   try {
     return operation();
   } finally {

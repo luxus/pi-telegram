@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.22.1: Termux-Compatible Filesystem Transactions
+
+- `Filesystem Transactions`: Replaced hard-link guard publication with private staged directories containing complete exact-owner metadata, atomically published each non-empty guard by same-parent rename, and atomically renamed exact-owned guards away before recursive cleanup. Bound each owner generation into a unique filename so delayed stale observations cannot claim replacement metadata, retained exact stale recovery through recoverable internal claimant markers, retried reclaim and rollback moves without peer-visible stalls, released newly recovered ownership when secondary cleanup fails, kept fail-closed malformed-state handling, and bounded legacy regular-file guard recovery. Impact: shared Telegram state no longer requires the hard-link operation rejected by Android/Termux, while exactly-one cross-process ownership remains locally enforced; live Termux confirmation remains post-release evidence.
+- `Diagnostics`: Contained synchronous and queued JSONL persistence failures inside the diagnostics boundary while preserving later queued records after a failed append or rotation. Impact: an unavailable diagnostics path cannot terminate Pi through an unhandled rejection or permanently poison subsequent runtime evidence.
+
 ## 0.22.0: Concurrency And Runtime Ownership Hardening
 
 - `Composition Root`: Reduced `index.ts` from 1,534 to 1,077 lines by moving transport generations, Threaded Mode orchestration, bus request identity, thread/status projections, exact message ownership, sync/provisioning state, session lifecycle sequencing, diagnostics persistence, Delivery policy, inbound target authority, follower forwarding, retry defaults, and leader identity state into their owning flat domains. The entrypoint now retains high-level runtime construction, narrow live-port wiring, and extension registration; direct one-to-one adapters remain only where another wrapper would hide rather than clarify composition. Impact: release-critical ownership and recovery policy can be tested beside its domain instead of accumulating in the extension bootstrap.

@@ -159,7 +159,6 @@ export function createTelegramRuntimeJsonlLog(
     const path = resolvePath();
     const previousPath = resolvePreviousPath();
     pending = pending
-      .catch(() => undefined)
       .then(() => {
         ensureParent(path);
         withTelegramFileTransaction(`${path}.transaction`, () => {
@@ -178,7 +177,8 @@ export function createTelegramRuntimeJsonlLog(
           }
           appendFileSync(path, line, { mode: 0o600 });
         });
-      });
+      })
+      .catch(() => undefined);
   };
 
   return {
@@ -203,7 +203,11 @@ export function createTelegramRuntimeJsonlLog(
       }
     },
     record(event) {
-      appendLine(safeJsonLine({ kind: "event", ...event }) + "\n");
+      try {
+        appendLine(safeJsonLine({ kind: "event", ...event }) + "\n");
+      } catch {
+        // Diagnostics must never break Telegram runtime behavior.
+      }
     },
   };
 }
