@@ -730,11 +730,10 @@ export interface TelegramProactivePushTarget {
   threadId?: number;
 }
 
-export function createTelegramProactivePushChatIdGetter(deps: {
-  getActiveTurnChatId: () => number | undefined;
-  getAllowedUserId: () => number | undefined;
-}): () => number | undefined {
-  return () => deps.getActiveTurnChatId() ?? deps.getAllowedUserId();
+export function createTelegramProactivePushChatIdGetter(
+  getTarget: () => TelegramProactivePushTarget | undefined,
+): () => number | undefined {
+  return () => getTarget()?.chatId;
 }
 
 export function createTelegramProactivePushTargetGetter(deps: {

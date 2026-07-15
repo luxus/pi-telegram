@@ -2,14 +2,14 @@
 name: telegram-bot
 description: Local Telegram Bot API reference lookup for bot transport, updates, forum topics, Rich and Ephemeral Messages, Communities, media/files, callbacks, reactions, and Bot API method capability checks.
 metadata:
-  version: 1.1.0
+  version: 1.1.1
 ---
 
 # Telegram Bot API Reference Skill
 
 Use this skill when implementation or review depends on Telegram Bot API details: update shapes, method parameters, response objects, forum topic/thread support, Rich Messages, files/media, callback queries, reactions, or Bot API error semantics.
 
-The local reference is `api.md` in this skill directory. Treat it as vendored reference material: search it, cite the relevant anchor or section in reasoning, but do not reshape it for prose style.
+The local reference is `api.md` in this skill directory. Treat it as vendored reference material: search it, cite the relevant anchor or section in reasoning, but do not reshape it for prose style. Never read the complete file directly or load broad sequential chunks into model context; use this skill's indexes, exact-symbol search, anchors, and the smallest relevant line range.
 
 The authoritative upstream surfaces are the full [Bot API reference](https://core.telegram.org/bots/api) and the complete [Bot API changelog](https://core.telegram.org/bots/api-changelog). Keep `api.md` structurally aligned with the full reference—recent release entries followed by API sections, object tables, and methods—and cross-check every freshness update against the changelog. Do not replace the established full-reference structure with a changelog-only excerpt.
 
@@ -17,7 +17,7 @@ The authoritative upstream surfaces are the full [Bot API reference](https://cor
 
 Use the reference through multiple indexing dimensions. Do not rely on only one navigation mode.
 
-1. Start with the task-shaped index below to choose a likely region.
+1. Start with the task-shaped index below to choose a likely region. Do not begin by reading `api.md` itself.
 2. Use line ranges when the region is known. Line references use an `L` prefix (`L393`, `L1000`) to make them visually distinct from anchors, ids, and limits. When calling `read`, drop the prefix: `L393` means `offset: 393`.
 3. Use substring search for exact fields, methods, and error text. Prefer exact symbols with `rg`, for example `rg "message_thread_id|sendChatAction|ForumTopic" .agents/skills/telegram-bot/api.md`.
 4. Use anchors as a semantic cross-check. Bot API method/type names usually map to Markdown anchors by lowercasing the name: `sendRichMessageDraft` -> `#sendrichmessagedraft`, `MessageReactionUpdated` -> `#messagereactionupdated`.

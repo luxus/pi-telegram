@@ -344,7 +344,6 @@ interface TelegramLifecycleBindingDeps {
     Pi.AgentEndEvent["messages"][number],
     Keyboard.TelegramInlineKeyboardMarkup
   >["finalizeMarkdownPreview"];
-  proactivePushChatIdGetter: () => number | undefined;
   proactivePushTargetGetter: () => Queue.TelegramQueueTarget | undefined;
   isProactivePushEnabled: () => boolean;
   getAssistantRenderingMode: () => "rich" | "html";
@@ -387,7 +386,6 @@ export function registerTelegramLifecycleRuntimeHooks({
   deleteMessage,
   sendGuestReply,
   finalizeMarkdownPreview,
-  proactivePushChatIdGetter,
   proactivePushTargetGetter,
   isProactivePushEnabled,
   getAssistantRenderingMode,
@@ -425,7 +423,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     caption?: string,
   ): Promise<void> => {
     const stagingTarget = proactivePushTargetGetter();
-    const stagingChatId = stagingTarget?.chatId ?? proactivePushChatIdGetter();
+    const stagingChatId = stagingTarget?.chatId;
     if (stagingChatId === undefined) {
       throw new Error(
         "Guest attachment staging requires a paired Telegram chat",
@@ -470,7 +468,7 @@ export function registerTelegramLifecycleRuntimeHooks({
     caption?: string,
   ): Promise<void> => {
     const stagingTarget = proactivePushTargetGetter();
-    const stagingChatId = stagingTarget?.chatId ?? proactivePushChatIdGetter();
+    const stagingChatId = stagingTarget?.chatId;
     if (stagingChatId === undefined) {
       throw new Error("Guest voice staging requires a paired Telegram chat");
     }
@@ -595,11 +593,9 @@ export function registerTelegramLifecycleRuntimeHooks({
     if (!canSendAgentActivity(ctx)) return false;
     const turn = activeTurnRuntime.get();
     const target = turn?.target ?? proactivePushTargetGetter();
-    promptDispatchRuntime.startTypingLoop(
-      ctx,
-      turn?.chatId ?? target?.chatId ?? proactivePushChatIdGetter(),
-      { target },
-    );
+    promptDispatchRuntime.startTypingLoop(ctx, turn?.chatId ?? target?.chatId, {
+      target,
+    });
     return true;
   };
   const startActiveTurnTypingLoop = (ctx: Pi.ExtensionContext): void => {
