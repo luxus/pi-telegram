@@ -14,6 +14,7 @@ import {
   getTelegramVoiceTranscriptionProviders,
   isVoiceTurn,
   registerTelegramVoiceTranscriptionProvider,
+  shouldSuppressCompanionTextForVoiceTurn,
   shouldSuppressPreviewForVoice,
 } from "../lib/voice.ts";
 
@@ -151,6 +152,42 @@ test("isVoiceTurn detects voice-tagged turns correctly", () => {
   assert.equal(isVoiceTurn(null), false);
   assert.equal(isVoiceTurn(undefined), false);
   assert.equal(isVoiceTurn({}), false);
+});
+
+test("shouldSuppressCompanionTextForVoiceTurn respects provider policy", () => {
+  assert.equal(
+    shouldSuppressCompanionTextForVoiceTurn({ voiceReplyPreferred: true }),
+    false,
+  );
+
+  registerTelegramVoiceSynthesisProvider(
+    Object.assign(async () => undefined, {
+      getVoicePolicy: () => ({ suppressCompanionText: false }),
+    }),
+    { id: "no-suppress" },
+  );
+  assert.equal(
+    shouldSuppressCompanionTextForVoiceTurn({ voiceReplyPreferred: true }),
+    false,
+  );
+
+  registerTelegramVoiceSynthesisProvider(
+    Object.assign(async () => undefined, {
+      getVoicePolicy: () => ({ suppressCompanionText: true }),
+    }),
+    { id: "suppress" },
+  );
+  assert.equal(
+    shouldSuppressCompanionTextForVoiceTurn({ voiceReplyPreferred: true }),
+    true,
+  );
+  assert.equal(
+    shouldSuppressCompanionTextForVoiceTurn({ voiceReplyRequired: true }),
+    true,
+  );
+  // Non-voice turns never suppress, even if a provider opts in.
+  assert.equal(shouldSuppressCompanionTextForVoiceTurn({}), false);
+  assert.equal(shouldSuppressCompanionTextForVoiceTurn(null), false);
 });
 
 // --- Preview Suppression ---

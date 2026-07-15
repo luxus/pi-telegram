@@ -55,12 +55,29 @@ export interface TelegramVoiceTurnView {
   userText?: string;
 }
 
+/**
+ * Optional provider-owned voice delivery preferences.
+ * Bridge-owned `voice.replyMode` still decides when a turn is voice-tagged;
+ * providers can only express additional delivery wishes the bridge may honor.
+ */
+export interface TelegramVoiceProviderPolicy {
+  /** Advisory only; bridge config remains authoritative for reply mode. */
+  replyMode?: TelegramVoiceReplyMode;
+  /**
+   * When true, voice-tagged turns (mirror preferred / always required) that
+   * already plan a voice reply suppress leftover companion markdown so only
+   * the voice note is delivered (plus optional voice caption). Default /
+   * omitted keeps legacy dual-delivery (text + voice).
+   */
+  suppressCompanionText?: boolean;
+}
+
 export interface TelegramVoiceSynthesisProvider {
   (
     text: string,
     options?: { lang?: string; rate?: string },
   ): Promise<TelegramVoiceSynthesisProviderResult>;
-  getVoicePolicy?: () => { replyMode?: TelegramVoiceReplyMode };
+  getVoicePolicy?: () => TelegramVoiceProviderPolicy;
   getVoicePromptContribution?: (
     view: TelegramVoiceTurnView,
   ) => string | undefined;
@@ -275,6 +292,31 @@ export function isVoiceTurn(
     | undefined,
 ): boolean {
   return !!(turn?.voiceReplyPreferred || turn?.voiceReplyRequired);
+}
+
+/**
+ * True when a registered synthesis provider asks to suppress companion
+ * markdown on voice-tagged turns. First provider (registration order) that
+ * returns `suppressCompanionText: true` wins; omitted/false keeps legacy
+ * dual-delivery.
+ */
+export function shouldSuppressCompanionTextForVoiceTurn(
+  turn:
+    | { voiceReplyPreferred?: boolean; voiceReplyRequired?: boolean }
+    | null
+    | undefined,
+): boolean {
+  if (!isVoiceTurn(turn)) return false;
+  for (const provider of getTelegramVoiceSynthesisProviders()) {
+    try {
+      if (provider.getVoicePolicy?.()?.suppressCompanionText === true) {
+        return true;
+      }
+    } catch {
+      // Ignore provider policy errors; try the next provider.
+    }
+  }
+  return false;
 }
 
 // --- Voice Prompt Contribution ---

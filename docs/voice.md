@@ -171,6 +171,27 @@ The bridge keeps voice prompt context compact and policy-owned. It adds `[voice]
 
 Voice synthesis providers can supply prompt guidance through `getVoicePromptContribution(view)`, but provider text should stay optional and provider-specific. Reply-mode context belongs to pi-telegram.
 
+Providers may also declare delivery preferences via `getVoicePolicy()`:
+
+```ts
+getVoicePolicy: () => ({
+  // Advisory only — telegram.json voice.replyMode remains authoritative.
+  replyMode: "mirror",
+  // On voice-tagged turns that already plan a voice reply, drop leftover
+  // companion markdown so only the voice note is delivered (optional caption
+  // via transcriptText still works). Default/omitted keeps text + voice.
+  suppressCompanionText: true,
+}),
+```
+
+`suppressCompanionText` is opt-in and provider-owned. The bridge honors it only when:
+
+1. the turn is voice-tagged (`mirror` preferred or `always` required), and
+2. a voice reply is already planned (explicit markup, interception, or handlers), and
+3. some registered synthesis provider returns `suppressCompanionText: true` (first true wins in registration order).
+
+It never invents voice delivery and never changes non-voice turns. Manual-mode companion summaries (`text` + `telegram_voice` on a non-tagged turn) stay dual-delivery.
+
 ## Fallback Behavior
 
 ### If voice generation fails

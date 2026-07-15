@@ -7,8 +7,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  clearTelegramVoiceSynthesisProviders,
   createTelegramButtonActionStore,
   createTelegramOutboundReplyPlanner,
+  registerTelegramVoiceSynthesisProvider,
 } from "../lib/outbound.ts";
 import {
   appendTelegramPromptTurnOnce,
@@ -2053,6 +2055,76 @@ test("Agent end sends text as reply and voice without reply when both exist", as
   });
   assert.ok(events.some((e) => e.startsWith("finalize:")));
   assert.ok(events.some((e) => e === "voice:replyToPrompt=false"));
+});
+
+test("Agent end suppresses companion text when provider requests it on voice-tagged turn", async () => {
+  clearTelegramVoiceSynthesisProviders();
+  registerTelegramVoiceSynthesisProvider(
+    Object.assign(async () => undefined, {
+      getVoicePolicy: () => ({ suppressCompanionText: true }),
+    }),
+    { id: "suppress-companion" },
+  );
+  const events: string[] = [];
+  const turn: PendingTelegramTurn = {
+    ...createQueueTestPromptTurn(),
+    voiceReplyPreferred: true,
+  };
+  try {
+    await handleTelegramAgentEndRuntime({
+      turn,
+      assistant: {
+        text: [
+          "Companion summary.",
+          "",
+          "<!-- telegram_voice: Spoken only. -->",
+        ].join("\n"),
+      },
+      foldQueuedPromptsIntoHistory: false,
+      resetRuntimeState: () => {},
+      updateStatus: () => {},
+      clearPreview: async () => {
+        events.push("clear");
+      },
+      setPreviewPendingText: (text) => {
+        events.push(`preview:${text}`);
+      },
+      finalizeMarkdownPreview: async (_chatId, markdown) => {
+        events.push(`finalize:${markdown}`);
+        return true;
+      },
+      planOutboundReply: () => ({
+        markdown: "Companion summary.",
+        voiceText: "Spoken only.",
+      }),
+      sendMarkdownReply: async () => {
+        events.push("markdown");
+      },
+      sendTextReply: async () => {
+        events.push("text");
+      },
+      sendQueuedAttachments: async () => {
+        events.push("attachments");
+      },
+      sendOutboundReplyArtifacts: async (_turn, plan, options) => {
+        events.push(
+          `voice:${plan.voiceText}:replyToPrompt=${options?.replyToPrompt}`,
+        );
+      },
+      recordRuntimeEvent: () => {},
+      dispatchNextQueuedTelegramTurn: () => {
+        events.push("dispatch");
+      },
+    });
+  } finally {
+    clearTelegramVoiceSynthesisProviders();
+  }
+  assert.deepEqual(events, [
+    "clear",
+    "voice:Spoken only.:replyToPrompt=true",
+    "attachments",
+    "dispatch",
+  ]);
 });
 
 test("Agent end does not intercept when planOutboundReply returns voiceReplies", async () => {
