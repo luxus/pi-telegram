@@ -241,27 +241,6 @@ test("Thread reconciler exposes explicit reconciliation state transitions", () =
   });
 });
 
-test("Thread reconciler plans pruned follower cleanup from current instance records", () => {
-  const plan = planThreadReconciliation({
-    nowMs,
-    records: [
-      { ...record(50), instanceId: "follower-a" },
-      { ...record(51, "offline"), instanceId: "follower-a" },
-      { ...record(52), instanceId: "follower-b" },
-    ],
-    prunedFollowerInstanceIds: ["follower-a"],
-  });
-
-  assert.deepEqual(plan.actions, [
-    {
-      kind: "close-delete-pruned-follower-topic",
-      target: { chatId: 7, threadId: 50 },
-      reason: "pruned-follower",
-      instanceId: "follower-a",
-    },
-  ]);
-});
-
 test("Thread reconciler plans replaced binding cleanup for same-instance old targets", () => {
   const plan = planThreadReconciliation({
     nowMs,
@@ -335,7 +314,7 @@ test("Thread reconciler plans previous leader cleanup from owner/profile evidenc
   ]);
 });
 
-test("Thread reconciler plans proactive reservation cleanup and removal after stale probe", () => {
+test("Thread reconciler plans proactive reservation cleanup", () => {
   const cleanup = planThreadReconciliation({
     nowMs,
     records: [],
@@ -348,23 +327,6 @@ test("Thread reconciler plans proactive reservation cleanup and removal after st
       target: { chatId: 7, threadId: 86 },
       observedAtMs: nowMs,
       reason: "startup-reservation",
-    },
-  ]);
-
-  const removal = planThreadReconciliation({
-    nowMs,
-    records: [],
-    reservations: [reservation(86)],
-    reservationProbeResults: [
-      { target: { chatId: 7, threadId: 86 }, stale: true },
-      { target: { chatId: 7, threadId: 87 }, stale: true },
-    ],
-  });
-  assert.deepEqual(removal.actions, [
-    {
-      kind: "remove-reservation",
-      target: { chatId: 7, threadId: 86 },
-      reason: "reservation-probe-stale",
     },
   ]);
 });
@@ -459,34 +421,6 @@ test("Thread reconciler ignores stale-epoch cleanup observations", () => {
   });
 
   assert.deepEqual(plan.actions, []);
-});
-
-test("Thread reconciler apply removes confirmed stale reservations", async () => {
-  const removedTargets: unknown[] = [];
-  let persisted = false;
-  await applyThreadReconciliationPlan(
-    {
-      actions: [
-        {
-          kind: "remove-reservation",
-          target: { chatId: 7, threadId: 88 },
-          reason: "reservation-probe-stale",
-        },
-      ],
-    },
-    {
-      removeReservationByTarget(target) {
-        removedTargets.push(target);
-        return true;
-      },
-      async persist() {
-        persisted = true;
-      },
-    },
-  );
-
-  assert.deepEqual(removedTargets, [{ chatId: 7, threadId: 88 }]);
-  assert.equal(persisted, true);
 });
 
 test("Thread reconciler apply closes replaced instance topics and marks them stale", async () => {

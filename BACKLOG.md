@@ -1,6 +1,6 @@
 # Project Backlog
 
-_This backlog tracks only open release-relevant work: hotfixes, live runtime verification, evidence-gated Telegram client follow-ups, and upstream Pi API blockers. Completed outcomes and validation evidence belong in `CHANGELOG.md`, not in this queue._
+_This backlog tracks only open release-relevant work: hotfixes, bounded maintenance, live runtime verification, evidence-gated Telegram client follow-ups, and upstream Pi API blockers. Completed outcomes and validation evidence belong in `CHANGELOG.md`, not in this queue._
 
 ## P1 — Native Windows Threaded Mode Follow-Ups
 

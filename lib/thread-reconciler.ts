@@ -62,11 +62,6 @@ export interface TelegramReservedThreadMessageObservation {
   leaderEpoch?: number | string;
 }
 
-export interface ThreadReservationProbeResult {
-  target: ThreadTarget;
-  stale: boolean;
-}
-
 export interface ReplacedInstanceBindingInput {
   instanceId: string;
   replacementTarget: ThreadTarget;
@@ -112,14 +107,6 @@ export type ThreadReconciliationAction =
       leaderEpoch?: number | string;
     }
   | {
-      kind: "close-delete-pruned-follower-topic";
-      target: TelegramTarget & { threadId: number };
-      reason: "pruned-follower";
-      instanceId?: string;
-      messageId?: number;
-      leaderEpoch?: number | string;
-    }
-  | {
       kind: "close-delete-replaced-follower-topic";
       target: TelegramTarget & { threadId: number };
       reason: "replaced-follower";
@@ -150,11 +137,6 @@ export type ThreadReconciliationAction =
       pendingProvisionId: string;
       instanceId?: string;
       leaderEpoch?: number | string;
-    }
-  | {
-      kind: "remove-reservation";
-      target: TelegramTarget & { threadId: number };
-      reason: "reservation-probe-stale";
     };
 
 export type ThreadReconciliationPhase =
@@ -203,7 +185,6 @@ export interface ThreadReconciliationApplyPorts {
     lastSyncError?: string,
   ) => boolean;
   persist?: () => Promise<void>;
-  removeReservationByTarget?: (target: ThreadTarget) => boolean;
   removePendingProvisionById?: (id: string) => boolean;
   getCurrentLeaderEpoch?: () => number | string | undefined;
   recordRuntimeEvent?: (
@@ -223,8 +204,6 @@ export interface ThreadReconciliationInput {
   unboundMessages?: readonly TelegramUnboundThreadMessageObservation[];
   reservedMessages?: readonly TelegramReservedThreadMessageObservation[];
   proactiveReservationCleanup?: boolean;
-  reservationProbeResults?: readonly ThreadReservationProbeResult[];
-  prunedFollowerInstanceIds?: readonly string[];
   replacedBindings?: readonly ReplacedInstanceBindingInput[];
   previousLeaderCleanup?: PreviousLeaderCleanupInput;
   previousState?: ThreadReconciliationMachineState;
@@ -309,7 +288,6 @@ function isCleanupAction(action: ThreadReconciliationAction): boolean {
     action.kind === "close-delete-unbound-topic" ||
     action.kind === "close-delete-reserved-topic" ||
     action.kind === "close-stale-replaced-topic" ||
-    action.kind === "close-delete-pruned-follower-topic" ||
     action.kind === "close-delete-replaced-follower-topic" ||
     action.kind === "close-delete-previous-leader-topic" ||
     action.kind === "close-delete-disconnected-instance-topic" ||
@@ -318,11 +296,7 @@ function isCleanupAction(action: ThreadReconciliationAction): boolean {
 }
 
 function isSyncAction(action: ThreadReconciliationAction): boolean {
-  return (
-    action.kind === "mark-topic-active" ||
-    action.kind === "mark-topic-stale" ||
-    action.kind === "remove-reservation"
-  );
+  return action.kind === "mark-topic-active" || action.kind === "mark-topic-stale";
 }
 
 function createThreadReconciliationMachineState(
@@ -520,11 +494,6 @@ export async function applyThreadReconciliationPlan(
   const persistFences: ThreadReconciliationAction[] = [];
   const incompleteActions: ThreadReconciliationAction[] = [];
   for (const action of plan.actions) {
-    if (action.kind === "remove-reservation") {
-      shouldPersist =
-        ports.removeReservationByTarget?.(action.target) || shouldPersist;
-      continue;
-    }
     if (action.kind === "mark-topic-active") {
       shouldPersist =
         ports.markActiveByTarget?.(action.target) || shouldPersist;
@@ -586,7 +555,6 @@ export async function applyThreadReconciliationPlan(
     if (
       action.kind === "close-delete-unbound-topic" ||
       action.kind === "close-delete-reserved-topic" ||
-      action.kind === "close-delete-pruned-follower-topic" ||
       action.kind === "close-delete-replaced-follower-topic" ||
       action.kind === "close-delete-previous-leader-topic" ||
       action.kind === "close-delete-disconnected-instance-topic" ||
@@ -658,7 +626,6 @@ export async function applyThreadReconciliationPlan(
       if (shouldSkipForStaleLeaderEpoch(action, ports)) continue;
       if (
         action.kind !== "close-delete-previous-leader-topic" &&
-        action.kind !== "close-delete-pruned-follower-topic" &&
         action.kind !== "close-delete-replaced-follower-topic" &&
         action.kind !== "close-delete-disconnected-instance-topic" &&
         action.kind !== "close-delete-expired-pending-provision-topic"
@@ -674,9 +641,7 @@ export async function applyThreadReconciliationPlan(
           ? "Unbound Telegram topic deleted"
           : action.kind === "close-delete-reserved-topic"
             ? "Reserved Telegram topic deleted"
-            : action.kind === "close-delete-pruned-follower-topic"
-              ? "Pruned follower Telegram topic deleted"
-              : action.kind === "close-delete-replaced-follower-topic"
+            : action.kind === "close-delete-replaced-follower-topic"
                 ? "Replaced follower Telegram topic deleted"
                 : action.kind === "close-delete-previous-leader-topic"
                   ? "Previous leader Telegram topic deleted"
@@ -689,9 +654,7 @@ export async function applyThreadReconciliationPlan(
               ? "thread-reconciler-unbound-topic-delete"
               : action.kind === "close-delete-reserved-topic"
                 ? "thread-reconciler-reserved-topic-delete"
-                : action.kind === "close-delete-pruned-follower-topic"
-                  ? "thread-reconciler-pruned-follower-topic-delete"
-                  : action.kind === "close-delete-replaced-follower-topic"
+                : action.kind === "close-delete-replaced-follower-topic"
                     ? "thread-reconciler-replaced-follower-topic-delete"
                     : action.kind === "close-delete-previous-leader-topic"
                       ? "thread-reconciler-previous-leader-topic-delete"
@@ -745,11 +708,6 @@ export function planThreadReconciliation(
     input.records
       .filter(isCurrentRecord)
       .map((record) => targetKey(record.target)),
-  );
-  const allReservationTargets = new Set(
-    (input.reservations ?? []).map((reservation) =>
-      targetKey(reservation.target),
-    ),
   );
   const reservedTargets = new Set(
     (input.reservations ?? [])
@@ -826,22 +784,6 @@ export function planThreadReconciliation(
     }
   }
 
-  for (const prunedInstanceId of input.prunedFollowerInstanceIds ?? []) {
-    for (const record of input.records) {
-      if (record.instanceId !== prunedInstanceId) continue;
-      if (!isActiveOrStartingRecord(record)) continue;
-      actions.push({
-        kind: "close-delete-pruned-follower-topic",
-        target: record.target,
-        reason: "pruned-follower",
-        instanceId: prunedInstanceId,
-        ...(input.currentLeaderEpoch !== undefined
-          ? { leaderEpoch: input.currentLeaderEpoch }
-          : {}),
-      });
-    }
-  }
-
   for (const replacement of input.replacedBindings ?? []) {
     for (const record of input.records) {
       if (record.instanceId !== replacement.instanceId) continue;
@@ -898,16 +840,6 @@ export function planThreadReconciliation(
           : {}),
       });
     }
-  }
-
-  for (const probe of input.reservationProbeResults ?? []) {
-    if (!probe.stale) continue;
-    if (!allReservationTargets.has(targetKey(probe.target))) continue;
-    actions.push({
-      kind: "remove-reservation",
-      target: probe.target,
-      reason: "reservation-probe-stale",
-    });
   }
 
   for (const message of input.reservedMessages ?? []) {

@@ -1,6 +1,6 @@
 {
   "name": "@llblab/pi-telegram",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "private": false,
   "publishConfig": {
     "access": "public"
@@ -27,7 +27,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --experimental-strip-types --test --test-reporter=dot tests/*.test.ts",
+    "test:verbose": "node --experimental-strip-types --test --test-reporter=spec tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "audit": "npm audit",
     "pack:check": "npm pack --dry-run",

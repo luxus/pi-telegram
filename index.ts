@@ -155,11 +155,6 @@ export default function (pi: Pi.ExtensionAPI) {
       contextStore: telegramSessionContextStore,
     });
   const activeTurnRuntime = Queue.createTelegramActiveTurnStore();
-  const proactivePushChatIdGetter =
-    Config.createTelegramProactivePushChatIdGetter({
-      getActiveTurnChatId: activeTurnRuntime.getChatId,
-      getAllowedUserId: configStore.getAllowedUserId,
-    });
   const proactivePushTargetGetter =
     Config.createTelegramProactivePushTargetGetter({
       getActiveTurnTarget: activeTurnRuntime.getTarget,
@@ -171,6 +166,8 @@ export default function (pi: Pi.ExtensionAPI) {
       },
       getAllowedUserId: configStore.getAllowedUserId,
     });
+  const proactivePushChatIdGetter =
+    Config.createTelegramProactivePushChatIdGetter(proactivePushTargetGetter);
   const buttonActionStore = Outbound.createTelegramButtonActionStore();
   const pendingModelSwitchStore =
     Model.createPendingModelSwitchStore<
@@ -1067,7 +1064,6 @@ export default function (pi: Pi.ExtensionAPI) {
     deleteMessage: deleteTelegramMessage,
     sendGuestReply,
     finalizeMarkdownPreview,
-    proactivePushChatIdGetter,
     proactivePushTargetGetter,
     isProactivePushEnabled: configControls.isProactivePushEnabled,
     getAssistantRenderingMode: configControls.getAssistantRenderingMode,

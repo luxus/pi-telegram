@@ -14,10 +14,7 @@ import {
   sendTelegramBusLocalEnvelope,
 } from "../lib/bus.ts";
 import {
-  createTelegramBusFollowerBindingRealityReconciler,
-  createTelegramBusFollowerDisconnectedAnnouncement,
   createTelegramBusFollowerDisconnectHandler,
-  createTelegramBusFollowerPruneHandler,
   createTelegramBusFollowerTargetProvisioner,
   createTelegramBusInstanceLifecycleAnnouncement,
   createTelegramBusLeaderActivationScheduler,
@@ -30,71 +27,7 @@ import {
 import { createTelegramTopicTargetStore } from "../lib/threads.ts";
 import { TelegramApiCommitUnknownError } from "../lib/telegram-api.ts";
 
-test("Bus leader binding reality preserves absent followers for thread restoration", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-telegram-follower-reality-"));
-  const store = createTelegramTopicTargetStore({
-    path: join(dir, "state.json"),
-  });
-  const followerRegistry = createTelegramBusFollowerRegistry();
-  const events: unknown[] = [];
-  try {
-    store.upsert({
-      profileKey: "leader:/repo",
-      owner: { kind: "leader", cwd: "/repo", instanceId: "leader" },
-      target: { chatId: 7, threadId: 40 },
-      status: "active",
-      createdAtMs: 1,
-      updatedAtMs: 1,
-      instanceId: "leader",
-      slot: "D",
-    });
-    store.upsert({
-      profileKey: "manual:live-owner",
-      owner: { kind: "manual-follower", instanceId: "live-owner" },
-      target: { chatId: 7, threadId: 41 },
-      status: "active",
-      createdAtMs: 2,
-      updatedAtMs: 2,
-      instanceId: "live-runtime",
-      slot: "E",
-    });
-    store.upsert({
-      profileKey: "manual:dead-owner",
-      owner: { kind: "manual-follower", instanceId: "dead-owner" },
-      target: { chatId: 7, threadId: 42 },
-      status: "active",
-      createdAtMs: 3,
-      updatedAtMs: 3,
-      instanceId: "dead-runtime",
-      slot: "F",
-    });
-    followerRegistry.register({
-      instanceId: "live-runtime",
-      connectedAtMs: 10,
-      target: { chatId: 7, threadId: 41 },
-    });
-    const reconcile = createTelegramBusFollowerBindingRealityReconciler({
-      topicTargetStore: store,
-      followerRegistry,
-      recordRuntimeEvent: (...args) => events.push(args),
-    });
-
-    assert.equal(await reconcile(), 0);
-    assert.deepEqual(
-      store
-        .list()
-        .map((record) => record.instanceId)
-        .sort(),
-      ["dead-runtime", "leader", "live-runtime"],
-    );
-    assert.equal(events.length, 0);
-    assert.equal(store.getBotState().lastSlot, "F");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("Bus leader compaction preserves a recent binding through follower reload handoff", async () => {
+test("Bus leader preserves a binding through follower reload handoff", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-telegram-follower-gap-"));
   const store = createTelegramTopicTargetStore({
     path: join(dir, "state.json"),
@@ -110,14 +43,6 @@ test("Bus leader compaction preserves a recent binding through follower reload h
     instanceId: "follower-old",
     slot: "C",
     threadName: "Cedar",
-  });
-  const followerRegistry = createTelegramBusFollowerRegistry();
-  const reconcile = createTelegramBusFollowerBindingRealityReconciler({
-    topicTargetStore: store,
-    followerRegistry,
-    getNowMs: () => 1000,
-    recentBindingGraceMs: 100,
-    recordRuntimeEvent: () => undefined,
   });
   const calls: unknown[] = [];
   let syncState = {};
@@ -136,7 +61,6 @@ test("Bus leader compaction preserves a recent binding through follower reload h
     recordRuntimeEvent() {},
   });
   try {
-    assert.equal(await reconcile(), 0);
     assert.deepEqual(
       await provision({
         instanceId: "follower-new",
@@ -250,85 +174,6 @@ async function waitForCondition(
   }
   assert.fail("Timed out waiting for condition");
 }
-
-test("Bus leader follower prune handler preserves thread binding silently", async () => {
-  const calls: unknown[] = [];
-  const staleTargets: unknown[] = [];
-  const removedPending: string[] = [];
-  const events: unknown[] = [];
-  let persisted = 0;
-  let syncState = {};
-  let offline = false;
-  const handler = createTelegramBusFollowerPruneHandler({
-    topicTargetStore: {
-      load: async () => undefined,
-      getActiveByInstanceId: () => ({
-        profileKey: "manual:follower-a",
-        owner: { kind: "manual-follower", instanceId: "follower-a" },
-        instanceId: "follower-a",
-        target: { chatId: 7, threadId: 11 },
-        status: "active",
-        createdAtMs: 1000,
-        updatedAtMs: 1000,
-        slot: "E",
-        threadName: "Ember",
-      }),
-      list: () => [],
-      listPendingProvisions: () => [],
-      markStaleByTarget: (target) => {
-        staleTargets.push(target);
-        return true;
-      },
-      markOfflineByInstanceId: () => {
-        offline = true;
-        return 1;
-      },
-      persist: async () => {
-        persisted += 1;
-      },
-      removePendingProvision: (id) => {
-        removedPending.push(id);
-        return true;
-      },
-    },
-    async callApi<TResponse>(method: string, body: Record<string, unknown>) {
-      calls.push({ method, body });
-      return { ok: true } as TResponse;
-    },
-    getCurrentLeaderEpoch: () => "epoch-1",
-    getSyncState: () => syncState,
-    setSyncState: (state) => {
-      syncState = state;
-    },
-    getNowMs: () => 2000,
-    recordRuntimeEvent: (category, message, details) => {
-      events.push({ category, message, details });
-    },
-  });
-  await handler({
-    instanceId: "follower-a",
-    connectedAtMs: 1000,
-    lastHeartbeatMs: 1500,
-    target: { chatId: 7, threadId: 11 },
-  });
-  assert.equal(offline, false);
-  assert.equal(persisted, 0);
-  assert.deepEqual(staleTargets, []);
-  assert.deepEqual(removedPending, []);
-  assert.deepEqual(calls, []);
-  assert.deepEqual(syncState, {});
-  assert.deepEqual(events, [
-    {
-      category: "bus",
-      message:
-        "Telegram bus follower heartbeat stale; preserving thread binding",
-      details: {
-        phase: "follower-pruned",
-        instanceId: "follower-a",
-      },
-    },
-  ]);
-});
 
 test("Bus leader follower disconnect preserves binding when deletion is unconfirmed", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-telegram-follower-disconnect-fail-"));
@@ -1118,7 +963,7 @@ test("Bus leader target provisioner creates thread and announces connection", as
   }
 });
 
-test("Bus leader builds lifecycle announcements with thread name before slot", () => {
+test("Bus leader builds connected lifecycle announcements with thread name before slot", () => {
   assert.deepEqual(
     createTelegramBusInstanceLifecycleAnnouncement({
       target: { chatId: 123, threadId: 45 },
@@ -1131,57 +976,6 @@ test("Bus leader builds lifecycle announcements with thread name before slot", (
       text: "📡 Instance <b>Cedar</b> connected.",
       parseMode: "HTML",
     },
-  );
-  assert.deepEqual(
-    createTelegramBusFollowerDisconnectedAnnouncement({
-      follower: {
-        instanceId: "inst-c",
-        target: { chatId: 123, threadId: 45 },
-        connectedAtMs: 1000,
-        lastHeartbeatMs: 1200,
-      },
-      threadName: "Cedar",
-      slot: "C",
-    }),
-    {
-      target: { chatId: 123, threadId: 45 },
-      text: "📡 Instance <b>Cedar</b> disconnected.",
-      parseMode: "HTML",
-    },
-  );
-});
-
-test("Bus leader lifecycle announcements fall back to slot identity", () => {
-  assert.deepEqual(
-    createTelegramBusFollowerDisconnectedAnnouncement({
-      follower: {
-        instanceId: "inst-c",
-        target: { chatId: 123, threadId: 45 },
-        connectedAtMs: 1000,
-        lastHeartbeatMs: 1200,
-      },
-      slot: "C",
-    }),
-    {
-      target: { chatId: 123, threadId: 45 },
-      text: "📡 Instance <b>C</b> disconnected.",
-      parseMode: "HTML",
-    },
-  );
-});
-
-test("Bus leader skips follower disconnected announcements without a target thread", () => {
-  assert.equal(
-    createTelegramBusFollowerDisconnectedAnnouncement({
-      follower: {
-        instanceId: "inst-c",
-        target: { chatId: 123 },
-        connectedAtMs: 1000,
-        lastHeartbeatMs: 1200,
-      },
-      slot: "C",
-    }),
-    undefined,
   );
 });
 
@@ -1957,35 +1751,6 @@ test("Bus leader runtime starts the local server around polling", async () => {
   }
 });
 
-test("Bus leader runtime reconciles follower bindings after reload grace", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-telegram-bus-reality-grace-"));
-  const socketPath = join(dir, "bus.sock");
-  const registry = createTelegramBusFollowerRegistry();
-  const observedRosters: string[][] = [];
-  const runtime = createTelegramBusLeaderRuntime({
-    socketPath,
-    followerRegistry: registry,
-    followerRecoveryGraceMs: 15,
-    reconcileFollowerBindings: () => {
-      observedRosters.push(
-        registry.list().map((follower) => follower.instanceId),
-      );
-    },
-    startPolling: () => undefined,
-    stopPolling: () => undefined,
-  });
-  try {
-    await runtime.startPolling("ctx");
-    registry.register({ instanceId: "reconnected", connectedAtMs: 1 });
-    assert.deepEqual(observedRosters, []);
-    await waitForCondition(() => observedRosters.length === 1);
-    assert.deepEqual(observedRosters, [["reconnected"]]);
-  } finally {
-    await runtime.stopPolling();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("Bus leader runtime prunes stale followers while polling", async () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-telegram-bus-prune-"));
   const socketPath = join(dir, "bus.sock");
@@ -2016,51 +1781,10 @@ test("Bus leader runtime prunes stale followers while polling", async () => {
     assert.equal(registry.get("fresh")?.instanceId, "fresh");
     assert.equal(
       runtimeEvents.includes(
-        "bus:follower-prune:stale:Telegram bus follower timed out",
+        "bus:follower-pruned:stale:Telegram bus follower heartbeat stale; preserving thread binding",
       ),
       true,
     );
-  } finally {
-    await runtime.stopPolling();
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("Bus leader runtime reports pruned followers to offline hook", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "pi-telegram-bus-prune-offline-"));
-  const socketPath = join(dir, "bus.sock");
-  const registry = createTelegramBusFollowerRegistry();
-  const offline: unknown[] = [];
-  registry.register({
-    instanceId: "stale",
-    profileKey: "cwd:/repo",
-    target: { chatId: -1001, threadId: 42 },
-    connectedAtMs: 0,
-  });
-  const runtime = createTelegramBusLeaderRuntime({
-    socketPath,
-    followerRegistry: registry,
-    getNowMs: () => 1000,
-    followerPruneIntervalMs: 5,
-    followerStaleAfterMs: 100,
-    startPolling: () => undefined,
-    stopPolling: () => undefined,
-    onFollowerPruned(follower) {
-      offline.push(follower);
-    },
-  });
-  try {
-    await runtime.startPolling("ctx");
-    await waitForCondition(() => offline.length === 1);
-    assert.deepEqual(offline, [
-      {
-        instanceId: "stale",
-        profileKey: "cwd:/repo",
-        target: { chatId: -1001, threadId: 42 },
-        connectedAtMs: 0,
-        lastHeartbeatMs: 0,
-      },
-    ]);
   } finally {
     await runtime.stopPolling();
     rmSync(dir, { recursive: true, force: true });

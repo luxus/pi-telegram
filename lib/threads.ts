@@ -237,7 +237,6 @@ export interface TelegramTopicTargetStore {
     target: TelegramTarget & { threadId: number },
   ) => Promise<boolean>;
   removePendingProvision: (id: string) => boolean;
-  removeReservationByTarget: (target: TelegramTarget) => boolean;
   getBotState: () => TelegramBotStateSnapshot;
   setBotState: (state: Partial<TelegramBotStateSnapshot>) => void;
   setStatusSnapshot: (snapshot: {
@@ -1396,15 +1395,6 @@ export function createTelegramTopicTargetStore(
       if (changed) markDirty();
       return changed;
     },
-    removeReservationByTarget(target) {
-      const before = reservations.length;
-      reservations = reservations.filter(
-        (reservation) => !targetMatches(reservation.target, target),
-      );
-      const changed = reservations.length !== before;
-      if (changed) markDirty();
-      return changed;
-    },
     getBotState() {
       return Object.fromEntries(
         Object.entries(botState).filter(([, value]) => value !== undefined),
@@ -1983,9 +1973,6 @@ export async function provisionOwnBusTopic(
       syncStatus?: "closed" | "deleted",
       lastSyncError?: string,
     ) => deps.store.markStaleByTarget(target, syncStatus, lastSyncError),
-    removeReservationByTarget: (
-      target: TelegramTarget & { threadId: number },
-    ) => deps.store.removeReservationByTarget(target),
     removePendingProvisionById: (id: string) =>
       deps.store.removePendingProvision(id),
     persist: () => deps.store.persist(),
@@ -2024,36 +2011,6 @@ export async function provisionOwnBusTopic(
     durationMs: Date.now() - reservationCleanupApplyStartedAtMs,
     actions: reservationCleanupPlan.actions.length,
   });
-  const reservationProbeResults: ThreadReconciler.ThreadReservationProbeResult[] =
-    [];
-  deps.recordEvent("bus", "Bus leader reservation probes skipped", {
-    phase: "leader-topic-reservation-probe-skipped",
-    reservations: reservationsBeforeCleanup.length,
-  });
-  const reservationProbePlan = ThreadReconciler.planThreadReconciliation({
-    nowMs: Date.now(),
-    currentLeaderEpoch: deps.getCurrentLeaderEpoch?.(),
-    previousState: deps.getThreadReconciliationMachineState?.(),
-    records: deps.store.list(),
-    reservations: deps.store.listReservations(),
-    pendingProvisions: deps.store.listPendingProvisions(),
-    reservationProbeResults,
-  });
-  deps.recordThreadReconciliationPlan?.(reservationProbePlan);
-  const reservationProbeApplyStartedAtMs = Date.now();
-  await ThreadReconciler.applyThreadReconciliationPlan(
-    reservationProbePlan,
-    reservationCleanupPorts,
-  );
-  deps.recordEvent(
-    "bus",
-    "Bus leader reservation probe reconciliation applied",
-    {
-      phase: "leader-topic-reservation-probe-apply-duration",
-      durationMs: Date.now() - reservationProbeApplyStartedAtMs,
-      actions: reservationProbePlan.actions.length,
-    },
-  );
   const nowMs = Date.now();
   const currentLeaderOwner: TelegramThreadOwner = {
     kind: "leader",
