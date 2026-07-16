@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `Settings Persist Race`: Polling used to persist its loop-local full config snapshot after each update. Settings setters replace the live store object, so the next offset write could rewrite older voice/time/assistant values and make Settings look unsaved. Offset persistence now only folds `lastUpdateId` into the live store before writing.
 - `Settings Menu Rehydrate`: If a Telegram settings message is still clickable but in-memory menu state was pruned (session reload/TTL), callbacks rebuild a minimal settings state from `callback_query.message` so open/set still persist to `telegram.json` and refresh the message instead of appearing unsaved or expired.
 
 ## 0.23.1: Context Budget And Runtime Simplification

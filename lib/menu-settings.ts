@@ -74,7 +74,11 @@ export interface TelegramSettingsMenuRuntime<TContext> {
     query: {
       id: string;
       data?: string;
-      message?: { message_id?: number; chat?: { id?: number } };
+      message?: {
+        message_id?: number;
+        message_thread_id?: number;
+        chat?: { id?: number };
+      };
     },
     ctx: TContext,
   ) => Promise<boolean>;

@@ -772,6 +772,30 @@ export function createTelegramConfigControls(
   };
 }
 
+/**
+ * Polling captures a config object once per loop and mutates lastUpdateId on it.
+ * Settings setters replace the live store object, so persisting that stale full
+ * snapshot can clobber voice/time/assistant settings. Only fold the offset into
+ * the live store, then persist the live config.
+ */
+export function createTelegramPollingConfigPersister(
+  configStore: Pick<TelegramConfigStore, "update" | "persist">,
+  persist: (config?: TelegramConfig) => Promise<void> = (config) =>
+    configStore.persist(config),
+): (pollingSnapshot?: Pick<TelegramConfig, "lastUpdateId">) => Promise<void> {
+  return async (pollingSnapshot) => {
+    if (typeof pollingSnapshot?.lastUpdateId === "number") {
+      const nextId = pollingSnapshot.lastUpdateId;
+      configStore.update((live) => {
+        const current = live.lastUpdateId;
+        live.lastUpdateId =
+          typeof current === "number" ? Math.max(current, nextId) : nextId;
+      });
+    }
+    await persist();
+  };
+}
+
 export type TelegramAuthorizationState =
   { kind: "pair"; userId: number } | { kind: "allow" } | { kind: "deny" };
 

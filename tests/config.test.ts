@@ -23,6 +23,7 @@ import type { TelegramConfig } from "../lib/config.ts";
 import {
   createTelegramConfigControls,
   createTelegramConfigStore,
+  createTelegramPollingConfigPersister,
   createTelegramProactivePushTargetGetter,
   createTelegramTimeInjectionModeGetter,
   createTelegramTimeInjectionModeSetter,
@@ -272,6 +273,44 @@ test("Telegram config transactions merge concurrent profile offsets and global f
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Polling offset persister keeps settings when loop holds a stale config snapshot", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-telegram-poll-settings-"));
+  const configPath = join(agentDir, "telegram.json");
+  await writeTelegramConfig(agentDir, configPath, {
+    botToken: "123:abc",
+    lastUpdateId: 10,
+    time: { injectionMode: "interval" },
+  });
+  try {
+    const store = createTelegramConfigStore({ agentDir, configPath });
+    await store.load();
+    // Match the poll loop: capture config once, mutate lastUpdateId later.
+    const pollingSnapshot = store.get();
+    const setTime = createTelegramTimeInjectionModeSetter(store);
+    await setTime("always");
+
+    pollingSnapshot.lastUpdateId = 11;
+    // Buggy path: full stale snapshot would rewrite time back to interval.
+    await store.persist(pollingSnapshot);
+    assert.equal(
+      (await readTelegramConfig(configPath)).time?.injectionMode,
+      "interval",
+    );
+
+    await setTime("always");
+    const persistPollingOffset = createTelegramPollingConfigPersister(store);
+    pollingSnapshot.lastUpdateId = 12;
+    await persistPollingOffset(pollingSnapshot);
+
+    const disk = await readTelegramConfig(configPath);
+    assert.equal(disk.time?.injectionMode, "always");
+    assert.equal(disk.lastUpdateId, 12);
+    assert.equal(store.get().time?.injectionMode, "always");
+  } finally {
+    await rm(agentDir, { recursive: true, force: true });
   }
 });
 
